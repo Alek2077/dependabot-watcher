@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dependabot-watcher"
+version = "0.1.0.dev0"
+description = "Local-first inspection and triage for Dependabot activity across repositories."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "tomli>=2.0; python_version < '3.11'",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pyright>=1.1.400",
+  "pytest>=8.0",
+]
+
+[project.scripts]
+dependabot-watcher = "dependabot_watcher.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"
