@@ -43,11 +43,43 @@ class CollectionConfig:
 
 
 @dataclass(frozen=True)
+class AdvisoryBudgetConfig:
+    max_candidates: int = 0
+    batch_size: int = 0
+    max_triage_calls: int = 0
+    max_review_candidates: int = 0
+    max_review_calls: int = 0
+
+
+@dataclass(frozen=True)
+class CodexStageConfig:
+    model: str | None = None
+    reasoning_effort: str | None = None
+    timeout_seconds: int = 900
+
+
+@dataclass(frozen=True)
+class CodexProviderConfig:
+    executable: str = "codex"
+    triage: CodexStageConfig | None = None
+    review: CodexStageConfig | None = None
+
+
+@dataclass(frozen=True)
+class AdvisoryConfig:
+    mode: str = "off"
+    provider: str | None = None
+    budget: AdvisoryBudgetConfig = field(default_factory=AdvisoryBudgetConfig)
+    codex_cli: CodexProviderConfig | None = None
+
+
+@dataclass(frozen=True)
 class WatcherConfig:
     schema_version: int
     repositories: tuple[RepositoryConfig, ...]
     collection: CollectionConfig = field(default_factory=CollectionConfig)
     path_policy: PathPolicyOverrides = field(default_factory=PathPolicyOverrides)
+    advisory: AdvisoryConfig = field(default_factory=AdvisoryConfig)
 
 
 def default_config_path() -> Path:
@@ -78,6 +110,22 @@ def _positive_int(value: object, location: str, *, maximum: int) -> int:
     if value < 1 or value > maximum:
         raise ConfigError(f"{location} must be between 1 and {maximum}.")
     return value
+
+
+def _nonnegative_int(value: object, location: str, *, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"{location} must be an integer.")
+    if value < 0 or value > maximum:
+        raise ConfigError(f"{location} must be between 0 and {maximum}.")
+    return value
+
+
+def _optional_string(value: object, location: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{location} must be a non-empty string when configured.")
+    return value.strip()
 
 
 def _patterns(value: object, location: str) -> tuple[str, ...]:
@@ -151,6 +199,150 @@ def _collection(value: object) -> CollectionConfig:
     )
 
 
+_ADVISORY_PRESETS: dict[str, AdvisoryBudgetConfig] = {
+    "off": AdvisoryBudgetConfig(),
+    "economy": AdvisoryBudgetConfig(
+        max_candidates=8,
+        batch_size=4,
+        max_triage_calls=2,
+    ),
+    "reviewed": AdvisoryBudgetConfig(
+        max_candidates=8,
+        batch_size=4,
+        max_triage_calls=2,
+        max_review_candidates=4,
+        max_review_calls=1,
+    ),
+}
+
+
+def _advisory_budget(value: object, mode: str) -> AdvisoryBudgetConfig:
+    data = _require_mapping({} if value is None else value, "advisory.budget")
+    _reject_unknown(
+        data,
+        {
+            "max_candidates",
+            "batch_size",
+            "max_triage_calls",
+            "max_review_candidates",
+            "max_review_calls",
+        },
+        "advisory.budget",
+    )
+    preset = _ADVISORY_PRESETS[mode]
+    budget = AdvisoryBudgetConfig(
+        max_candidates=_nonnegative_int(
+            data.get("max_candidates", preset.max_candidates),
+            "advisory.budget.max_candidates",
+            maximum=1000,
+        ),
+        batch_size=_nonnegative_int(
+            data.get("batch_size", preset.batch_size),
+            "advisory.budget.batch_size",
+            maximum=100,
+        ),
+        max_triage_calls=_nonnegative_int(
+            data.get("max_triage_calls", preset.max_triage_calls),
+            "advisory.budget.max_triage_calls",
+            maximum=1000,
+        ),
+        max_review_candidates=_nonnegative_int(
+            data.get("max_review_candidates", preset.max_review_candidates),
+            "advisory.budget.max_review_candidates",
+            maximum=1000,
+        ),
+        max_review_calls=_nonnegative_int(
+            data.get("max_review_calls", preset.max_review_calls),
+            "advisory.budget.max_review_calls",
+            maximum=1000,
+        ),
+    )
+    if mode != "off":
+        if budget.max_candidates == 0 or budget.batch_size == 0 or budget.max_triage_calls == 0:
+            raise ConfigError(
+                "Enabled advisory modes require positive candidate, batch, and triage-call budgets."
+            )
+        if budget.batch_size > budget.max_candidates:
+            raise ConfigError("advisory.budget.batch_size cannot exceed max_candidates.")
+    if mode == "reviewed":
+        if budget.max_review_candidates == 0 or budget.max_review_calls == 0:
+            raise ConfigError("reviewed mode requires positive reviewer budgets.")
+    return budget
+
+
+def _codex_stage(value: object, location: str) -> CodexStageConfig | None:
+    if value is None:
+        return None
+    data = _require_mapping(value, location)
+    _reject_unknown(
+        data,
+        {"model", "reasoning_effort", "timeout_seconds"},
+        location,
+    )
+    return CodexStageConfig(
+        model=_optional_string(data.get("model"), f"{location}.model"),
+        reasoning_effort=_optional_string(
+            data.get("reasoning_effort"), f"{location}.reasoning_effort"
+        ),
+        timeout_seconds=_positive_int(
+            data.get("timeout_seconds", 900),
+            f"{location}.timeout_seconds",
+            maximum=3600,
+        ),
+    )
+
+
+def _codex_provider(value: object) -> CodexProviderConfig | None:
+    if value is None:
+        return None
+    data = _require_mapping(value, "advisory.codex_cli")
+    _reject_unknown(data, {"executable", "triage", "review"}, "advisory.codex_cli")
+    return CodexProviderConfig(
+        executable=_optional_string(
+            data.get("executable", "codex"), "advisory.codex_cli.executable"
+        )
+        or "codex",
+        triage=_codex_stage(data.get("triage"), "advisory.codex_cli.triage"),
+        review=_codex_stage(data.get("review"), "advisory.codex_cli.review"),
+    )
+
+
+def _advisory(value: object) -> AdvisoryConfig:
+    data = _require_mapping({} if value is None else value, "advisory")
+    _reject_unknown(data, {"mode", "provider", "budget", "codex_cli"}, "advisory")
+    mode = _optional_string(data.get("mode", "off"), "advisory.mode") or "off"
+    if mode not in _ADVISORY_PRESETS:
+        raise ConfigError("advisory.mode must be one of: off, economy, reviewed.")
+    provider = _optional_string(data.get("provider"), "advisory.provider")
+    if provider is not None and provider != "codex_cli":
+        raise ConfigError("advisory.provider currently supports only 'codex_cli'.")
+    codex_cli = _codex_provider(data.get("codex_cli"))
+    if mode != "off":
+        if provider is None:
+            raise ConfigError("Enabled advisory modes require advisory.provider.")
+        if provider == "codex_cli" and (codex_cli is None or codex_cli.triage is None):
+            raise ConfigError("Enabled Codex advisory modes require advisory.codex_cli.triage.")
+        if codex_cli is not None and codex_cli.triage is not None:
+            if codex_cli.triage.model is None or codex_cli.triage.reasoning_effort is None:
+                raise ConfigError(
+                    "Enabled Codex triage requires explicit model and reasoning_effort values."
+                )
+        if mode == "reviewed" and (codex_cli is None or codex_cli.review is None):
+            raise ConfigError("reviewed Codex mode requires advisory.codex_cli.review.")
+        if mode == "reviewed" and codex_cli is not None and codex_cli.review is not None:
+            if codex_cli.review.model is None or codex_cli.review.reasoning_effort is None:
+                raise ConfigError(
+                    "Reviewed Codex mode requires explicit reviewer model and "
+                    "reasoning_effort values."
+                )
+    return AdvisoryConfig(
+        mode=mode,
+        provider=provider,
+        budget=_advisory_budget(data.get("budget"), mode),
+        codex_cli=codex_cli,
+    )
+
+
 def _repository(value: object, index: int) -> RepositoryConfig:
     location = f"repositories[{index}]"
     data = _require_mapping(value, location)
@@ -169,7 +361,11 @@ def _repository(value: object, index: int) -> RepositoryConfig:
 
 
 def parse_config(data: Mapping[str, Any]) -> WatcherConfig:
-    _reject_unknown(data, {"schema_version", "repositories", "collection", "path_policy"}, "top-level")
+    _reject_unknown(
+        data,
+        {"schema_version", "repositories", "collection", "path_policy", "advisory"},
+        "top-level",
+    )
     schema_version = data.get("schema_version")
     if schema_version != SCHEMA_VERSION:
         raise ConfigError(f"schema_version must be {SCHEMA_VERSION}.")
@@ -185,6 +381,7 @@ def parse_config(data: Mapping[str, Any]) -> WatcherConfig:
         repositories=repositories,
         collection=_collection(data.get("collection", {})),
         path_policy=_path_policy(data.get("path_policy", {}), "path_policy"),
+        advisory=_advisory(data.get("advisory", {})),
     )
 
 

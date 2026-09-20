@@ -356,6 +356,60 @@ def _normalized_repository_path(value: object) -> str:
     return str(value or "").replace("\\", "/").lstrip("/")
 
 
+def _release_version_key(value: object) -> tuple[int, ...] | None:
+    normalized = str(value or "").strip().casefold().lstrip("v")
+    if not re.fullmatch(r"\d+(?:\.\d+)*", normalized):
+        return None
+    segments = [int(item) for item in normalized.split(".")]
+    while len(segments) > 1 and segments[-1] == 0:
+        segments.pop()
+    return tuple(segments)
+
+
+def _patched_version_match(target: object, first_patched: object) -> str:
+    target_text = str(target or "").strip().casefold().lstrip("v")
+    patched_text = str(first_patched or "").strip().casefold().lstrip("v")
+    if not target_text or not patched_text:
+        return "unverified"
+    target_key = _release_version_key(target_text)
+    patched_key = _release_version_key(patched_text)
+    if target_key is None or patched_key is None:
+        return "unverified"
+    if target_text == patched_text:
+        return "exact"
+    if target_key == patched_key:
+        return "equivalent_release"
+    if target_key > patched_key:
+        return "newer_release"
+    return "older_release"
+
+
+def _dependabot_pr_relationship(
+    pull_request: dict[str, Any],
+    *,
+    package_name: str,
+    ecosystem: str,
+) -> tuple[str, frozenset[str]] | None:
+    author = str((pull_request.get("author") or {}).get("login") or "").casefold()
+    if author not in DEPENDABOT_AUTHORS:
+        return None
+    update = _dependabot_update_from_title(str(pull_request.get("title") or ""))
+    if not update or update[0] != package_name:
+        return None
+    expected_ecosystem = DEPENDABOT_ECOSYSTEM_BRANCH_SEGMENTS.get(ecosystem)
+    head_ref = str(pull_request.get("headRefName") or "")
+    head_parts = head_ref.split("/", 2)
+    observed_ecosystem = head_parts[1] if len(head_parts) >= 3 and head_parts[0] == "dependabot" else ""
+    if not expected_ecosystem or observed_ecosystem != expected_ecosystem:
+        return None
+    changed_paths = frozenset(
+        _normalized_repository_path(item.get("path"))
+        for item in pull_request.get("files") or []
+        if isinstance(item, dict) and item.get("path")
+    )
+    return (update[1], changed_paths)
+
+
 def _related_dependabot_pr(
     pull_request: dict[str, Any],
     *,
@@ -363,28 +417,17 @@ def _related_dependabot_pr(
     ecosystem: str,
     manifest_path: str,
 ) -> tuple[bool, str | None]:
-    author = str((pull_request.get("author") or {}).get("login") or "").casefold()
-    if author not in DEPENDABOT_AUTHORS:
+    relationship = _dependabot_pr_relationship(
+        pull_request,
+        package_name=package_name,
+        ecosystem=ecosystem,
+    )
+    if not relationship or not manifest_path:
         return (False, None)
-    update = _dependabot_update_from_title(str(pull_request.get("title") or ""))
-    if not update or update[0] != package_name:
-        return (False, None)
-    if not manifest_path:
-        return (False, None)
-    expected_ecosystem = DEPENDABOT_ECOSYSTEM_BRANCH_SEGMENTS.get(ecosystem)
-    head_ref = str(pull_request.get("headRefName") or "")
-    head_parts = head_ref.split("/", 2)
-    observed_ecosystem = head_parts[1] if len(head_parts) >= 3 and head_parts[0] == "dependabot" else ""
-    if not expected_ecosystem or observed_ecosystem != expected_ecosystem:
-        return (False, None)
-    changed_paths = {
-        _normalized_repository_path(item.get("path"))
-        for item in pull_request.get("files") or []
-        if isinstance(item, dict) and item.get("path")
-    }
+    target_version, changed_paths = relationship
     if manifest_path not in changed_paths:
         return (False, None)
-    return (True, update[1])
+    return (True, target_version)
 
 
 def normalize_alert(alert: dict[str, Any], repository: str) -> dict[str, Any]:
@@ -431,25 +474,33 @@ def correlate_alerts(
         manifest_path = _normalized_repository_path(alert.get("manifest_path"))
         first_patched = str(alert.get("first_patched_version") or "").casefold().lstrip("v")
         matching_open: list[dict[str, Any]] = []
+        package_related_open: list[dict[str, Any]] = []
         for item in open_prs:
-            related, target_version = _related_dependabot_pr(
+            relationship = _dependabot_pr_relationship(
                 item,
                 package_name=package,
                 ecosystem=ecosystem,
-                manifest_path=manifest_path,
             )
-            if related:
-                matching_open.append(
-                    {
-                        "number": item.get("number"),
-                        "title": item.get("title"),
-                        "url": item.get("url"),
-                        "target_version": target_version,
-                        "matches_first_patched_version": bool(
-                            first_patched and target_version == first_patched
-                        ),
-                    }
-                )
+            if not relationship:
+                continue
+            target_version, changed_paths = relationship
+            patched_version_relation = _patched_version_match(
+                target_version,
+                first_patched,
+            )
+            evidence = {
+                "number": item.get("number"),
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "target_version": target_version,
+                "manifest_path_matches": bool(manifest_path and manifest_path in changed_paths),
+                "patched_version_relation": patched_version_relation,
+                "meets_first_patched_version": patched_version_relation
+                in {"exact", "equivalent_release", "newer_release"},
+            }
+            package_related_open.append(evidence)
+            if evidence["manifest_path_matches"]:
+                matching_open.append(evidence)
         matching_merged = [
             {
                 "number": item.get("number"),
@@ -465,7 +516,7 @@ def correlate_alerts(
                 manifest_path=manifest_path,
             )[0]
         ]
-        if any(item["matches_first_patched_version"] for item in matching_open):
+        if any(item["meets_first_patched_version"] for item in matching_open):
             classification = "likely_covered_by_open_pr"
         elif matching_open:
             classification = "related_open_pr_unverified"
@@ -478,6 +529,7 @@ def correlate_alerts(
                 **alert,
                 "classification": classification,
                 "matching_open_pull_requests": matching_open,
+                "package_related_open_pull_requests": package_related_open,
                 "matching_recent_merges": matching_merged[:5],
             }
         )

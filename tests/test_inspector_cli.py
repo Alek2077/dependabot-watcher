@@ -135,6 +135,19 @@ def test_inspection_is_complete_and_explicitly_non_mutating() -> None:
     assert report["status"] == "complete"
     assert report["summary"]["open_pull_request_count"] == 1
     assert report["repositories"][0]["alerts"][0]["classification"] == "likely_covered_by_open_pr"
+    related_alert = report["repositories"][0]["pull_requests"][0]["related_alerts"][0]
+    assert related_alert["number"] == 7
+    assert related_alert["severity"] == "high"
+    assert related_alert["manifest_path_matches"] is True
+    assert related_alert["meets_first_patched_version"] is True
+    related_pull_request = report["repositories"][0]["alerts"][0][
+        "package_related_open_pull_requests"
+    ][0]["pull_request_evidence"]
+    assert related_pull_request["number"] == 42
+    assert related_pull_request["classification"] == "baseline_candidate"
+    assert related_pull_request["checks"] == "passing"
+    assert related_pull_request["path_assessment"]["classification"] == "dependency_only"
+    assert related_pull_request["mutation_authorized"] is False
     assert all(value is False for value in report["capabilities"].values())
     assert report["repositories"][0]["pull_requests"][0]["mutation_authorized"] is False
 
@@ -239,3 +252,28 @@ def test_cli_rejects_unconfigured_repo_before_github_call(
 
     assert exit_code == cli.ExitCode.CONFIGURATION_ERROR
     assert "not configured" in capsys.readouterr().err
+
+
+def test_cli_advise_defaults_to_model_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "schema_version = 1\n"
+        "[advisory]\n"
+        'mode = "off"\n'
+        "[[repositories]]\n"
+        'name = "example-org/example-app"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "GhCliClient", lambda **kwargs: FakeClient())
+
+    exit_code = cli.main(["advise", "--config", str(config_path), "--format", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == cli.ExitCode.SUCCESS
+    assert payload["mode"] == "advise"
+    assert payload["advisory"]["status"] == "disabled"
+    assert payload["capabilities"]["model_calls"] is False

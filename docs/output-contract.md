@@ -14,6 +14,28 @@ JSON is the automation contract. Its top-level fields are:
 
 Every inspected pull request includes collector-owned repository, PR, base, and head identity. `classification` is either `baseline_candidate`, `attention_required`, or `collection_error`. It is not an execution decision, and `mutation_authorized` is always false.
 
-An open alert is called `likely_covered_by_open_pr` only when a verified Dependabot PR matches the exact package, ecosystem branch, manifest path, and alert's first patched version. A related PR without that complete evidence remains `related_open_pr_unverified` and still counts as unresolved. Open alerts possibly associated with a recent merge also remain in the unresolved count until GitHub closes them.
+An open alert is called `likely_covered_by_open_pr` only when a verified Dependabot PR matches the exact package, ecosystem branch, and manifest path, and its target release meets the alert's first-patched threshold. For plain numeric dotted releases, the report distinguishes `exact`, `equivalent_release` (for example `2.9` versus `2.9.0`), `newer_release`, and `older_release`. Qualified or otherwise non-numeric versions remain `unverified` rather than being guessed. A related PR without complete evidence remains `related_open_pr_unverified` and still counts as unresolved. Open alerts possibly associated with a recent merge also remain in the unresolved count until GitHub closes them.
+
+Alerts also expose `package_related_open_pull_requests` when a verified Dependabot PR matches the package and ecosystem but not necessarily the alert's manifest path. Each such relationship states whether the manifest path matches, how the PR target relates to the first-patched version, and the already-collected deterministic PR assessment (checks, merge state, path classification, and blockers). This is evidence for advisory analysis, not proof of coverage: a manifest mismatch never upgrades the alert classification. Pull-request assessments contain the corresponding `related_alerts` evidence so an advisory provider does not have to rediscover the relationship from separate report sections.
 
 Errors and truncations remain in the report so scheduled wrappers and future agents can distinguish “nothing needs attention” from “inspection was incomplete.”
+
+## Advisory output
+
+`dependabot-watcher advise` returns a separate versioned wrapper rather than changing inspection schema version 1 silently. It contains:
+
+- the complete underlying `inspection` report;
+- the configured advisory mode and provider;
+- the applied workload budget;
+- collector-bound candidate decisions;
+- separate triage and optional review advice;
+- an `effective_advice` view for concise consumers;
+- deferred candidates and exact budget/incomplete-evidence reasons;
+- provider errors and per-call model/reasoning/usage provenance; and
+- explicit false capability values for persistence, GitHub mutation, and notifications;
+- report-level `mutation_authorized: false`; and
+- `mutation_authorized: false` on every decision and deferred candidate.
+
+Recommendations such as `merge_candidate` mean only that the provider considers the pull request suitable for a later deterministic authorization stage. Human-readable text and Markdown output also state that mutation is not authorized.
+
+The text output is intentionally concise. JSON retains the complete inspection, advice, evidence, provenance, errors, and deferrals. Markdown provides a standard decision table and explicit error/deferred sections.

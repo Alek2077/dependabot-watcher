@@ -12,6 +12,9 @@ command_timeout_seconds = 120
 additional_dependency_patterns = []
 additional_sensitive_patterns = []
 
+[advisory]
+mode = "off"
+
 [[repositories]]
 name = "example-org/example-app"
 default_branch = "main"
