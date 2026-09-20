@@ -1,0 +1,21 @@
+schema_version = 1
+
+[collection]
+history_lookback_days = 30
+max_open_prs = 100
+max_open_alerts = 500
+max_history_items = 200
+max_files_per_pull_request = 500
+command_timeout_seconds = 120
+
+[path_policy]
+additional_dependency_patterns = []
+additional_sensitive_patterns = []
+
+[[repositories]]
+name = "example-org/example-app"
+default_branch = "main"
+
+[repositories.path_policy]
+additional_dependency_patterns = ["deps/*.lock"]
+additional_sensitive_patterns = ["ops/production/**"]
