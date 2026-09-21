@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decisions"],
+  "properties": {
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id",
+          "recommended_action",
+          "risk_level",
+          "confidence",
+          "requires_review",
+          "summary",
+          "rationale",
+          "evidence",
+          "unresolved_questions"
+        ],
+        "properties": {
+          "candidate_id": {"type": "string", "minLength": 1},
+          "recommended_action": {
+            "type": "string",
+            "enum": [
+              "merge_candidate",
+              "hold",
+              "review_required",
+              "investigate",
+              "human_attention",
+              "no_action"
+            ]
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          },
+          "confidence": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          },
+          "requires_review": {"type": "boolean"},
+          "summary": {"type": "string", "minLength": 1},
+          "rationale": {"type": "string", "minLength": 1},
+          "evidence": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "unresolved_questions": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}

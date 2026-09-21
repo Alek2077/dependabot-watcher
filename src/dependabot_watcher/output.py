@@ -182,3 +182,127 @@ def render(report: dict[str, Any], output_format: str) -> str:
         "markdown": render_markdown,
     }
     return renderers[output_format](report)
+
+
+def render_advisory_text(report: dict[str, Any]) -> str:
+    advisory = report["advisory"]
+    summary = advisory["summary"]
+    inspection_summary = report["inspection"]["summary"]
+    lines = [
+        "Dependabot Watcher advice",
+        f"Generated: {report['generated_at']}",
+        f"Status: {report['status']}",
+        "Mutation authorized: no (advice only)",
+        f"Mode: {advisory['mode']} | Provider: {advisory['provider'] or 'none'}",
+        (
+            f"Repositories: {inspection_summary['repository_count']} | "
+            f"Open PRs: {inspection_summary['open_pull_request_count']} | "
+            f"Open alerts: {inspection_summary['open_alert_count']}"
+        ),
+        (
+            f"Advised: {summary['advised_candidate_count']} | "
+            f"Reviewed: {summary['reviewed_candidate_count']} | "
+            f"Deferred: {summary['deferred_candidate_count']} | "
+            f"Provider calls: {summary['provider_call_count']}"
+        ),
+    ]
+    if advisory["status"] == "disabled":
+        lines.append("Model advice is disabled; deterministic inspection remains available.")
+    for item in advisory["decisions"]:
+        identity = item["identity"]
+        number = identity.get("number", "?")
+        label = "PR" if item["kind"] == "pull_request" else "Alert"
+        effective = item["effective_advice"]
+        reviewed = " reviewed" if item.get("review") else ""
+        lines.append(
+            f"{identity.get('repository')} {label} #{number}: "
+            f"{effective['recommended_action']} "
+            f"[{effective['risk_level']} risk, {effective['confidence']} confidence{reviewed}]"
+        )
+        lines.append(f"  {effective['summary']}")
+    if advisory["errors"]:
+        lines.append("Advisory errors:")
+        for error in advisory["errors"]:
+            lines.append(f"  - {error['stage']} batch {error['batch']}: {error['message']}")
+    if advisory["deferred"]:
+        reasons: dict[str, int] = {}
+        for item in advisory["deferred"]:
+            reason = str(item.get("reason") or "unknown")
+            reasons[reason] = reasons.get(reason, 0) + 1
+        lines.append(
+            "Deferred: " + ", ".join(f"{reason}={count}" for reason, count in sorted(reasons.items()))
+        )
+    return "\n".join(lines) + "\n"
+
+
+def render_advisory_markdown(report: dict[str, Any]) -> str:
+    advisory = report["advisory"]
+    summary = advisory["summary"]
+    lines = [
+        "# Dependabot Watcher advice",
+        "",
+        f"Generated: `{_escape_markdown(report['generated_at'])}`  ",
+        f"Status: **{_escape_markdown(report['status'])}**  ",
+        "Mutation authorized: **no** (advice only)  ",
+        f"Mode: `{_escape_markdown(advisory['mode'])}`  ",
+        f"Provider: `{_escape_markdown(advisory['provider'] or 'none')}`",
+        "",
+        "| Eligible | Advised | Reviewed | Deferred | Provider calls |",
+        "|---:|---:|---:|---:|---:|",
+        (
+            f"| {summary['eligible_candidate_count']} | {summary['advised_candidate_count']} | "
+            f"{summary['reviewed_candidate_count']} | {summary['deferred_candidate_count']} | "
+            f"{summary['provider_call_count']} |"
+        ),
+        "",
+        "## Decisions",
+        "",
+    ]
+    if not advisory["decisions"]:
+        lines.append("None.")
+    else:
+        lines.extend(
+            [
+                "| Candidate | Recommendation | Risk | Confidence | Summary |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        for item in advisory["decisions"]:
+            identity = item["identity"]
+            label = "PR" if item["kind"] == "pull_request" else "Alert"
+            effective = item["effective_advice"]
+            lines.append(
+                f"| {_escape_markdown(identity.get('repository'))} {label} "
+                f"#{_escape_markdown(identity.get('number', '?'))} | "
+                f"{_escape_markdown(effective['recommended_action'])} | "
+                f"{_escape_markdown(effective['risk_level'])} | "
+                f"{_escape_markdown(effective['confidence'])} | "
+                f"{_escape_markdown(effective['summary'])} |"
+            )
+    if advisory["errors"]:
+        lines.extend(["", "## Advisory errors", ""])
+        for error in advisory["errors"]:
+            lines.append(
+                f"- `{_escape_markdown(error['stage'])}` batch {error['batch']}: "
+                f"{_escape_markdown(error['message'])}"
+            )
+    if advisory["deferred"]:
+        lines.extend(["", "## Deferred candidates", ""])
+        for item in advisory["deferred"]:
+            identity = item.get("identity") or {}
+            lines.append(
+                f"- `{_escape_markdown(item.get('candidate_id'))}` "
+                f"({_escape_markdown(identity.get('repository'))} "
+                f"#{_escape_markdown(identity.get('number', '?'))}): "
+                f"`{_escape_markdown(item.get('reason'))}`"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def render_advisory(report: dict[str, Any], output_format: str) -> str:
+    renderers = {
+        "json": render_json,
+        "text": render_advisory_text,
+        "markdown": render_advisory_markdown,
+    }
+    return renderers[output_format](report)

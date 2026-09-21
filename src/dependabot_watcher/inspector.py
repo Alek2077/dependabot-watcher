@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -37,6 +38,78 @@ def _truncation(surface: str, result: CollectionResult[dict[str, Any]]) -> dict[
         "limit": result.limit,
         "message": f"{surface} exceeded the configured collection limit.",
     }
+
+
+def _pull_request_relationship_evidence(
+    pull_request: dict[str, Any],
+) -> dict[str, Any]:
+    identity = pull_request.get("candidate_identity") or {}
+    trusted_identity = identity if isinstance(identity, dict) else {}
+    return {
+        "number": trusted_identity.get("number"),
+        "expected_base": trusted_identity.get("expected_base"),
+        "observed_base": trusted_identity.get("observed_base"),
+        "head_ref": trusted_identity.get("head_ref"),
+        "head_sha": trusted_identity.get("head_sha"),
+        "classification": pull_request.get("classification"),
+        "reasons": list(pull_request.get("reasons") or []),
+        "checks": pull_request.get("checks"),
+        "mergeable": pull_request.get("mergeable"),
+        "merge_state_status": pull_request.get("merge_state_status"),
+        "is_draft": pull_request.get("is_draft"),
+        "path_assessment": copy.deepcopy(pull_request.get("path_assessment")),
+        "recent_sensitive_overlap": list(pull_request.get("recent_sensitive_overlap") or []),
+        "updated_at": pull_request.get("updated_at"),
+        "mutation_authorized": False,
+    }
+
+
+def _attach_relationship_evidence(
+    pull_requests: list[dict[str, Any]],
+    alerts: list[dict[str, Any]],
+) -> None:
+    pull_requests_by_number: dict[int, dict[str, Any]] = {}
+    for pull_request in pull_requests:
+        identity = pull_request.get("candidate_identity") or {}
+        number = identity.get("number") if isinstance(identity, dict) else None
+        if isinstance(number, int):
+            pull_requests_by_number[number] = pull_request
+
+    related_by_pull_request: dict[int, list[dict[str, Any]]] = {}
+    for alert in alerts:
+        for relationship in alert.get("package_related_open_pull_requests") or []:
+            number = relationship.get("number")
+            if not isinstance(number, int):
+                continue
+            pull_request = pull_requests_by_number.get(number)
+            relationship["pull_request_evidence"] = (
+                _pull_request_relationship_evidence(pull_request)
+                if pull_request is not None
+                else None
+            )
+            related_by_pull_request.setdefault(number, []).append(
+                {
+                    "number": alert.get("number"),
+                    "dependency_name": alert.get("dependency_name"),
+                    "ecosystem": alert.get("ecosystem"),
+                    "severity": alert.get("severity"),
+                    "manifest_path": alert.get("manifest_path"),
+                    "first_patched_version": alert.get("first_patched_version"),
+                    "classification": alert.get("classification"),
+                    "target_version": relationship.get("target_version"),
+                    "manifest_path_matches": relationship.get("manifest_path_matches"),
+                    "patched_version_relation": relationship.get("patched_version_relation"),
+                    "meets_first_patched_version": relationship.get(
+                        "meets_first_patched_version"
+                    ),
+                }
+            )
+    for pull_request in pull_requests:
+        identity = pull_request.get("candidate_identity") or {}
+        number = identity.get("number") if isinstance(identity, dict) else None
+        pull_request["related_alerts"] = (
+            related_by_pull_request.get(number, []) if isinstance(number, int) else []
+        )
 
 
 def _inspect_repository(
@@ -154,6 +227,7 @@ def _inspect_repository(
         correlation_pull_requests,
         recent_merged,
     )
+    _attach_relationship_evidence(pull_request_inspections, correlated_alerts)
     return {
         "repository": repository.name,
         "expected_base": repository.default_branch,

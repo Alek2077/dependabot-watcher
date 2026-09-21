@@ -2,9 +2,9 @@
 
 > A local-first, provider-neutral control plane for inspecting and safely triaging Dependabot activity across multiple repositories.
 
-Dependabot Watcher is currently an **inspection-only private pre-release**. It works with existing Dependabot installations, reads multiple repositories from one command, correlates pull requests with security alerts and recent sensitive changes, and produces text, JSON, or Markdown on stdout.
+Dependabot Watcher is currently a **read-only private pre-release**. It works with existing Dependabot installations, reads multiple repositories from one command, correlates pull requests with security alerts and recent sensitive changes, and produces text, JSON, or Markdown on stdout. Optional provider-neutral advice can interpret that evidence without authorizing or performing GitHub changes.
 
-It does not merge, comment, label, notify, invoke a model, clone target repositories, or write runtime state.
+It does not merge, close, comment, approve, label, notify, clone target repositories, or write persistent runtime state. The default configuration invokes no model.
 
 ## Install and inspect
 
@@ -44,6 +44,15 @@ dependabot-watcher inspect --repo example-org/example-app
 dependabot-watcher inspect --config /path/to/config.toml
 ```
 
+Optional advice is a separate command:
+
+```bash
+dependabot-watcher advise
+dependabot-watcher advise --format json
+```
+
+Advice defaults to `off`. Enabling `economy` or `reviewed` requires explicit provider configuration; see the [configuration reference](docs/configuration.md).
+
 The default config path is `$XDG_CONFIG_HOME/dependabot-watcher/config.toml` or `~/.config/dependabot-watcher/config.toml`. On native Windows it resolves under `%APPDATA%`. `DEPENDABOT_WATCHER_CONFIG` can override it.
 
 ## What inspection covers
@@ -61,12 +70,22 @@ It then correlates alerts with obvious Dependabot PRs and classifies changed pat
 
 `baseline_candidate` is inspection evidence, not merge authorization. Every report explicitly records `mutation_authorized: false`.
 
+## Optional advisory modes
+
+- `off`: deterministic evidence only and zero model calls;
+- `economy`: bounded triage of deterministically prioritized candidates;
+- `reviewed`: bounded triage plus a stronger second pass for ambiguous or higher-risk candidates.
+
+The provider boundary is generic, but only the first-party Codex CLI adapter is currently implemented and tested. It runs non-interactively with an ephemeral session, read-only sandbox, isolated temporary work directory, schema-constrained output, ignored Codex user configuration and exec-policy rules, a sanitized process environment, and explicit timeout/model settings. Web search, shell tools, apps/connectors, dependency-install tools, and subagents are disabled. Codex platform safety still applies, while the watcher's own prompt, schema, and deterministic validator define the portable advisory contract.
+
+Model output is treated as untrusted advice. The watcher binds it back to opaque collector-issued candidate IDs, rejects missing/unknown/duplicate results, and retains collector-owned repository, PR, alert, base, and head identity. Provider failure is reported without erasing deterministic inspection evidence.
+
 ## Safety contract
 
 `inspect` is deliberately side-effect-free within the product boundary:
 
 - GitHub operations are read-only;
-- no model is invoked;
+- no model is invoked by `inspect` or by advisory mode `off`;
 - no report, cache, state, or log is persisted;
 - no notification is sent; and
 - all output goes to stdout, while CLI errors go to stderr.
@@ -80,10 +99,11 @@ Collection limits are explicit. If a repository exceeds one, the report says whi
 | `0` | Complete inspection |
 | `2` | CLI or configuration error |
 | `3` | GitHub CLI/authentication failure before inspection |
-| `4` | Partial inspection because a repository read failed or truncated |
+| `4` | Partial result because inspection or advisory processing was incomplete |
+| `5` | Advisory provider could not be initialized |
 | `70` | Unexpected internal failure |
 
-The JSON output is versioned with `schema_version: 1`. See [the architecture](docs/architecture.md), [output contract](docs/output-contract.md), and [configuration reference](docs/configuration.md).
+The JSON output is versioned with `schema_version: 1`. See [the architecture](docs/architecture.md), [advisory contract](docs/advisory-contract.md), [output contract](docs/output-contract.md), [configuration reference](docs/configuration.md), and [roadmap](docs/roadmap.md).
 
 ## Platform status
 
@@ -91,7 +111,7 @@ The initial implementation targets WSL2 and ordinary Linux. Ubuntu CI covers the
 
 The private pre-release currently retains Python 3.10 compatibility so it can be validated in the existing WSL environment. Before public release, the project must move its minimum to a still-supported Python version and align packaging metadata, classifiers, static analysis, CI, and installation validation with that floor.
 
-The core command is scheduler-independent. Task Scheduler, cron/systemd, launchd, GitHub Actions, model providers, notifications, persistent decision records, and gated mutation belong to later separately tested adapters.
+The core commands are scheduler-independent. Task Scheduler, cron/systemd, launchd, GitHub Actions, additional model providers, notifications, persistent decision records, and gated mutation belong to later separately tested adapters.
 
 ## Development
 

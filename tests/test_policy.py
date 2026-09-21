@@ -182,6 +182,8 @@ def test_alert_correlation_uses_exact_package_name() -> None:
 
     assert result[0]["classification"] == "likely_covered_by_open_pr"
     assert [item["number"] for item in result[0]["matching_open_pull_requests"]] == [2]
+    assert [item["number"] for item in result[0]["package_related_open_pull_requests"]] == [2]
+    assert result[0]["package_related_open_pull_requests"][0]["manifest_path_matches"] is True
 
 
 def test_alert_correlation_does_not_trust_title_alone() -> None:
@@ -246,4 +248,176 @@ def test_related_pr_with_unverified_target_remains_unresolved() -> None:
     result = correlate_alerts("example-org/example-app", alerts, [unpatched], [])
 
     assert result[0]["classification"] == "related_open_pr_unverified"
-    assert result[0]["matching_open_pull_requests"][0]["matches_first_patched_version"] is False
+    match = result[0]["matching_open_pull_requests"][0]
+    assert match["patched_version_relation"] == "older_release"
+    assert match["meets_first_patched_version"] is False
+
+
+def test_package_related_pr_with_different_manifest_remains_unresolved() -> None:
+    alerts = [
+        {
+            "number": 7,
+            "state": "open",
+            "dependency": {
+                "package": {"name": "example-lib", "ecosystem": "pip"},
+                "manifest_path": "requirements-dev.txt",
+            },
+            "security_vulnerability": {
+                "severity": "high",
+                "first_patched_version": {"identifier": "1.1.0"},
+            },
+        }
+    ]
+    same_package_other_manifest = {
+        "number": 42,
+        "title": "Bump example-lib from 1.0.0 to 1.1.0",
+        "url": "example",
+        "author": {"login": "app/dependabot"},
+        "headRefName": "dependabot/pip/example-lib-1.1.0",
+        "files": [{"path": "requirements.txt"}],
+    }
+
+    result = correlate_alerts(
+        "example-org/example-app",
+        alerts,
+        [same_package_other_manifest],
+        [],
+    )
+
+    assert result[0]["classification"] == "unresolved_without_pr"
+    assert result[0]["matching_open_pull_requests"] == []
+    relationship = result[0]["package_related_open_pull_requests"][0]
+    assert relationship["number"] == 42
+    assert relationship["manifest_path_matches"] is False
+    assert relationship["patched_version_relation"] == "exact"
+    assert relationship["meets_first_patched_version"] is True
+
+
+def test_alert_correlation_accepts_equivalent_release_segments() -> None:
+    alerts = [
+        {
+            "number": 7,
+            "state": "open",
+            "dependency": {
+                "package": {"name": "soupsieve", "ecosystem": "pip"},
+                "manifest_path": "requirements.txt",
+            },
+            "security_vulnerability": {
+                "severity": "medium",
+                "first_patched_version": {"identifier": "2.9.0"},
+            },
+        }
+    ]
+    open_prs = [
+        {
+            "number": 501,
+            "title": "Bump soupsieve from 2.8.4 to 2.9",
+            "url": "example",
+            "author": {"login": "app/dependabot"},
+            "headRefName": "dependabot/pip/soupsieve-2.9",
+            "files": [{"path": "requirements.txt"}],
+        }
+    ]
+
+    result = correlate_alerts("example-org/example-app", alerts, open_prs, [])
+
+    assert result[0]["classification"] == "likely_covered_by_open_pr"
+    match = result[0]["matching_open_pull_requests"][0]
+    assert match["patched_version_relation"] == "equivalent_release"
+    assert match["meets_first_patched_version"] is True
+
+
+def test_alert_correlation_does_not_normalize_qualified_versions() -> None:
+    alerts = [
+        {
+            "number": 7,
+            "state": "open",
+            "dependency": {
+                "package": {"name": "example", "ecosystem": "pip"},
+                "manifest_path": "requirements.txt",
+            },
+            "security_vulnerability": {
+                "severity": "high",
+                "first_patched_version": {"identifier": "2.9.0"},
+            },
+        }
+    ]
+    prerelease_pr = {
+        "number": 8,
+        "title": "Bump example from 2.8.0 to 2.9.0rc1",
+        "url": "example",
+        "author": {"login": "app/dependabot"},
+        "headRefName": "dependabot/pip/example-2.9.0rc1",
+        "files": [{"path": "requirements.txt"}],
+    }
+
+    result = correlate_alerts("example-org/example-app", alerts, [prerelease_pr], [])
+
+    assert result[0]["classification"] == "related_open_pr_unverified"
+    match = result[0]["matching_open_pull_requests"][0]
+    assert match["patched_version_relation"] == "unverified"
+    assert match["meets_first_patched_version"] is False
+
+
+def test_alert_correlation_does_not_accept_identical_qualified_versions() -> None:
+    alerts = [
+        {
+            "number": 7,
+            "state": "open",
+            "dependency": {
+                "package": {"name": "example", "ecosystem": "pip"},
+                "manifest_path": "requirements.txt",
+            },
+            "security_vulnerability": {
+                "severity": "high",
+                "first_patched_version": {"identifier": "2.9.0rc1"},
+            },
+        }
+    ]
+    same_qualified_pr = {
+        "number": 8,
+        "title": "Bump example from 2.8.0 to 2.9.0rc1",
+        "url": "example",
+        "author": {"login": "app/dependabot"},
+        "headRefName": "dependabot/pip/example-2.9.0rc1",
+        "files": [{"path": "requirements.txt"}],
+    }
+
+    result = correlate_alerts("example-org/example-app", alerts, [same_qualified_pr], [])
+
+    assert result[0]["classification"] == "related_open_pr_unverified"
+    match = result[0]["matching_open_pull_requests"][0]
+    assert match["patched_version_relation"] == "unverified"
+    assert match["meets_first_patched_version"] is False
+
+
+def test_alert_correlation_accepts_newer_plain_release() -> None:
+    alerts = [
+        {
+            "number": 7,
+            "state": "open",
+            "dependency": {
+                "package": {"name": "example", "ecosystem": "pip"},
+                "manifest_path": "requirements.txt",
+            },
+            "security_vulnerability": {
+                "severity": "high",
+                "first_patched_version": {"identifier": "2.9.0"},
+            },
+        }
+    ]
+    newer_pr = {
+        "number": 8,
+        "title": "Bump example from 2.8.0 to 2.10.0",
+        "url": "example",
+        "author": {"login": "app/dependabot"},
+        "headRefName": "dependabot/pip/example-2.10.0",
+        "files": [{"path": "requirements.txt"}],
+    }
+
+    result = correlate_alerts("example-org/example-app", alerts, [newer_pr], [])
+
+    assert result[0]["classification"] == "likely_covered_by_open_pr"
+    match = result[0]["matching_open_pull_requests"][0]
+    assert match["patched_version_relation"] == "newer_release"
+    assert match["meets_first_patched_version"] is True
