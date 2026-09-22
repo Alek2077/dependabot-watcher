@@ -10,7 +10,8 @@ from .advisory import AdvisoryError, advise
 from .config import ConfigError, WatcherConfig, default_config_path, load_config
 from .github import GhCliClient, GitHubError
 from .inspector import inspect
-from .output import render, render_advisory
+from .output import render, render_advisory, render_plan
+from .planning import PlanningError, plan
 
 
 class ExitCode(IntEnum):
@@ -19,6 +20,7 @@ class ExitCode(IntEnum):
     GITHUB_ERROR = 3
     PARTIAL_INSPECTION = 4
     ADVISORY_ERROR = 5
+    PLANNING_ERROR = 6
     INTERNAL_ERROR = 70
 
 
@@ -34,7 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
         "advise",
         help="Inspect and optionally obtain bounded model advice.",
     )
-    for command_parser in (inspect_parser, advise_parser):
+    plan_parser = commands.add_parser(
+        "plan",
+        help="Build a non-mutating deterministic Recommended Order.",
+    )
+    for command_parser in (inspect_parser, advise_parser, plan_parser):
         command_parser.add_argument(
             "--config",
             type=Path,
@@ -88,6 +94,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "advise":
             report = advise(config, client)
             rendered = render_advisory(report, args.output_format)
+        elif args.command == "plan":
+            report = plan(config, client)
+            rendered = render_plan(report, args.output_format)
         else:  # pragma: no cover - protected by argparse
             parser.error("A command is required.")
     except ConfigError as exc:
@@ -99,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
     except AdvisoryError as exc:
         print(f"Advisory error: {exc}", file=sys.stderr)
         return ExitCode.ADVISORY_ERROR
+    except PlanningError as exc:
+        print(f"Planning error: {exc}", file=sys.stderr)
+        return ExitCode.PLANNING_ERROR
     except Exception as exc:  # defensive CLI boundary
         print(f"Unexpected error: {exc}", file=sys.stderr)
         return ExitCode.INTERNAL_ERROR

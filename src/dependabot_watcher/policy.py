@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from .config import PathPolicyOverrides
+from .github import repository_relative_path
 
 
 DEPENDABOT_AUTHORS = frozenset({"app/dependabot", "dependabot", "dependabot[bot]"})
@@ -352,8 +353,8 @@ def _dependabot_update_from_title(title: str) -> tuple[str, str] | None:
     return (match.group("package").casefold(), match.group("target").casefold().lstrip("v"))
 
 
-def _normalized_repository_path(value: object) -> str:
-    return str(value or "").replace("\\", "/").lstrip("/")
+def _normalized_repository_path(value: object) -> str | None:
+    return repository_relative_path(value)
 
 
 def _release_version_key(value: object) -> tuple[int, ...] | None:
@@ -366,7 +367,7 @@ def _release_version_key(value: object) -> tuple[int, ...] | None:
     return tuple(segments)
 
 
-def _patched_version_match(target: object, first_patched: object) -> str:
+def compare_patched_versions(target: object, first_patched: object) -> str:
     target_text = str(target or "").strip().casefold().lstrip("v")
     patched_text = str(first_patched or "").strip().casefold().lstrip("v")
     if not target_text or not patched_text:
@@ -403,9 +404,10 @@ def _dependabot_pr_relationship(
     if not expected_ecosystem or observed_ecosystem != expected_ecosystem:
         return None
     changed_paths = frozenset(
-        _normalized_repository_path(item.get("path"))
+        normalized
         for item in pull_request.get("files") or []
-        if isinstance(item, dict) and item.get("path")
+        if isinstance(item, dict)
+        and (normalized := _normalized_repository_path(item.get("path"))) is not None
     )
     return (update[1], changed_paths)
 
@@ -415,7 +417,7 @@ def _related_dependabot_pr(
     *,
     package_name: str,
     ecosystem: str,
-    manifest_path: str,
+    manifest_path: str | None,
 ) -> tuple[bool, str | None]:
     relationship = _dependabot_pr_relationship(
         pull_request,
@@ -484,7 +486,7 @@ def correlate_alerts(
             if not relationship:
                 continue
             target_version, changed_paths = relationship
-            patched_version_relation = _patched_version_match(
+            patched_version_relation = compare_patched_versions(
                 target_version,
                 first_patched,
             )

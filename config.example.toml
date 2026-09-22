@@ -6,6 +6,9 @@ max_open_prs = 100
 max_open_alerts = 500
 max_history_items = 200
 max_files_per_pull_request = 500
+max_manifest_files = 50
+max_manifest_file_bytes = 131072
+max_manifest_depth = 5
 command_timeout_seconds = 120
 
 [path_policy]
@@ -22,3 +25,10 @@ default_branch = "main"
 [repositories.path_policy]
 additional_dependency_patterns = ["deps/*.lock"]
 additional_sensitive_patterns = ["ops/production/**"]
+
+[repositories.workflow]
+merge_method = "repository_default"
+# promotion_branch = "main"
+required_checks = []
+deployment_environments = []
+validation_notes = []

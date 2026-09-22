@@ -168,3 +168,79 @@ def test_enabled_codex_advice_requires_explicit_model_and_reasoning() -> None:
 
     with pytest.raises(ConfigError, match="explicit model and reasoning_effort"):
         parse_config(data)
+
+
+def test_repository_workflow_profile_and_manifest_limits_are_typed() -> None:
+    config = parse_config(
+        {
+            "schema_version": 1,
+            "collection": {
+                "max_manifest_files": 20,
+                "max_manifest_file_bytes": 65536,
+                "max_manifest_depth": 4,
+            },
+            "repositories": [
+                {
+                    "name": "example-org/example-app",
+                    "workflow": {
+                        "merge_method": "squash",
+                        "promotion_branch": "production",
+                        "required_checks": ["CI"],
+                        "deployment_environments": ["staging"],
+                        "validation_notes": ["Verify staging deployment."],
+                    },
+                }
+            ],
+        }
+    )
+
+    assert config.collection.max_manifest_files == 20
+    assert config.collection.max_manifest_file_bytes == 65536
+    assert config.collection.max_manifest_depth == 4
+    assert config.repositories[0].workflow.merge_method == "squash"
+    assert config.repositories[0].workflow.promotion_branch == "production"
+    assert config.repositories[0].workflow.required_checks == ("CI",)
+
+
+@pytest.mark.parametrize("merge_method", ["octopus", "fast-forward", ""])
+def test_repository_workflow_profile_rejects_unknown_merge_method(merge_method: str) -> None:
+    with pytest.raises(ConfigError, match="merge_method"):
+        parse_config(
+            {
+                "schema_version": 1,
+                "repositories": [
+                    {
+                        "name": "example-org/example-app",
+                        "workflow": {"merge_method": merge_method},
+                    }
+                ],
+            }
+        )
+
+
+def test_repository_workflow_profile_rejects_multiline_or_unsafe_values() -> None:
+    with pytest.raises(ConfigError, match="single-line"):
+        parse_config(
+            {
+                "schema_version": 1,
+                "repositories": [
+                    {
+                        "name": "example-org/example-app",
+                        "workflow": {"validation_notes": ["first line\nsecond line"]},
+                    }
+                ],
+            }
+        )
+
+    with pytest.raises(ConfigError, match="must not contain whitespace"):
+        parse_config(
+            {
+                "schema_version": 1,
+                "repositories": [
+                    {
+                        "name": "example-org/example-app",
+                        "workflow": {"promotion_branch": "release branch"},
+                    }
+                ],
+            }
+        )
