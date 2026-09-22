@@ -5,6 +5,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -17,6 +18,38 @@ _REPOSITORY_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 class ConfigError(ValueError):
     """Raised when user configuration cannot be trusted."""
+
+
+def normalize_repository_name(value: object, location: str = "repository") -> str:
+    """Return a validated GitHub owner/repository identity."""
+
+    if (
+        not isinstance(value, str)
+        or value.strip().startswith("-")
+        or not _REPOSITORY_NAME.fullmatch(value.strip())
+    ):
+        raise ConfigError(f"{location} must use the 'owner/repository' form.")
+    return value.strip()
+
+
+def normalize_branch_name(value: object, location: str = "branch") -> str:
+    """Return a bounded single-line branch name suitable for encoded API use."""
+
+    if not isinstance(value, str):
+        raise ConfigError(f"{location} must be a non-empty branch name.")
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > 512
+        or any(
+            character.isspace()
+            or ord(character) < 32
+            or ord(character) == 127
+            for character in normalized
+        )
+    ):
+        raise ConfigError(f"{location} must be a non-empty single-line branch name.")
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -87,12 +120,30 @@ class AdvisoryConfig:
 
 
 @dataclass(frozen=True)
+class OperationConfig:
+    autonomy: str = "read_only"
+    mutation_enabled: bool = False
+    report_verbosity: str = "concise"
+    machine_output: str = "json"
+
+
+@dataclass(frozen=True)
+class ProfileMetadata:
+    source: str | None = None
+    created_at: str | None = None
+    confirmed_at: str | None = None
+    last_verified_at: str | None = None
+
+
+@dataclass(frozen=True)
 class WatcherConfig:
     schema_version: int
     repositories: tuple[RepositoryConfig, ...]
     collection: CollectionConfig = field(default_factory=CollectionConfig)
     path_policy: PathPolicyOverrides = field(default_factory=PathPolicyOverrides)
     advisory: AdvisoryConfig = field(default_factory=AdvisoryConfig)
+    operation: OperationConfig = field(default_factory=OperationConfig)
+    profile: ProfileMetadata = field(default_factory=ProfileMetadata)
 
 
 def default_config_path() -> Path:
@@ -139,6 +190,80 @@ def _optional_string(value: object, location: str) -> str | None:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{location} must be a non-empty string when configured.")
     return value.strip()
+
+
+def _optional_timestamp(value: object, location: str) -> str | None:
+    text = _optional_string(value, location)
+    if text is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ConfigError(f"{location} must be an ISO-8601 timestamp.") from exc
+    if parsed.tzinfo is None:
+        raise ConfigError(f"{location} must include a timezone offset.")
+    return text
+
+
+def _operation(value: object) -> OperationConfig:
+    data = _require_mapping({} if value is None else value, "operation")
+    _reject_unknown(
+        data,
+        {"autonomy", "mutation_enabled", "report_verbosity", "machine_output"},
+        "operation",
+    )
+    autonomy = _optional_string(data.get("autonomy", "read_only"), "operation.autonomy")
+    if autonomy != "read_only":
+        raise ConfigError("operation.autonomy currently supports only 'read_only'.")
+    mutation_enabled = data.get("mutation_enabled", False)
+    if not isinstance(mutation_enabled, bool):
+        raise ConfigError("operation.mutation_enabled must be a boolean.")
+    if mutation_enabled:
+        raise ConfigError("operation.mutation_enabled must remain false in this release.")
+    report_verbosity = _optional_string(
+        data.get("report_verbosity", "concise"),
+        "operation.report_verbosity",
+    )
+    if report_verbosity not in {"concise", "standard", "detailed"}:
+        raise ConfigError(
+            "operation.report_verbosity must be one of: concise, standard, detailed."
+        )
+    machine_output = _optional_string(
+        data.get("machine_output", "json"),
+        "operation.machine_output",
+    )
+    if machine_output != "json":
+        raise ConfigError("operation.machine_output currently supports only 'json'.")
+    return OperationConfig(
+        autonomy=autonomy,
+        mutation_enabled=False,
+        report_verbosity=report_verbosity,
+        machine_output=machine_output,
+    )
+
+
+def _profile(value: object) -> ProfileMetadata:
+    data = _require_mapping({} if value is None else value, "profile")
+    _reject_unknown(
+        data,
+        {"source", "created_at", "confirmed_at", "last_verified_at"},
+        "profile",
+    )
+    source = _optional_string(data.get("source"), "profile.source")
+    if source is not None and source not in {"manual", "setup_quick", "setup_advanced"}:
+        raise ConfigError(
+            "profile.source must be one of: manual, setup_quick, setup_advanced."
+        )
+    return ProfileMetadata(
+        source=source,
+        created_at=_optional_timestamp(data.get("created_at"), "profile.created_at"),
+        confirmed_at=_optional_timestamp(
+            data.get("confirmed_at"), "profile.confirmed_at"
+        ),
+        last_verified_at=_optional_timestamp(
+            data.get("last_verified_at"), "profile.last_verified_at"
+        ),
+    )
 
 
 def _patterns(value: object, location: str) -> tuple[str, ...]:
@@ -353,11 +478,19 @@ def _codex_provider(value: object) -> CodexProviderConfig | None:
         return None
     data = _require_mapping(value, "advisory.codex_cli")
     _reject_unknown(data, {"executable", "triage", "review"}, "advisory.codex_cli")
-    return CodexProviderConfig(
-        executable=_optional_string(
+    executable = (
+        _optional_string(
             data.get("executable", "codex"), "advisory.codex_cli.executable"
         )
-        or "codex",
+        or "codex"
+    )
+    if executable != "codex":
+        raise ConfigError(
+            "advisory.codex_cli.executable is fixed to 'codex'; configuration cannot "
+            "redirect provider command execution."
+        )
+    return CodexProviderConfig(
+        executable=executable,
         triage=_codex_stage(data.get("triage"), "advisory.codex_cli.triage"),
         review=_codex_stage(data.get("review"), "advisory.codex_cli.review"),
     )
@@ -403,12 +536,11 @@ def _repository(value: object, index: int) -> RepositoryConfig:
     location = f"repositories[{index}]"
     data = _require_mapping(value, location)
     _reject_unknown(data, {"name", "default_branch", "path_policy", "workflow"}, location)
-    name = data.get("name")
-    if not isinstance(name, str) or not _REPOSITORY_NAME.fullmatch(name.strip()):
-        raise ConfigError(f"{location}.name must use the 'owner/repository' form.")
-    branch = data.get("default_branch", "main")
-    if not isinstance(branch, str) or not branch.strip() or any(char.isspace() for char in branch):
-        raise ConfigError(f"{location}.default_branch must be a non-empty branch name.")
+    name = normalize_repository_name(data.get("name"), f"{location}.name")
+    branch = normalize_branch_name(
+        data.get("default_branch", "main"),
+        f"{location}.default_branch",
+    )
     workflow_data = _require_mapping(data.get("workflow", {}), f"{location}.workflow")
     _reject_unknown(
         workflow_data,
@@ -439,8 +571,8 @@ def _repository(value: object, index: int) -> RepositoryConfig:
             f"{location}.workflow.promotion_branch must not contain whitespace."
         )
     return RepositoryConfig(
-        name=name.strip(),
-        default_branch=branch.strip(),
+        name=name,
+        default_branch=branch,
         path_policy=_path_policy(data.get("path_policy", {}), f"{location}.path_policy"),
         workflow=RepositoryWorkflowConfig(
             merge_method=merge_method,
@@ -464,7 +596,15 @@ def _repository(value: object, index: int) -> RepositoryConfig:
 def parse_config(data: Mapping[str, Any]) -> WatcherConfig:
     _reject_unknown(
         data,
-        {"schema_version", "repositories", "collection", "path_policy", "advisory"},
+        {
+            "schema_version",
+            "repositories",
+            "collection",
+            "path_policy",
+            "advisory",
+            "operation",
+            "profile",
+        },
         "top-level",
     )
     schema_version = data.get("schema_version")
@@ -483,6 +623,8 @@ def parse_config(data: Mapping[str, Any]) -> WatcherConfig:
         collection=_collection(data.get("collection", {})),
         path_policy=_path_policy(data.get("path_policy", {}), "path_policy"),
         advisory=_advisory(data.get("advisory", {})),
+        operation=_operation(data.get("operation", {})),
+        profile=_profile(data.get("profile", {})),
     )
 
 

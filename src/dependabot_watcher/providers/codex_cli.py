@@ -123,6 +123,10 @@ class CodexCliProvider:
     """Invoke first-party Codex through a read-only, ephemeral adapter."""
 
     def __init__(self, config: CodexProviderConfig) -> None:
+        if config.executable != "codex":
+            raise AdvisoryError(
+                "The Codex CLI adapter cannot execute a configuration-selected command."
+            )
         self._config = config
 
     def _stage_config(self, stage: str) -> CodexStageConfig:

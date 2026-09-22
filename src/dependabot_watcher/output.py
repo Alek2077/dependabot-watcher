@@ -12,7 +12,13 @@ def _identity(item: dict[str, Any]) -> dict[str, Any]:
     return item.get("candidate_identity") or {}
 
 
-def render_text(report: dict[str, Any]) -> str:
+def _validate_verbosity(verbosity: str) -> None:
+    if verbosity not in {"concise", "standard", "detailed"}:
+        raise ValueError(f"Unsupported verbosity: {verbosity}.")
+
+
+def render_text(report: dict[str, Any], verbosity: str = "standard") -> str:
+    _validate_verbosity(verbosity)
     summary = report["summary"]
     lines = [
         "Dependabot Watcher inspection",
@@ -38,6 +44,14 @@ def render_text(report: dict[str, Any]) -> str:
                 ),
             ]
         )
+        if verbosity == "concise":
+            for truncation in repository["truncations"]:
+                lines.append(
+                    f"  TRUNCATED: {truncation['surface']} at {truncation['limit']} items"
+                )
+            for error in repository["errors"]:
+                lines.append(f"  ERROR [{error['surface']}]: {error['message']}")
+            continue
         if not repository["pull_requests"]:
             lines.append("  Pull requests: none")
         for pull_request in repository["pull_requests"]:
@@ -48,11 +62,19 @@ def render_text(report: dict[str, Any]) -> str:
             )
             for reason in pull_request.get("reasons", []):
                 lines.append(f"    - {reason}")
+            if verbosity == "detailed":
+                lines.append(
+                    f"    checks={pull_request.get('checks', 'unknown')} | "
+                    f"paths={(pull_request.get('path_assessment') or {}).get('classification', 'unknown')} | "
+                    f"url={identity.get('url') or 'unavailable'}"
+                )
         for alert in repository["alerts"]:
             lines.append(
                 f"  Alert #{alert.get('number', '?')}: {alert.get('dependency_name') or 'unknown package'} "
                 f"({alert.get('severity') or 'unknown severity'}, {alert.get('classification')})"
             )
+            if verbosity == "detailed":
+                lines.append(f"    url={alert.get('url') or alert.get('html_url') or 'unavailable'}")
         if repository["recent_sensitive_merges"]:
             lines.append("  Recent sensitive non-Dependabot merges:")
             for merge in repository["recent_sensitive_merges"]:
@@ -74,7 +96,8 @@ def _escape_markdown(value: object) -> str:
     return str(value or "").replace("|", "\\|").replace("\n", " ")
 
 
-def render_markdown(report: dict[str, Any]) -> str:
+def render_markdown(report: dict[str, Any], verbosity: str = "standard") -> str:
+    _validate_verbosity(verbosity)
     summary = report["summary"]
     lines = [
         "# Dependabot Watcher inspection",
@@ -102,6 +125,20 @@ def render_markdown(report: dict[str, Any]) -> str:
                 "",
             ]
         )
+        if verbosity == "concise":
+            if repository["truncations"] or repository["errors"]:
+                lines.extend(["", "### Collection notes", ""])
+                for truncation in repository["truncations"]:
+                    lines.append(
+                        f"- **Truncated:** `{_escape_markdown(truncation['surface'])}` at "
+                        f"{truncation['limit']} items."
+                    )
+                for error in repository["errors"]:
+                    lines.append(
+                        f"- **Error ({_escape_markdown(error['surface'])}):** "
+                        f"{_escape_markdown(error['message'])}"
+                    )
+            continue
         if repository["pull_requests"]:
             lines.extend(
                 [
@@ -121,6 +158,12 @@ def render_markdown(report: dict[str, Any]) -> str:
                     f"{_escape_markdown(pull_request.get('checks', 'unknown'))} | "
                     f"{_escape_markdown(path_classification)} |"
                 )
+                if verbosity == "detailed":
+                    reasons = "; ".join(pull_request.get("reasons") or []) or "None"
+                    lines.append(
+                        f"  - PR #{_escape_markdown(identity.get('number', '?'))} evidence: "
+                        f"{_escape_markdown(reasons)}"
+                    )
         else:
             lines.append("None.")
         lines.extend(["", "### Alerts", ""])
@@ -175,16 +218,16 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render(report: dict[str, Any], output_format: str) -> str:
-    renderers = {
-        "json": render_json,
-        "text": render_text,
-        "markdown": render_markdown,
-    }
-    return renderers[output_format](report)
+def render(report: dict[str, Any], output_format: str, *, verbosity: str = "standard") -> str:
+    if output_format == "json":
+        return render_json(report)
+    if output_format == "text":
+        return render_text(report, verbosity)
+    return render_markdown(report, verbosity)
 
 
-def render_advisory_text(report: dict[str, Any]) -> str:
+def render_advisory_text(report: dict[str, Any], verbosity: str = "standard") -> str:
+    _validate_verbosity(verbosity)
     advisory = report["advisory"]
     summary = advisory["summary"]
     inspection_summary = report["inspection"]["summary"]
@@ -219,7 +262,14 @@ def render_advisory_text(report: dict[str, Any]) -> str:
             f"{effective['recommended_action']} "
             f"[{effective['risk_level']} risk, {effective['confidence']} confidence{reviewed}]"
         )
-        lines.append(f"  {effective['summary']}")
+        if verbosity != "concise":
+            lines.append(f"  {effective['summary']}")
+        if verbosity == "detailed":
+            lines.append(f"  Rationale: {effective['rationale']}")
+            for evidence in effective.get("evidence") or []:
+                lines.append(f"  Evidence: {evidence}")
+            for question in effective.get("unresolved_questions") or []:
+                lines.append(f"  Unresolved: {question}")
     if advisory["errors"]:
         lines.append("Advisory errors:")
         for error in advisory["errors"]:
@@ -235,7 +285,8 @@ def render_advisory_text(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_advisory_markdown(report: dict[str, Any]) -> str:
+def render_advisory_markdown(report: dict[str, Any], verbosity: str = "standard") -> str:
+    _validate_verbosity(verbosity)
     advisory = report["advisory"]
     summary = advisory["summary"]
     lines = [
@@ -279,6 +330,13 @@ def render_advisory_markdown(report: dict[str, Any]) -> str:
                 f"{_escape_markdown(effective['confidence'])} | "
                 f"{_escape_markdown(effective['summary'])} |"
             )
+            if verbosity == "detailed":
+                lines.append(
+                    f"  - Rationale for `{_escape_markdown(item['candidate_id'])}`: "
+                    f"{_escape_markdown(effective['rationale'])}"
+                )
+    if verbosity == "concise" and advisory["decisions"]:
+        lines = [line for line in lines if not line.startswith("  - Rationale for `")]
     if advisory["errors"]:
         lines.extend(["", "## Advisory errors", ""])
         for error in advisory["errors"]:
@@ -299,13 +357,14 @@ def render_advisory_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_advisory(report: dict[str, Any], output_format: str) -> str:
-    renderers = {
-        "json": render_json,
-        "text": render_advisory_text,
-        "markdown": render_advisory_markdown,
-    }
-    return renderers[output_format](report)
+def render_advisory(
+    report: dict[str, Any], output_format: str, *, verbosity: str = "standard"
+) -> str:
+    if output_format == "json":
+        return render_json(report)
+    if output_format == "text":
+        return render_advisory_text(report, verbosity)
+    return render_advisory_markdown(report, verbosity)
 
 
 def _plan_step_label(step: dict[str, Any]) -> str:
@@ -318,7 +377,21 @@ def _plan_step_label(step: dict[str, Any]) -> str:
     )
 
 
-def render_plan_text(report: dict[str, Any]) -> str:
+def _plan_record_label(record: object) -> str:
+    if not isinstance(record, dict):
+        return str(record)
+    return str(
+        record.get("description")
+        or record.get("name")
+        or record.get("step_id")
+        or record.get("conflicting_step_id")
+        or record.get("type")
+        or "structured requirement"
+    )
+
+
+def render_plan_text(report: dict[str, Any], verbosity: str = "concise") -> str:
+    _validate_verbosity(verbosity)
     summary = report["summary"]
     lines = [
         "Dependabot Watcher maintenance plan",
@@ -365,6 +438,19 @@ def render_plan_text(report: dict[str, Any]) -> str:
                 lines.append(f"       Expected alert impact: {impact_text}")
             for blocker in (step.get("blockers") or [])[:3]:
                 lines.append(f"       Blocker: {blocker}")
+            if verbosity in {"standard", "detailed"}:
+                for prerequisite in step.get("prerequisites") or []:
+                    lines.append(f"       Prerequisite: {_plan_record_label(prerequisite)}")
+                for conflict in step.get("conflicts") or []:
+                    lines.append(f"       Conflict: {_plan_record_label(conflict)}")
+                for gate in step.get("validation_gates") or []:
+                    lines.append(f"       Validation: {_plan_record_label(gate)}")
+            if verbosity == "detailed":
+                freshness = step.get("freshness") or {}
+                lines.append(
+                    f"       Freshness: base={freshness.get('base_sha') or 'unknown'} | "
+                    f"head={freshness.get('head_sha') or 'not applicable'}"
+                )
             lines.append("       Then: re-inspect repository state before continuing.")
         unresolved = repository.get("unresolved_evidence") or {}
         if unresolved.get("errors") or unresolved.get("truncations"):
@@ -372,7 +458,8 @@ def render_plan_text(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_plan_markdown(report: dict[str, Any]) -> str:
+def render_plan_markdown(report: dict[str, Any], verbosity: str = "concise") -> str:
+    _validate_verbosity(verbosity)
     summary = report["summary"]
     lines = [
         "# Dependabot Watcher maintenance plan",
@@ -429,6 +516,25 @@ def render_plan_markdown(report: dict[str, Any]) -> str:
                 lines.append(f"   - Expected alert impact: {_escape_markdown(impact_text)}")
             for blocker in (step.get("blockers") or [])[:3]:
                 lines.append(f"   - Blocker: {_escape_markdown(blocker)}")
+            if verbosity in {"standard", "detailed"}:
+                for prerequisite in step.get("prerequisites") or []:
+                    lines.append(
+                        f"   - Prerequisite: {_escape_markdown(_plan_record_label(prerequisite))}"
+                    )
+                for conflict in step.get("conflicts") or []:
+                    lines.append(
+                        f"   - Conflict: {_escape_markdown(_plan_record_label(conflict))}"
+                    )
+                for gate in step.get("validation_gates") or []:
+                    lines.append(
+                        f"   - Validation: {_escape_markdown(_plan_record_label(gate))}"
+                    )
+            if verbosity == "detailed":
+                freshness = step.get("freshness") or {}
+                lines.append(
+                    f"   - Freshness: base `{_escape_markdown(freshness.get('base_sha') or 'unknown')}`, "
+                    f"head `{_escape_markdown(freshness.get('head_sha') or 'not applicable')}`."
+                )
             lines.append("   - Then: re-inspect repository state before continuing.")
         unresolved = repository.get("unresolved_evidence") or {}
         if unresolved.get("errors") or unresolved.get("truncations"):
@@ -441,10 +547,11 @@ def render_plan_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_plan(report: dict[str, Any], output_format: str) -> str:
-    renderers = {
-        "json": render_json,
-        "text": render_plan_text,
-        "markdown": render_plan_markdown,
-    }
-    return renderers[output_format](report)
+def render_plan(
+    report: dict[str, Any], output_format: str, *, verbosity: str = "concise"
+) -> str:
+    if output_format == "json":
+        return render_json(report)
+    if output_format == "text":
+        return render_plan_text(report, verbosity)
+    return render_plan_markdown(report, verbosity)

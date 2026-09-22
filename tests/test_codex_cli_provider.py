@@ -127,6 +127,11 @@ def test_codex_adapter_reports_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
         provider.analyze(_request(), stage="triage")
 
 
+def test_codex_adapter_rejects_configuration_selected_executable() -> None:
+    with pytest.raises(AdvisoryError, match="cannot execute"):
+        codex_cli.CodexCliProvider(CodexProviderConfig(executable="touch"))
+
+
 def test_codex_adapter_suppresses_failed_process_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

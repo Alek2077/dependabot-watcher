@@ -2,6 +2,8 @@
 
 `dependabot-watcher inspect`, `advise`, and `plan` support `text`, `json`, and `markdown`. None is written to disk by the command.
 
+Human text and Markdown support `concise`, `standard`, and `detailed` verbosity. JSON is identical regardless of the selected human verbosity. Presentation depth never changes evidence collection, provider calls, deterministic policy, or mutation authority.
+
 JSON is the automation contract. Its top-level fields are:
 
 - `schema_version`: output schema version, currently `1`;
@@ -59,3 +61,9 @@ Human text and Markdown emphasize current state and the ordered next steps. JSON
 Conflict records identify overlapping changed paths or shared alert impact between PR steps. They mean that handling either step can stale the other and trigger reinspection; they do not claim that Git has detected a textual merge conflict.
 
 `expected_alert_impact` contains only direct or likely alert relationships. `related_alerts` retains the complete relationship evidence, including indirect and unverified associations, so structured consumers do not have to interpret mere relatedness as predicted remediation.
+
+## Operational output
+
+`dependabot-watcher doctor` emits a separate versioned report with runtime details, sanitized tool readiness, configuration/profile status, configured repository and branch access, the configuration path actually detected, ecosystems/support depth, findings, and all mutation/model/persistence capabilities explicitly false. A doctor status of `attention` or `blocked` exits with code `4`; the report remains available on stdout.
+
+`dependabot-watcher setup` emits a versioned receipt for the one configuration file it explicitly created, the selected repositories and safe operation settings, verification state, and exact next commands. Its `persistent_local_writes` capability is true because setup is explicitly a configuration-writing command; model calls, GitHub mutation, notifications, and scheduling remain false. Operational reports use the same established `persistent_local_writes` and `github_mutations` capability keys as inspection, advice, and planning.

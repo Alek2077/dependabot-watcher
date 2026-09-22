@@ -12,7 +12,7 @@ from dependabot_watcher.config import parse_config
 from dependabot_watcher.github import CollectionResult
 from dependabot_watcher.inspector import inspect
 from dependabot_watcher.inspector import _manifest_relationship_path
-from dependabot_watcher.output import render_json, render_markdown, render_text
+from dependabot_watcher.output import render, render_json, render_markdown, render_text
 
 
 class FakeClient:
@@ -258,6 +258,56 @@ def test_all_output_formats_include_core_evidence() -> None:
     assert "| #42 |" in render_markdown(report)
     assert "### Recent sensitive non-Dependabot merges" in render_markdown(report)
     assert ".github/workflows/release.yml" in render_markdown(report)
+
+
+def test_human_verbosity_changes_presentation_but_not_json_contract() -> None:
+    report = inspect(config(), FakeClient(sensitive_history=True))
+
+    concise = render(report, "text", verbosity="concise")
+    standard = render(report, "text", verbosity="standard")
+    detailed = render(report, "text", verbosity="detailed")
+
+    assert "PR #42" not in concise
+    assert "PR #42" in standard
+    assert "checks=passing" in detailed
+    assert len(concise) < len(standard) < len(detailed)
+    assert json.loads(render(report, "json", verbosity="concise")) == json.loads(
+        render(report, "json", verbosity="detailed")
+    )
+
+
+def test_cli_uses_profile_verbosity_and_allows_explicit_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "schema_version = 1\n"
+        "[operation]\n"
+        'report_verbosity = "concise"\n'
+        "[[repositories]]\n"
+        'name = "example-org/example-app"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "GhCliClient", lambda **kwargs: FakeClient())
+
+    assert cli.main(["inspect", "--config", str(config_path)]) == cli.ExitCode.SUCCESS
+    assert "PR #42" not in capsys.readouterr().out
+
+    assert (
+        cli.main(
+            [
+                "inspect",
+                "--config",
+                str(config_path),
+                "--verbosity",
+                "detailed",
+            ]
+        )
+        == cli.ExitCode.SUCCESS
+    )
+    assert "PR #42" in capsys.readouterr().out
 
 
 def test_cli_json_success_uses_stdout_only(

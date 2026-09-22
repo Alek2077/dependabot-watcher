@@ -2,6 +2,8 @@
 
 Dependabot Watcher is being restored in bounded phases. This roadmap records product boundaries and future design constraints; it is not a promise that every listed capability ships in the first public release.
 
+Historical phase requirements remain as design records. Record verified delivery status separately rather than rewriting prior requirements as completed behavior.
+
 The current read-only position remains “a local-first, provider-neutral control plane for inspecting and safely triaging Dependabot activity across multiple repositories.” The intended mature position is safe automation of the Dependabot maintenance loop, not full repository maintenance: collect evidence, recommend an order, recheck live state, execute only policy-authorized actions, and retain a concise human summary plus complete structured audit evidence.
 
 ## Delivered foundation
@@ -13,7 +15,9 @@ The current read-only position remains “a local-first, provider-neutral contro
 - One isolated Codex CLI adapter with explicit model/reasoning configuration.
 - Collector-owned candidate identity and advisory-only model output.
 
-## Current phase: deterministic recommended-order planning
+## Phase 4 design contract and delivery status
+
+The following requirements recorded the Phase 4 design contract before implementation:
 
 Before adding mutation, scheduling, or many more providers, add a first-class planning layer for non-trivial queues:
 
@@ -36,7 +40,7 @@ Bind every plan to its evidence snapshot: repository/base state, PR head SHA, ch
 
 Dogfood this layer against real multi-item queues before treating the exact presentation or ordering policy as settled user demand.
 
-The current Phase 4 implementation adds the non-mutating `plan` command, complete-queue deterministic ordering, base/head/alert freshness binding, optional repository workflow profiles, and bounded Python requirements-inclusion evidence. It deliberately leaves plan execution, persistent decision history, general dependency-graph resolution, and mutation for later phases. This phase is not considered complete until current-tree live dogfood and independent review finish.
+The Phase 4 implementation added the non-mutating `plan` command, complete-queue deterministic ordering, base/head/alert freshness binding, optional repository workflow profiles, and bounded Python requirements-inclusion evidence. It deliberately leaves plan execution, persistent decision history, general dependency-graph resolution, and mutation for later phases. Current-tree live dogfood and independent review completed before merge.
 
 ### Cross-ecosystem support contract
 
@@ -58,9 +62,11 @@ Context collection should be progressive rather than artificially minimal. A pro
 
 Provider neutrality includes multiple transport types. An adapter may use an officially supported subscription-authenticated local CLI, a direct provider API, an aggregation service, or a compatible endpoint. Setup must state which transport is active, whether it can incur separate cost, and what authentication mechanism the provider officially supports. The product must not read secret files, silently enable spending, or imply that subscription authentication exists where the provider does not offer it.
 
-## Then: setup, deployment, and operational profile
+## Current phase: setup, discovery, and operational profile
 
-The next product layer should reduce setup friction without weakening consent, privacy, or deterministic safety.
+This product layer reduces setup friction without weakening consent, privacy, or deterministic safety.
+
+The Phase 5 implementation is adding `doctor`, exclusive safe setup, versioned operational metadata in the existing configuration source of truth, and presentation-only human verbosity. It remains incomplete until deterministic validation, installed-path dogfood, live read-only preflight, and independent review finish.
 
 ### Read-only environment discovery
 

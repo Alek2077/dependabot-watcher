@@ -2,6 +2,16 @@
 
 Dependabot Watcher has a side-effect-free inspection core, an optional advisory layer, and a deterministic planning layer.
 
+The documentation and command contracts are maintained for both human operators and capable automation agents. Future changes should preserve explicit scope and authority, structured evidence, and clear operational commands.
+
+Phase 5 adds an operational edge around those product layers:
+
+```text
+setup -> versioned non-secret profile -> doctor -> inspect / advise / plan
+  |                                      |
+  +-- explicit local write only          +-- bounded read-only discovery
+```
+
 ```text
 TOML configuration
         |
@@ -43,6 +53,9 @@ inspection + optional advice -> deterministic evidence graph -> Recommended Orde
 ## Ownership boundaries
 
 - `config.py` owns schema versioning, validation, platform config paths, collection bounds, repository identities, and user path-policy overrides.
+- `setup.py` owns validated setup choices and exclusive creation of one non-secret user profile. It does not overwrite existing configuration or invoke a model.
+- `diagnostics.py` owns bounded executable/auth/repository/configured-branch readiness checks and Dependabot ecosystem support reporting. Provider commands are adapter-owned rather than configuration-selected, repository YAML is safely bounded, and raw command output is not retained in reports.
+- `operational_output.py` renders setup and diagnostic reports without mixing them into inspection evidence.
 - `github.py` owns the read-only GitHub adapter. The inspector depends on the `GitHubClient` protocol rather than subprocess details.
 - `policy.py` owns deterministic path categorization, check-state assessment, collector-owned candidate identity, recent-sensitive-change matching, and alert correlation.
 - `inspector.py` owns bounded multi-repository orchestration and explicit partial-result accounting.
@@ -71,6 +84,9 @@ The GitHub collection and planning contracts are ecosystem-neutral wherever GitH
 - A `baseline_candidate` classification is evidence for later policy evaluation, never authorization to merge.
 - Plans bind repository/base state, alert snapshot, and PR head state; every step requires reinspection and remains non-mutating.
 - Repository workflow strings are displayed as configuration evidence and are never executed.
+- Configuration cannot claim mutation authority in Phase 5: autonomy is `read_only` and mutation must be false.
+- Human verbosity changes presentation only; JSON evidence, collection, workload, and authority are invariant.
+- Setup can persist only the explicitly requested non-secret profile; doctor remains non-persistent and model-free.
 
 ## Advisory modes
 
