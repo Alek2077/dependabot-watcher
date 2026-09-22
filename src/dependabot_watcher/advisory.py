@@ -182,7 +182,16 @@ def _build_candidates(
         for alert in repository_report.get("alerts") or []:
             if not isinstance(alert, dict):
                 continue
-            if alert.get("classification") == "likely_covered_by_open_pr":
+            relationships = alert.get("package_related_open_pull_requests") or []
+            has_planning_coverage = any(
+                isinstance(relationship, dict)
+                and relationship.get("coverage_evidence") in {"direct", "likely"}
+                for relationship in relationships
+            )
+            if (
+                alert.get("classification") == "likely_covered_by_open_pr"
+                or has_planning_coverage
+            ):
                 continue
             repository_candidates.append(_alert_candidate(repository, alert))
         if repository_complete:

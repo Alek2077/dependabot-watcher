@@ -11,6 +11,7 @@ from dependabot_watcher import cli
 from dependabot_watcher.config import parse_config
 from dependabot_watcher.github import CollectionResult
 from dependabot_watcher.inspector import inspect
+from dependabot_watcher.inspector import _manifest_relationship_path
 from dependabot_watcher.output import render_json, render_markdown, render_text
 
 
@@ -29,6 +30,20 @@ class FakeClient:
 
     def validate_auth(self) -> None:
         self.auth_checked = True
+
+    def fetch_branch_head(self, repository: str, branch: str) -> str:
+        assert repository == "example-org/example-app"
+        assert branch == "main"
+        return "base123"
+
+    def fetch_text_file(
+        self,
+        repository: str,
+        path: str,
+        ref: str,
+        max_bytes: int,
+    ) -> str:
+        raise AssertionError("No requirements-file evidence is expected in this fixture.")
 
     def list_open_dependabot_prs(self, repository: str, limit: int):
         return CollectionResult(
@@ -112,6 +127,41 @@ class FakeClient:
         return CollectionResult(items=items, truncated=self.truncate_history, limit=limit)
 
 
+class ManifestRelationshipClient(FakeClient):
+    def list_open_dependabot_alerts(self, repository: str, limit: int):
+        result = super().list_open_dependabot_alerts(repository, limit)
+        item = dict(result.items[0])
+        item["dependency"] = {
+            "package": {"name": "example-lib", "ecosystem": "pip"},
+            "manifest_path": "requirements-dev.txt",
+        }
+        return CollectionResult(items=(item,), limit=limit)
+
+    def fetch_pull_request(
+        self,
+        repository: str,
+        number: int,
+        file_limit: int,
+    ) -> dict[str, Any]:
+        details = super().fetch_pull_request(repository, number, file_limit)
+        details["files"] = [{"path": "requirements.txt"}]
+        return details
+
+    def fetch_text_file(
+        self,
+        repository: str,
+        path: str,
+        ref: str,
+        max_bytes: int,
+    ) -> str:
+        assert ref == "base123"
+        files = {
+            "requirements-dev.txt": "-r requirements.txt\n",
+            "requirements.txt": "example-lib==1.1.0\n",
+        }
+        return files[path]
+
+
 def config():
     return parse_config(
         {
@@ -135,11 +185,16 @@ def test_inspection_is_complete_and_explicitly_non_mutating() -> None:
     assert report["status"] == "complete"
     assert report["summary"]["open_pull_request_count"] == 1
     assert report["repositories"][0]["alerts"][0]["classification"] == "likely_covered_by_open_pr"
+    assert report["repositories"][0]["evidence_snapshot"] == {
+        "base_sha": "base123",
+        "observed_at": "2026-09-19T12:00:00Z",
+    }
     related_alert = report["repositories"][0]["pull_requests"][0]["related_alerts"][0]
     assert related_alert["number"] == 7
     assert related_alert["severity"] == "high"
     assert related_alert["manifest_path_matches"] is True
     assert related_alert["meets_first_patched_version"] is True
+    assert related_alert["coverage_evidence"] == "direct"
     related_pull_request = report["repositories"][0]["alerts"][0][
         "package_related_open_pull_requests"
     ][0]["pull_request_evidence"]
@@ -157,6 +212,29 @@ def test_truncation_makes_inspection_partial() -> None:
 
     assert report["status"] == "partial"
     assert report["summary"]["truncation_count"] == 1
+
+
+def test_manifest_inheritance_is_likely_evidence_without_changing_alert_classification() -> None:
+    report = inspect(config(), ManifestRelationshipClient())
+
+    repository = report["repositories"][0]
+    alert = repository["alerts"][0]
+    relationship = alert["package_related_open_pull_requests"][0]
+    related_alert = repository["pull_requests"][0]["related_alerts"][0]
+
+    assert alert["classification"] == "unresolved_without_pr"
+    assert relationship["coverage_evidence"] == "likely"
+    assert relationship["manifest_relationship_path"] == [
+        "requirements-dev.txt",
+        "requirements.txt",
+    ]
+    assert related_alert["coverage_evidence"] == "likely"
+
+
+def test_same_manifest_relationship_preserves_provenance() -> None:
+    assert _manifest_relationship_path({}, "requirements.txt", "requirements.txt") == [
+        "requirements.txt"
+    ]
 
 
 def test_incomplete_sensitive_history_blocks_baseline_candidate() -> None:
@@ -277,3 +355,29 @@ def test_cli_advise_defaults_to_model_off(
     assert payload["mode"] == "advise"
     assert payload["advisory"]["status"] == "disabled"
     assert payload["capabilities"]["model_calls"] is False
+
+
+def test_cli_plan_defaults_to_model_off_and_prints_recommended_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "schema_version = 1\n"
+        "[advisory]\n"
+        'mode = "off"\n'
+        "[[repositories]]\n"
+        'name = "example-org/example-app"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "GhCliClient", lambda **kwargs: FakeClient())
+
+    exit_code = cli.main(["plan", "--config", str(config_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.ExitCode.SUCCESS
+    assert "Dependabot Watcher maintenance plan" in captured.out
+    assert "Recommended Order" in captured.out
+    assert "Mutation authorized: no" in captured.out
+    assert captured.err == ""

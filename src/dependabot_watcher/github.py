@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import base64
 import json
+import posixpath
 import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Generic, Protocol, Sequence, TypeVar
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 
 class GitHubError(RuntimeError):
@@ -25,6 +27,16 @@ class CollectionResult(Generic[T]):
 
 class GitHubClient(Protocol):
     def validate_auth(self) -> None: ...
+
+    def fetch_branch_head(self, repository: str, branch: str) -> str: ...
+
+    def fetch_text_file(
+        self,
+        repository: str,
+        path: str,
+        ref: str,
+        max_bytes: int,
+    ) -> str: ...
 
     def list_open_dependabot_prs(self, repository: str, limit: int) -> CollectionResult[dict[str, Any]]: ...
 
@@ -50,6 +62,32 @@ class GitHubClient(Protocol):
 CommandRunner = Callable[[Sequence[str], int], str]
 
 
+def repository_relative_path(value: object) -> str | None:
+    """Return one canonical repository-relative path or reject unsafe/ambiguous input."""
+
+    if not isinstance(value, str) or not value or value != value.strip():
+        return None
+    candidate = value.replace("\\", "/")
+    parsed = urlsplit(candidate)
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or candidate.startswith(("/", "~"))
+        or "$" in candidate
+        or any(ord(character) < 32 for character in candidate)
+    ):
+        return None
+    parts = candidate.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return None
+    normalized = posixpath.normpath(candidate)
+    if normalized != candidate or normalized in {"", ".", ".."} or normalized.startswith("../"):
+        return None
+    return normalized
+
+
 def _run_command(command: Sequence[str], timeout_seconds: int) -> str:
     try:
         result = subprocess.run(
@@ -73,6 +111,8 @@ def _run_command(command: Sequence[str], timeout_seconds: int) -> str:
 
 class GhCliClient:
     """Read-only GitHub client implemented through an authenticated `gh` CLI."""
+
+    _MAX_ALERT_PAGES: int = 500
 
     def __init__(self, *, timeout_seconds: int = 120, runner: CommandRunner = _run_command) -> None:
         self._timeout_seconds = timeout_seconds
@@ -150,6 +190,7 @@ class GhCliClient:
                 "headRefOid",
                 "baseRefName",
                 "mergedAt",
+                "updatedAt",
             ):
                 if text_field in required_fields and not isinstance(item.get(text_field), str):
                     raise GitHubError(
@@ -195,10 +236,14 @@ class GhCliClient:
             package.get("ecosystem"),
             f"Dependabot alert package ecosystem at index {index}",
         )
-        cls._non_empty_string(
+        manifest_path = cls._non_empty_string(
             dependency.get("manifest_path"),
             f"Dependabot alert manifest path at index {index}",
         )
+        if repository_relative_path(manifest_path) is None:
+            raise GitHubError(
+                f"GitHub Dependabot alert item at index {index} has an unsafe manifest path."
+            )
         first_patched = vulnerability.get("first_patched_version")
         if first_patched is not None:
             if not isinstance(first_patched, dict):
@@ -234,6 +279,7 @@ class GhCliClient:
             "baseRefName",
             "mergeable",
             "mergeStateStatus",
+            "updatedAt",
         ):
             cls._non_empty_string(item.get(field), f"pull-request #{requested_number} {field}")
         if not isinstance(item.get("isDraft"), bool):
@@ -248,6 +294,71 @@ class GhCliClient:
 
     def validate_auth(self) -> None:
         self._run(["auth", "status", "--active"])
+
+    def fetch_branch_head(self, repository: str, branch: str) -> str:
+        value = self._json(
+            [
+                "api",
+                f"/repos/{repository}/commits/{quote(branch, safe='')}",
+            ]
+        )
+        if not isinstance(value, dict):
+            raise GitHubError(
+                f"GitHub returned unexpected branch-head data for {repository}:{branch}."
+            )
+        return self._non_empty_string(
+            value.get("sha"),
+            f"branch-head SHA for {repository}:{branch}",
+        )
+
+    def fetch_text_file(
+        self,
+        repository: str,
+        path: str,
+        ref: str,
+        max_bytes: int,
+    ) -> str:
+        normalized = repository_relative_path(path)
+        if normalized is None:
+            raise GitHubError("Repository file path must be a safe repository-relative path.")
+        value = self._json(
+            [
+                "api",
+                f"/repos/{repository}/contents/{quote(normalized, safe='/')}?{urlencode({'ref': ref})}",
+            ]
+        )
+        if not isinstance(value, dict) or value.get("type") != "file":
+            raise GitHubError(
+                f"GitHub returned unexpected file content for {repository}:{normalized}."
+            )
+        size = value.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise GitHubError(f"GitHub returned malformed file size for {repository}:{normalized}.")
+        if size > max_bytes:
+            raise GitHubError(
+                f"Repository file {normalized} exceeds the configured ceiling of {max_bytes} bytes."
+            )
+        if value.get("encoding") != "base64" or not isinstance(value.get("content"), str):
+            raise GitHubError(
+                f"GitHub returned unsupported file encoding for {repository}:{normalized}."
+            )
+        try:
+            encoded = "".join(value["content"].split())
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise GitHubError(
+                f"GitHub returned malformed base64 content for {repository}:{normalized}."
+            ) from exc
+        if len(raw) > max_bytes:
+            raise GitHubError(
+                f"Repository file {normalized} exceeds the configured ceiling of {max_bytes} bytes."
+            )
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise GitHubError(
+                f"Repository file {normalized} is not valid UTF-8 text."
+            ) from exc
 
     def _list_pull_request_files(
         self,
@@ -277,8 +388,8 @@ class GhCliClient:
                     raise GitHubError(
                         f"GitHub returned a malformed file item for PR #{number} at index {index}."
                     )
-                path = item.get("filename")
-                if not isinstance(path, str) or not path.strip():
+                path = repository_relative_path(item.get("filename"))
+                if path is None:
                     raise GitHubError(
                         f"GitHub returned a malformed file path for PR #{number} at index {index}."
                     )
@@ -332,6 +443,7 @@ class GhCliClient:
                 "number",
                 "title",
                 "url",
+                "updatedAt",
                 "headRefName",
                 "headRefOid",
                 "baseRefName",
@@ -347,7 +459,18 @@ class GhCliClient:
     ) -> CollectionResult[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         cursor: str | None = None
+        seen_cursors: set[str] = set()
+        page_count = 0
         while True:
+            if page_count >= self._MAX_ALERT_PAGES:
+                raise GitHubError(
+                    "Dependabot alert pagination exceeded the bounded page ceiling."
+                )
+            if cursor is not None:
+                if cursor in seen_cursors:
+                    raise GitHubError("Dependabot alert pagination repeated a cursor.")
+                seen_cursors.add(cursor)
+            page_count += 1
             remaining = limit + 1 - len(items)
             query = {"state": "open", "per_page": str(min(100, remaining))}
             if cursor:
@@ -366,12 +489,18 @@ class GhCliClient:
             )
             for index, item in enumerate(validated):
                 self._validate_alert(item, index)
+            prior_count = len(items)
             items.extend(validated)
             if len(items) > limit:
                 break
-            cursor = self._next_cursor(headers)
-            if not cursor:
+            next_cursor = self._next_cursor(headers)
+            if not next_cursor:
                 break
+            if len(items) == prior_count:
+                raise GitHubError(
+                    "Dependabot alert pagination returned no items but advertised another page."
+                )
+            cursor = next_cursor
         return self._bounded(items, limit)
 
     def fetch_pull_request(
@@ -403,6 +532,7 @@ class GhCliClient:
                 "number",
                 "title",
                 "url",
+                "updatedAt",
                 "headRefName",
                 "headRefOid",
                 "baseRefName",

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .config import RepositoryConfig, WatcherConfig
 from .github import CollectionResult, GitHubClient, GitHubError
+from .manifests import collect_manifest_evidence
 from .policy import (
     assess_pull_request,
     build_path_policy,
@@ -102,6 +104,10 @@ def _attach_relationship_evidence(
                     "meets_first_patched_version": relationship.get(
                         "meets_first_patched_version"
                     ),
+                    "coverage_evidence": relationship.get("coverage_evidence"),
+                    "manifest_relationship_path": list(
+                        relationship.get("manifest_relationship_path") or []
+                    ),
                 }
             )
     for pull_request in pull_requests:
@@ -112,16 +118,111 @@ def _attach_relationship_evidence(
         )
 
 
+def _manifest_relationship_path(
+    evidence: dict[str, Any],
+    source: object,
+    target: object,
+) -> list[str]:
+    source_path = str(source or "").replace("\\", "/").lstrip("/")
+    target_path = str(target or "").replace("\\", "/").lstrip("/")
+    if not source_path or not target_path:
+        return []
+    if source_path == target_path:
+        return [source_path]
+    adjacency: dict[str, set[str]] = {}
+    for relationship in evidence.get("relationships") or []:
+        if not isinstance(relationship, dict):
+            continue
+        parent = str(relationship.get("source_manifest") or "")
+        child = str(relationship.get("included_manifest") or "")
+        if parent and child:
+            adjacency.setdefault(parent, set()).add(child)
+    queue: list[tuple[str, list[str]]] = [(source_path, [source_path])]
+    visited = {source_path}
+    while queue:
+        current, path = queue.pop(0)
+        for child in sorted(adjacency.get(current, set())):
+            if child == target_path:
+                return [*path, child]
+            if child not in visited:
+                visited.add(child)
+                queue.append((child, [*path, child]))
+    return []
+
+
+def _classify_relationship_evidence(
+    alerts: list[dict[str, Any]],
+    manifest_evidence: dict[str, Any],
+    pull_requests: list[dict[str, Any]],
+) -> None:
+    pull_requests_by_number: dict[int, dict[str, Any]] = {}
+    for pull_request in pull_requests:
+        identity = pull_request.get("candidate_identity") or {}
+        number = identity.get("number") if isinstance(identity, dict) else None
+        if isinstance(number, int):
+            pull_requests_by_number[number] = pull_request
+    for alert in alerts:
+        alert_manifest = alert.get("manifest_path")
+        for relationship in alert.get("package_related_open_pull_requests") or []:
+            if not isinstance(relationship, dict):
+                continue
+            meets_patch = relationship.get("meets_first_patched_version") is True
+            if relationship.get("manifest_path_matches") and meets_patch:
+                relationship["coverage_evidence"] = "direct"
+                relationship["manifest_relationship_path"] = [str(alert_manifest or "")]
+                continue
+            relationship_number = relationship.get("number")
+            pull_request = (
+                pull_requests_by_number.get(relationship_number)
+                if isinstance(relationship_number, int)
+                else None
+            )
+            path_assessment = (
+                pull_request.get("path_assessment") if pull_request is not None else {}
+            ) or {}
+            changed_paths = [
+                item.get("path")
+                for item in path_assessment.get("files") or []
+                if isinstance(item, dict) and item.get("path")
+            ]
+            inclusion_path: list[str] = []
+            for changed_path in changed_paths:
+                inclusion_path = _manifest_relationship_path(
+                    manifest_evidence,
+                    alert_manifest,
+                    changed_path,
+                )
+                if inclusion_path:
+                    break
+            if inclusion_path and meets_patch:
+                relationship["coverage_evidence"] = "likely"
+                relationship["manifest_relationship_path"] = inclusion_path
+            elif meets_patch:
+                relationship["coverage_evidence"] = "indirect"
+                relationship["manifest_relationship_path"] = []
+            else:
+                relationship["coverage_evidence"] = "unverified"
+                relationship["manifest_relationship_path"] = inclusion_path
+
+
 def _inspect_repository(
     config: WatcherConfig,
     repository: RepositoryConfig,
     client: GitHubClient,
+    *,
+    observed_at: str,
 ) -> dict[str, Any]:
     errors: list[dict[str, str]] = []
     truncations: list[dict[str, Any]] = []
     open_prs: tuple[dict[str, Any], ...] = ()
     alerts: tuple[dict[str, Any], ...] = ()
     recent_merged: tuple[dict[str, Any], ...] = ()
+    base_sha: str | None = None
+
+    try:
+        base_sha = client.fetch_branch_head(repository.name, repository.default_branch)
+    except GitHubError as exc:
+        errors.append(_collection_error(repository.name, "default_branch_head", exc))
 
     collection_calls = (
         (
@@ -188,19 +289,19 @@ def _inspect_repository(
                 config.collection.max_files_per_pull_request,
             )
             correlation_pull_requests.append(details)
-            pull_request_inspections.append(
-                assess_pull_request(
-                    repository=repository.name,
-                    expected_base=repository.default_branch,
-                    details=details,
-                    recent_sensitive=recent_sensitive,
-                    policy=path_policy,
-                    sensitive_history_complete=(
-                        "recent_merged_pull_requests" in collected
-                        and not collected["recent_merged_pull_requests"].truncated
-                    ),
-                )
+            assessment = assess_pull_request(
+                repository=repository.name,
+                expected_base=repository.default_branch,
+                details=details,
+                recent_sensitive=recent_sensitive,
+                policy=path_policy,
+                sensitive_history_complete=(
+                    "recent_merged_pull_requests" in collected
+                    and not collected["recent_merged_pull_requests"].truncated
+                ),
             )
+            assessment["evidence_observed_at"] = observed_at
+            pull_request_inspections.append(assessment)
         except GitHubError as exc:
             errors.append(_collection_error(repository.name, f"pull_request_details:{number}", exc))
             pull_request_inspections.append(
@@ -227,10 +328,60 @@ def _inspect_repository(
         correlation_pull_requests,
         recent_merged,
     )
+    manifest_seed_paths = [
+        str(alert.get("manifest_path") or "")
+        for alert in correlated_alerts
+        if str(alert.get("ecosystem") or "").casefold() == "pip"
+    ]
+    manifest_evidence: dict[str, Any]
+    if base_sha is None:
+        manifest_evidence = {
+            "status": "unavailable",
+            "base_sha": None,
+            "files": [],
+            "relationships": [],
+            "errors": [
+                {
+                    "path": None,
+                    "message": "Manifest evidence requires a collected default-branch head SHA.",
+                }
+            ],
+            "truncations": [],
+        }
+    else:
+        manifest_evidence = collect_manifest_evidence(
+            repository=repository.name,
+            base_sha=base_sha,
+            seed_paths=manifest_seed_paths,
+            client=client,
+            max_files=config.collection.max_manifest_files,
+            max_file_bytes=config.collection.max_manifest_file_bytes,
+            max_depth=config.collection.max_manifest_depth,
+        )
+    for error in manifest_evidence.get("errors") or []:
+        errors.append(
+            {
+                "repository": repository.name,
+                "surface": f"manifest_file:{error.get('path') or 'unknown'}",
+                "message": str(error.get("message") or "Manifest evidence collection failed."),
+            }
+        )
+    truncations.extend(manifest_evidence.get("truncations") or [])
+    _classify_relationship_evidence(
+        correlated_alerts,
+        manifest_evidence,
+        pull_request_inspections,
+    )
     _attach_relationship_evidence(pull_request_inspections, correlated_alerts)
     return {
         "repository": repository.name,
         "expected_base": repository.default_branch,
+        "evidence_snapshot": {
+            "base_sha": base_sha,
+            "observed_at": observed_at,
+        },
+        "workflow_profile": asdict(repository.workflow),
+        "manifest_evidence": manifest_evidence,
         "pull_requests": pull_request_inspections,
         "alerts": correlated_alerts,
         "recent_sensitive_merges": recent_sensitive,
@@ -262,8 +413,9 @@ def inspect(
     """Return a model-free, read-only inspection report without persistent writes."""
 
     client.validate_auth()
+    generated_at = _timestamp(clock())
     repositories = [
-        _inspect_repository(config, repository, client)
+        _inspect_repository(config, repository, client, observed_at=generated_at)
         for repository in config.repositories
     ]
     error_count = sum(item["summary"]["error_count"] for item in repositories)
@@ -271,7 +423,7 @@ def inspect(
     return {
         "schema_version": 1,
         "mode": "inspect",
-        "generated_at": _timestamp(clock()),
+        "generated_at": generated_at,
         "status": "partial" if error_count or truncation_count else "complete",
         "capabilities": {
             "model_calls": False,

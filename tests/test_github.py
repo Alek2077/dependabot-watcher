@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any, Callable, Sequence
 from urllib.parse import parse_qs, urlsplit
@@ -14,6 +15,7 @@ def open_pr(number: int) -> dict[str, Any]:
         "number": number,
         "title": f"Bump example-lib to {number}.0.0",
         "url": f"https://github.com/example-org/example-app/pull/{number}",
+        "updatedAt": "2026-09-21T08:00:00Z",
         "headRefName": f"dependabot/pip/example-lib-{number}.0.0",
         "headRefOid": f"sha-{number}",
         "baseRefName": "main",
@@ -41,6 +43,90 @@ def pull_request_details(number: int) -> dict[str, Any]:
         "statusCheckRollup": [],
         "files": [{"path": "pyproject.toml"}],
     }
+
+
+def test_branch_head_uses_read_only_commit_lookup() -> None:
+    captured: list[str] = []
+
+    def runner(command: Sequence[str], timeout: int) -> str:
+        captured.extend(command)
+        return json.dumps({"sha": "base123"})
+
+    result = GhCliClient(runner=runner).fetch_branch_head(
+        "example-org/example-app", "release/next"
+    )
+
+    assert result == "base123"
+    assert captured == [
+        "gh",
+        "api",
+        "/repos/example-org/example-app/commits/release%2Fnext",
+    ]
+
+
+def test_text_file_read_is_bounded_and_decodes_base64() -> None:
+    captured: list[str] = []
+    content = b"-r requirements.txt\n"
+
+    def runner(command: Sequence[str], timeout: int) -> str:
+        captured.extend(command)
+        encoded = base64.b64encode(content).decode("ascii")
+        return json.dumps(
+            {
+                "type": "file",
+                "size": len(content),
+                "encoding": "base64",
+                "content": encoded[:8] + "\n" + encoded[8:],
+            }
+        )
+
+    result = GhCliClient(runner=runner).fetch_text_file(
+        "example-org/example-app",
+        "requirements dev.txt",
+        "base123",
+        100,
+    )
+
+    assert result == content.decode("utf-8")
+    assert captured == [
+        "gh",
+        "api",
+        "/repos/example-org/example-app/contents/requirements%20dev.txt?ref=base123",
+    ]
+
+
+def test_text_file_read_rejects_oversized_metadata_before_decode() -> None:
+    def runner(command: Sequence[str], timeout: int) -> str:
+        return json.dumps(
+            {"type": "file", "size": 101, "encoding": "base64", "content": ""}
+        )
+
+    with pytest.raises(GitHubError, match="configured ceiling"):
+        GhCliClient(runner=runner).fetch_text_file(
+            "example-org/example-app", "requirements.txt", "base123", 100
+        )
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [
+        "../private.txt",
+        "/requirements.txt",
+        "https://example.invalid/requirements.txt",
+        "$DEPENDENCY_FILE.txt",
+        "config//requirements.txt",
+    ],
+)
+def test_text_file_read_rejects_unsafe_path_before_github_call(
+    unsafe_path: str,
+) -> None:
+    def runner(command: Sequence[str], timeout: int) -> str:
+        pytest.fail("Unsafe paths must be rejected before a GitHub call")
+
+    with pytest.raises(GitHubError, match="repository-relative"):
+        GhCliClient(runner=runner).fetch_text_file(
+            "example-org/example-app", unsafe_path, "base123", 100
+        )
 
 
 def test_open_pr_collection_uses_read_only_command_and_reports_truncation() -> None:
@@ -181,12 +267,25 @@ def test_pull_request_details_do_not_fetch_diff_or_checkout() -> None:
     ]
 
 
+def test_pull_request_file_collection_rejects_unsafe_path() -> None:
+    def runner(command: Sequence[str], timeout: int) -> str:
+        if command[1] == "api":
+            return json.dumps([{"filename": "/requirements.txt"}])
+        return json.dumps(pull_request_details(42))
+
+    with pytest.raises(GitHubError, match="malformed file path"):
+        GhCliClient(runner=runner).fetch_pull_request(
+            "example-org/example-app", 42, 1000
+        )
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
         lambda item: item.update({"number": 99}),
         lambda item: item.update({"headRefName": ""}),
         lambda item: item.update({"headRefOid": None}),
+        lambda item: item.update({"updatedAt": None}),
         lambda item: item.update({"isDraft": None}),
         lambda item: item.update({"statusCheckRollup": ["invalid"]}),
         lambda item: item.update({"author": {"login": ""}}),
@@ -225,3 +324,63 @@ def test_pull_request_files_paginate_to_limit_plus_one() -> None:
     assert len(calls) == 2
     assert "per_page=100&page=1" in calls[0]
     assert "per_page=1&page=2" in calls[1]
+
+
+def test_alert_collection_rejects_repeated_cursor() -> None:
+    calls = 0
+
+    def runner(command: Sequence[str], timeout: int) -> str:
+        nonlocal calls
+        calls += 1
+        next_link = (
+            "https://api.github.com/repositories/1/dependabot/alerts"
+            "?state=open&per_page=100&after=repeated"
+        )
+        return (
+            f'HTTP/2.0 200 OK\nlink: <{next_link}>; rel="next"\n\n'
+            + json.dumps([alert(calls)])
+        )
+
+    with pytest.raises(GitHubError, match="repeated a cursor"):
+        GhCliClient(runner=runner).list_open_dependabot_alerts(
+            "example-org/example-app", 10
+        )
+
+    assert calls == 2
+
+
+def test_alert_collection_rejects_empty_page_with_next_cursor() -> None:
+    def runner(command: Sequence[str], timeout: int) -> str:
+        next_link = (
+            "https://api.github.com/repositories/1/dependabot/alerts"
+            "?state=open&per_page=100&after=next"
+        )
+        return f'HTTP/2.0 200 OK\nlink: <{next_link}>; rel="next"\n\n[]'
+
+    with pytest.raises(GitHubError, match="returned no items"):
+        GhCliClient(runner=runner).list_open_dependabot_alerts(
+            "example-org/example-app", 10
+        )
+
+
+def test_alert_collection_enforces_page_ceiling() -> None:
+    calls = 0
+
+    def runner(command: Sequence[str], timeout: int) -> str:
+        nonlocal calls
+        calls += 1
+        next_link = (
+            "https://api.github.com/repositories/1/dependabot/alerts"
+            f"?state=open&per_page=100&after=cursor-{calls}"
+        )
+        return (
+            f'HTTP/2.0 200 OK\nlink: <{next_link}>; rel="next"\n\n'
+            + json.dumps([alert(calls)])
+        )
+
+    client = GhCliClient(runner=runner)
+    client._MAX_ALERT_PAGES = 2
+    with pytest.raises(GitHubError, match="page ceiling"):
+        client.list_open_dependabot_alerts("example-org/example-app", 10)
+
+    assert calls == 2

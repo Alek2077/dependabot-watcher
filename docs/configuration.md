@@ -11,6 +11,9 @@ max_open_prs = 100
 max_open_alerts = 500
 max_history_items = 200
 max_files_per_pull_request = 500
+max_manifest_files = 50
+max_manifest_file_bytes = 131072
+max_manifest_depth = 5
 command_timeout_seconds = 120
 
 [path_policy]
@@ -27,6 +30,12 @@ default_branch = "main"
 [repositories.path_policy]
 additional_dependency_patterns = ["deps/*.lock"]
 additional_sensitive_patterns = ["ops/production/**"]
+
+[repositories.workflow]
+merge_method = "repository_default"
+required_checks = []
+deployment_environments = []
+validation_notes = []
 ```
 
 ## Repository entries
@@ -37,6 +46,8 @@ Patterns under the top-level `path_policy` apply to every repository. Patterns u
 
 Additional dependency patterns identify files that are safe to classify as dependency-related evidence. Additional sensitive patterns make the classification more conservative. They do not authorize mutation.
 
+Each repository may define an optional `workflow` table. `merge_method` accepts `repository_default`, `merge`, `squash`, or `rebase`. `promotion_branch` is optional. `required_checks`, `deployment_environments`, and `validation_notes` are bounded single-line string arrays. These fields are planning evidence only: the watcher does not run configured strings, deploy, promote branches, or mutate GitHub.
+
 ## Collection bounds
 
 The watcher inspects every returned item up to each per-repository limit. These defaults are conservative operational budgets, not expected queue sizes. Large installations can raise them deliberately, but doing so can materially increase sequential GitHub API work.
@@ -46,6 +57,8 @@ A limit hit is surfaced as truncation, changes the report status to `partial`, a
 The history lookback is time-bounded separately from the item ceiling. Changed files are fetched through GitHub's paginated pull-request-files endpoint and have their own ceiling. A PR that exceeds it becomes an explicit partial collection error rather than being assessed from an incomplete path list. GitHub returns at most 3,000 files for that endpoint, so configuration intentionally caps this value at 2,999 to preserve one additional record for truncation detection.
 
 If recent merged-history collection is missing or truncated, open PRs cannot receive `baseline_candidate` because sensitive-change evidence is incomplete.
+
+Manifest collection is bounded separately by file count, bytes per file, and inclusion depth. It currently recognizes local Python requirements/constraints inclusions. Unsafe paths, remote URLs, and executable repository content are never followed. A manifest limit or read failure is explicit partial evidence rather than silently inferred coverage.
 
 ## Advisory configuration
 

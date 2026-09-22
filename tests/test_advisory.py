@@ -379,6 +379,23 @@ def test_candidate_budget_deferral_is_reported() -> None:
     assert report["advisory"]["deferred"][0]["reason"] == "advisory_candidate_budget"
 
 
+def test_alert_with_likely_collected_pr_coverage_is_not_advised_twice() -> None:
+    inspection = _inspection()
+    alert = inspection["repositories"][0]["alerts"][0]
+    alert["package_related_open_pull_requests"] = [
+        {"number": 42, "coverage_evidence": "likely"}
+    ]
+    provider = FakeProvider()
+
+    report = advise_from_inspection(_config("economy"), inspection, provider)
+
+    assert len(provider.requests) == 1
+    assert [candidate["kind"] for candidate in provider.requests[0].candidates] == [
+        "pull_request"
+    ]
+    assert report["advisory"]["summary"]["eligible_candidate_count"] == 1
+
+
 def test_provider_contract_rejects_unknown_candidate() -> None:
     payload = {"decisions": [_decision("cand_wrong")]}
 

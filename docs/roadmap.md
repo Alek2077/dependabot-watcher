@@ -2,6 +2,8 @@
 
 Dependabot Watcher is being restored in bounded phases. This roadmap records product boundaries and future design constraints; it is not a promise that every listed capability ships in the first public release.
 
+The current read-only position remains “a local-first, provider-neutral control plane for inspecting and safely triaging Dependabot activity across multiple repositories.” The intended mature position is safe automation of the Dependabot maintenance loop, not full repository maintenance: collect evidence, recommend an order, recheck live state, execute only policy-authorized actions, and retain a concise human summary plus complete structured audit evidence.
+
 ## Delivered foundation
 
 - Side-effect-free, model-free inspection across configured repositories.
@@ -11,7 +13,7 @@ Dependabot Watcher is being restored in bounded phases. This roadmap records pro
 - One isolated Codex CLI adapter with explicit model/reasoning configuration.
 - Collector-owned candidate identity and advisory-only model output.
 
-## Next: deterministic recommended-order planning
+## Current phase: deterministic recommended-order planning
 
 Before adding mutation, scheduling, or many more providers, add a first-class planning layer for non-trivial queues:
 
@@ -34,6 +36,28 @@ Bind every plan to its evidence snapshot: repository/base state, PR head SHA, ch
 
 Dogfood this layer against real multi-item queues before treating the exact presentation or ordering policy as settled user demand.
 
+The current Phase 4 implementation adds the non-mutating `plan` command, complete-queue deterministic ordering, base/head/alert freshness binding, optional repository workflow profiles, and bounded Python requirements-inclusion evidence. It deliberately leaves plan execution, persistent decision history, general dependency-graph resolution, and mutation for later phases. This phase is not considered complete until current-tree live dogfood and independent review finish.
+
+### Cross-ecosystem support contract
+
+Do not equate the Python implementation language or the first requirements-file adapter with a Python-only product. The generic core should consume GitHub's normalized Dependabot PR, alert, check, changed-path, and repository-state evidence for every supported ecosystem. Deeper ecosystem adapters should be added only where deterministic parsing materially improves relationships, validation, or execution safety.
+
+Maintain an explicit support matrix with separate levels for:
+
+- generic inspection and planning;
+- deeper ecosystem-specific relationship analysis; and
+- validated eligibility for later automatic execution.
+
+Unknown ecosystems or incomplete evidence remain visible and conservative; they do not become safe merely because a model can interpret them. Models may investigate unfamiliar evidence and explain likely relationships, while deterministic policy determines whether an action is authorized. Prioritize deeper adapters using real dogfood and user demand rather than attempting every package manager before release.
+
+### Context and provider efficiency
+
+Use deterministic collection and prioritization before model calls. Send sufficient, decision-relevant, well-structured evidence; group related PRs and alerts; batch when doing so preserves clarity; and escalate to a stronger or second-stage model only when repository risk or ambiguity justifies it. Efficiency is a design requirement, not a reason to omit material context or a promise that every repository or update can be understood from a small fixed context.
+
+Context collection should be progressive rather than artificially minimal. A provider must preserve uncertainty and identify missing evidence. Later investigation capabilities may gather additional bounded diffs, dependency relationships, release information, or disposable-checkout results before another decision. Portable provider instructions should enforce evidence over assumption, distinguish observation from inference, and prohibit filling evidence gaps with confidence or plausible-sounding guesses.
+
+Provider neutrality includes multiple transport types. An adapter may use an officially supported subscription-authenticated local CLI, a direct provider API, an aggregation service, or a compatible endpoint. Setup must state which transport is active, whether it can incur separate cost, and what authentication mechanism the provider officially supports. The product must not read secret files, silently enable spending, or imply that subscription authentication exists where the provider does not offer it.
+
 ## Then: setup, deployment, and operational profile
 
 The next product layer should reduce setup friction without weakening consent, privacy, or deterministic safety.
@@ -46,6 +70,7 @@ Add a `doctor` or equivalent preflight command that can report, without changing
 - installed provider CLIs, versions, and supported adapter capabilities;
 - authentication readiness as `available`, `unavailable`, or `unknown`, never credential values;
 - GitHub CLI availability and access to configured repositories;
+- detected Dependabot ecosystems and the watcher's support level for each;
 - supported scheduler and notification adapters;
 - resolved configuration and state locations; and
 - stale, conflicting, or unsupported configuration.

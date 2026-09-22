@@ -306,3 +306,145 @@ def render_advisory(report: dict[str, Any], output_format: str) -> str:
         "markdown": render_advisory_markdown,
     }
     return renderers[output_format](report)
+
+
+def _plan_step_label(step: dict[str, Any]) -> str:
+    identity = step.get("identity") or {}
+    if step.get("kind") == "pull_request":
+        return f"PR #{identity.get('number', '?')}: {identity.get('title') or 'Untitled'}"
+    return (
+        f"Alert #{identity.get('number', '?')}: "
+        f"{identity.get('dependency_name') or 'unknown dependency'}"
+    )
+
+
+def render_plan_text(report: dict[str, Any]) -> str:
+    summary = report["summary"]
+    lines = [
+        "Dependabot Watcher maintenance plan",
+        f"Generated: {report['generated_at']}",
+        f"Status: {report['status']}",
+        f"Plan: {report['plan_id']}",
+        (
+            f"Repositories: {summary['repository_count']} | "
+            f"Recommended steps: {summary['recommended_step_count']} | "
+            f"Partial repositories: {summary['partial_repository_count']}"
+        ),
+        "Mutation authorized: no",
+    ]
+    for repository in report["repositories"]:
+        state = repository.get("state") or {}
+        lines.extend(
+            [
+                "",
+                f"{repository['repository']} (base: {repository['expected_base']} "
+                f"@ {(repository.get('evidence_snapshot') or {}).get('base_sha') or 'unknown'})",
+                (
+                    f"  Current state: {state.get('open_pull_request_count', 0)} open PRs, "
+                    f"{state.get('open_alert_count', 0)} open alerts, "
+                    f"{state.get('unresolved_alert_count', 0)} unresolved alerts"
+                ),
+                "  Recommended Order",
+            ]
+        )
+        steps = repository.get("recommended_order") or []
+        if not steps:
+            lines.append("    No actionable Dependabot items were found.")
+        for step in steps:
+            lines.append(
+                f"    {step['order']}. {_plan_step_label(step)} "
+                f"[{step['action'].replace('_', ' ')}]"
+            )
+            lines.append(f"       Why now: {step['priority_reason']}")
+            impacts = step.get("expected_alert_impact") or []
+            if impacts:
+                impact_text = ", ".join(
+                    f"alert #{item.get('alert_number')} ({item.get('coverage_evidence')})"
+                    for item in impacts
+                )
+                lines.append(f"       Expected alert impact: {impact_text}")
+            for blocker in (step.get("blockers") or [])[:3]:
+                lines.append(f"       Blocker: {blocker}")
+            lines.append("       Then: re-inspect repository state before continuing.")
+        unresolved = repository.get("unresolved_evidence") or {}
+        if unresolved.get("errors") or unresolved.get("truncations"):
+            lines.append("  Evidence is partial; resolve collection gaps before execution.")
+    return "\n".join(lines) + "\n"
+
+
+def render_plan_markdown(report: dict[str, Any]) -> str:
+    summary = report["summary"]
+    lines = [
+        "# Dependabot Watcher maintenance plan",
+        "",
+        f"Generated: `{_escape_markdown(report['generated_at'])}`  ",
+        f"Status: **{_escape_markdown(report['status'])}**  ",
+        f"Plan: `{_escape_markdown(report['plan_id'])}`  ",
+        "Mutation authorized: **no**",
+        "",
+        (
+            f"Repositories: **{summary['repository_count']}** · "
+            f"Recommended steps: **{summary['recommended_step_count']}** · "
+            f"Partial repositories: **{summary['partial_repository_count']}**"
+        ),
+    ]
+    for repository in report["repositories"]:
+        state = repository.get("state") or {}
+        snapshot = repository.get("evidence_snapshot") or {}
+        lines.extend(
+            [
+                "",
+                f"## {_escape_markdown(repository['repository'])}",
+                "",
+                (
+                    f"Base: `{_escape_markdown(repository['expected_base'])}` at "
+                    f"`{_escape_markdown(snapshot.get('base_sha') or 'unknown')}`"
+                ),
+                "",
+                (
+                    f"Current state: **{state.get('open_pull_request_count', 0)}** open PRs, "
+                    f"**{state.get('open_alert_count', 0)}** open alerts, "
+                    f"**{state.get('unresolved_alert_count', 0)}** unresolved alerts."
+                ),
+                "",
+                "### Recommended Order",
+                "",
+            ]
+        )
+        steps = repository.get("recommended_order") or []
+        if not steps:
+            lines.append("No actionable Dependabot items were found.")
+        for step in steps:
+            lines.append(
+                f"{step['order']}. **{_escape_markdown(_plan_step_label(step))}** — "
+                f"`{_escape_markdown(step['action'])}`"
+            )
+            lines.append(f"   - Why now: {_escape_markdown(step['priority_reason'])}")
+            impacts = step.get("expected_alert_impact") or []
+            if impacts:
+                impact_text = ", ".join(
+                    f"alert #{item.get('alert_number')} ({item.get('coverage_evidence')})"
+                    for item in impacts
+                )
+                lines.append(f"   - Expected alert impact: {_escape_markdown(impact_text)}")
+            for blocker in (step.get("blockers") or [])[:3]:
+                lines.append(f"   - Blocker: {_escape_markdown(blocker)}")
+            lines.append("   - Then: re-inspect repository state before continuing.")
+        unresolved = repository.get("unresolved_evidence") or {}
+        if unresolved.get("errors") or unresolved.get("truncations"):
+            lines.extend(
+                [
+                    "",
+                    "**Evidence is partial; resolve collection gaps before execution.**",
+                ]
+            )
+    return "\n".join(lines) + "\n"
+
+
+def render_plan(report: dict[str, Any], output_format: str) -> str:
+    renderers = {
+        "json": render_json,
+        "text": render_plan_text,
+        "markdown": render_plan_markdown,
+    }
+    return renderers[output_format](report)

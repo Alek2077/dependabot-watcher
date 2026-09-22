@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from dependabot_watcher.config import PathPolicyOverrides
 from dependabot_watcher.policy import (
     assess_paths,
@@ -421,3 +423,38 @@ def test_alert_correlation_accepts_newer_plain_release() -> None:
     match = result[0]["matching_open_pull_requests"][0]
     assert match["patched_version_relation"] == "newer_release"
     assert match["meets_first_patched_version"] is True
+
+
+@pytest.mark.parametrize("manifest_path", ["/requirements.txt", "../requirements.txt"])
+def test_alert_correlation_does_not_promote_unsafe_manifest_path(
+    manifest_path: str,
+) -> None:
+    alerts = [
+        {
+            "number": 7,
+            "state": "open",
+            "dependency": {
+                "package": {"name": "example", "ecosystem": "pip"},
+                "manifest_path": manifest_path,
+            },
+            "security_vulnerability": {
+                "severity": "high",
+                "first_patched_version": {"identifier": "2.9.0"},
+            },
+        }
+    ]
+    pull_request = {
+        "number": 8,
+        "title": "Bump example from 2.8.0 to 2.9.0",
+        "url": "example",
+        "author": {"login": "app/dependabot"},
+        "headRefName": "dependabot/pip/example-2.9.0",
+        "files": [{"path": "requirements.txt"}],
+    }
+
+    result = correlate_alerts(
+        "example-org/example-app", alerts, [pull_request], []
+    )
+
+    assert result[0]["classification"] != "likely_covered_by_open_pr"
+    assert result[0]["matching_open_pull_requests"] == []

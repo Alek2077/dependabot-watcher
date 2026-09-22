@@ -26,10 +26,20 @@ class PathPolicyOverrides:
 
 
 @dataclass(frozen=True)
+class RepositoryWorkflowConfig:
+    merge_method: str = "repository_default"
+    promotion_branch: str | None = None
+    required_checks: tuple[str, ...] = ()
+    deployment_environments: tuple[str, ...] = ()
+    validation_notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class RepositoryConfig:
     name: str
     default_branch: str = "main"
     path_policy: PathPolicyOverrides = field(default_factory=PathPolicyOverrides)
+    workflow: RepositoryWorkflowConfig = field(default_factory=RepositoryWorkflowConfig)
 
 
 @dataclass(frozen=True)
@@ -39,6 +49,9 @@ class CollectionConfig:
     max_open_alerts: int = 500
     max_history_items: int = 200
     max_files_per_pull_request: int = 500
+    max_manifest_files: int = 50
+    max_manifest_file_bytes: int = 131072
+    max_manifest_depth: int = 5
     command_timeout_seconds: int = 120
 
 
@@ -142,6 +155,31 @@ def _patterns(value: object, location: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(normalized))
 
 
+def _bounded_strings(
+    value: object,
+    location: str,
+    *,
+    maximum_items: int = 50,
+    maximum_length: int = 300,
+) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ConfigError(f"{location} must be an array of strings.")
+    if len(value) > maximum_items:
+        raise ConfigError(f"{location} must contain at most {maximum_items} items.")
+    normalized: list[str] = []
+    for item in value:
+        text = item.strip()
+        if not text or len(text) > maximum_length or any(char in text for char in "\r\n\0"):
+            raise ConfigError(
+                f"{location} items must be non-empty single-line strings up to "
+                f"{maximum_length} characters."
+            )
+        normalized.append(text)
+    return tuple(dict.fromkeys(normalized))
+
+
 def _path_policy(value: object, location: str) -> PathPolicyOverrides:
     data = _require_mapping({} if value is None else value, location)
     _reject_unknown(data, {"additional_dependency_patterns", "additional_sensitive_patterns"}, location)
@@ -167,6 +205,9 @@ def _collection(value: object) -> CollectionConfig:
             "max_open_alerts",
             "max_history_items",
             "max_files_per_pull_request",
+            "max_manifest_files",
+            "max_manifest_file_bytes",
+            "max_manifest_depth",
             "command_timeout_seconds",
         },
         "collection",
@@ -190,6 +231,21 @@ def _collection(value: object) -> CollectionConfig:
             data.get("max_files_per_pull_request", 500),
             "collection.max_files_per_pull_request",
             maximum=2999,
+        ),
+        max_manifest_files=_positive_int(
+            data.get("max_manifest_files", 50),
+            "collection.max_manifest_files",
+            maximum=500,
+        ),
+        max_manifest_file_bytes=_positive_int(
+            data.get("max_manifest_file_bytes", 131072),
+            "collection.max_manifest_file_bytes",
+            maximum=1048576,
+        ),
+        max_manifest_depth=_positive_int(
+            data.get("max_manifest_depth", 5),
+            "collection.max_manifest_depth",
+            maximum=20,
         ),
         command_timeout_seconds=_positive_int(
             data.get("command_timeout_seconds", 120),
@@ -346,17 +402,62 @@ def _advisory(value: object) -> AdvisoryConfig:
 def _repository(value: object, index: int) -> RepositoryConfig:
     location = f"repositories[{index}]"
     data = _require_mapping(value, location)
-    _reject_unknown(data, {"name", "default_branch", "path_policy"}, location)
+    _reject_unknown(data, {"name", "default_branch", "path_policy", "workflow"}, location)
     name = data.get("name")
     if not isinstance(name, str) or not _REPOSITORY_NAME.fullmatch(name.strip()):
         raise ConfigError(f"{location}.name must use the 'owner/repository' form.")
     branch = data.get("default_branch", "main")
     if not isinstance(branch, str) or not branch.strip() or any(char.isspace() for char in branch):
         raise ConfigError(f"{location}.default_branch must be a non-empty branch name.")
+    workflow_data = _require_mapping(data.get("workflow", {}), f"{location}.workflow")
+    _reject_unknown(
+        workflow_data,
+        {
+            "merge_method",
+            "promotion_branch",
+            "required_checks",
+            "deployment_environments",
+            "validation_notes",
+        },
+        f"{location}.workflow",
+    )
+    merge_method = _optional_string(
+        workflow_data.get("merge_method", "repository_default"),
+        f"{location}.workflow.merge_method",
+    ) or "repository_default"
+    if merge_method not in {"repository_default", "merge", "squash", "rebase"}:
+        raise ConfigError(
+            f"{location}.workflow.merge_method must be one of: "
+            "repository_default, merge, squash, rebase."
+        )
+    promotion_branch = _optional_string(
+        workflow_data.get("promotion_branch"),
+        f"{location}.workflow.promotion_branch",
+    )
+    if promotion_branch is not None and any(char.isspace() for char in promotion_branch):
+        raise ConfigError(
+            f"{location}.workflow.promotion_branch must not contain whitespace."
+        )
     return RepositoryConfig(
         name=name.strip(),
         default_branch=branch.strip(),
         path_policy=_path_policy(data.get("path_policy", {}), f"{location}.path_policy"),
+        workflow=RepositoryWorkflowConfig(
+            merge_method=merge_method,
+            promotion_branch=promotion_branch,
+            required_checks=_bounded_strings(
+                workflow_data.get("required_checks"),
+                f"{location}.workflow.required_checks",
+            ),
+            deployment_environments=_bounded_strings(
+                workflow_data.get("deployment_environments"),
+                f"{location}.workflow.deployment_environments",
+            ),
+            validation_notes=_bounded_strings(
+                workflow_data.get("validation_notes"),
+                f"{location}.workflow.validation_notes",
+            ),
+        ),
     )
 
 

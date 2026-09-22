@@ -2,6 +2,8 @@
 
 The advisory layer separates product policy from provider execution. Core orchestration owns collection, candidate priority, budgets, batching, escalation, identity, failure semantics, and output. A provider adapter owns only the transport required to obtain schema-shaped advice.
 
+When inspection has already related an alert to a PR with `direct` or `likely` planning evidence, the alert is carried inside the PR candidate rather than sent to the model again as a duplicate candidate. The complete alert remains in the underlying inspection report. This workload optimization does not change the alert's fail-closed inspection classification.
+
 ## Request
 
 Every request contains:
