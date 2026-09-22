@@ -170,6 +170,17 @@ def test_enabled_codex_advice_requires_explicit_model_and_reasoning() -> None:
         parse_config(data)
 
 
+def test_codex_executable_cannot_be_redirected_by_configuration() -> None:
+    data = valid_config()
+    data["advisory"] = {
+        "mode": "off",
+        "codex_cli": {"executable": "touch"},
+    }
+
+    with pytest.raises(ConfigError, match="fixed to 'codex'"):
+        parse_config(data)
+
+
 def test_repository_workflow_profile_and_manifest_limits_are_typed() -> None:
     config = parse_config(
         {
@@ -244,3 +255,49 @@ def test_repository_workflow_profile_rejects_multiline_or_unsafe_values() -> Non
                 ],
             }
         )
+
+
+def test_operational_profile_is_typed_and_non_mutating() -> None:
+    data = valid_config()
+    data["operation"] = {
+        "autonomy": "read_only",
+        "mutation_enabled": False,
+        "report_verbosity": "detailed",
+        "machine_output": "json",
+    }
+    data["profile"] = {
+        "source": "setup_advanced",
+        "created_at": "2026-09-22T12:00:00Z",
+        "confirmed_at": "2026-09-22T12:00:00+00:00",
+    }
+
+    config = parse_config(data)
+
+    assert config.operation.report_verbosity == "detailed"
+    assert config.operation.mutation_enabled is False
+    assert config.profile.source == "setup_advanced"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"autonomy": "automatic"},
+        {"mutation_enabled": True},
+        {"report_verbosity": "noisy"},
+        {"machine_output": "pickle"},
+    ],
+)
+def test_operational_profile_rejects_unsupported_authority(operation: object) -> None:
+    data = valid_config()
+    data["operation"] = operation
+
+    with pytest.raises(ConfigError, match="operation"):
+        parse_config(data)
+
+
+def test_profile_timestamps_require_timezone() -> None:
+    data = valid_config()
+    data["profile"] = {"created_at": "2026-09-22T12:00:00"}
+
+    with pytest.raises(ConfigError, match="timezone"):
+        parse_config(data)

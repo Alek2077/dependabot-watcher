@@ -4,11 +4,11 @@
 
 Dependabot Watcher is currently a **read-only private pre-release**. It works with existing Dependabot installations, reads multiple repositories from one command, correlates pull requests with security alerts and recent sensitive changes, and produces text, JSON, or Markdown on stdout. It can turn that evidence into a concise deterministic Recommended Order. Optional provider-neutral advice can interpret evidence conservatively without authorizing or performing GitHub changes.
 
-It does not merge, close, comment, approve, label, notify, clone target repositories, or write persistent runtime state. The default configuration invokes no model.
+It does not merge, close, comment, approve, label, notify, clone target repositories, or write persistent runtime state. `setup` is the sole explicit configuration-writing command. The default configuration invokes no model.
 
 The intended product end state is safe automation of the Dependabot maintenance loop: inspect, plan, recheck, execute only policy-authorized actions, and report what changed or still needs attention. Future provider adapters may use an officially supported subscription-authenticated CLI or an API credential, depending on what each provider permits. Deterministic collection, candidate grouping, sufficient decision-relevant context, and escalation only when useful should keep ordinary runs efficient without assuming that every repository needs the strongest available model.
 
-## Install and inspect
+## Install and set up
 
 Prerequisites:
 
@@ -24,17 +24,18 @@ uv tool install .
 pipx install .
 ```
 
-Create user configuration:
+The recommended setup verifies GitHub CLI authentication and read-only access, discovers the repository's default branch, then creates a non-secret, model-off, read-only profile:
 
 ```bash
-mkdir -p ~/.config/dependabot-watcher
-cp config.example.toml ~/.config/dependabot-watcher/config.toml
+dependabot-watcher setup --repo example-org/example-app
 ```
 
-Replace the synthetic repository in that file, then run:
+Setup never invokes a model, changes GitHub, schedules work, or sends a notification. It refuses to overwrite an existing configuration. Run the read-only preflight and then inspect or plan:
 
 ```bash
+dependabot-watcher doctor
 dependabot-watcher inspect
+dependabot-watcher plan
 ```
 
 Useful variants:
@@ -44,6 +45,7 @@ dependabot-watcher inspect --format json
 dependabot-watcher inspect --format markdown
 dependabot-watcher inspect --repo example-org/example-app
 dependabot-watcher inspect --config /path/to/config.toml
+dependabot-watcher plan --verbosity detailed
 ```
 
 Optional advice is a separate command:
@@ -57,9 +59,24 @@ dependabot-watcher plan --format markdown
 
 Advice defaults to `off`. Enabling `economy` or `reviewed` requires explicit provider configuration; see the [configuration reference](docs/configuration.md).
 
+Advanced setup can record a tested provider choice while still making no model call:
+
+```bash
+dependabot-watcher setup \
+  --repo example-org/example-app \
+  --advisory-mode economy \
+  --triage-model your-model-id \
+  --triage-reasoning high \
+  --acknowledge-model-use
+```
+
+Use `--offline` only when setup cannot verify GitHub access; the resulting profile remains visibly unverified. Use `--branch owner/repository=branch` for an intentional branch override. See the [setup and diagnostics guide](docs/setup.md).
+
 `plan` always collects fresh inspection evidence and uses the configured advisory mode. With the default `off` mode it makes zero model calls. Its concise output shows current repository state followed by an ordered maintenance strategy, expected alert impact, blockers, and the reinspection gate after every step. Plans never authorize mutation.
 
 The default config path is `$XDG_CONFIG_HOME/dependabot-watcher/config.toml` or `~/.config/dependabot-watcher/config.toml`. On native Windows it resolves under `%APPDATA%`. `DEPENDABOT_WATCHER_CONFIG` can override it.
+
+Human text and Markdown support `concise`, `standard`, and `detailed` verbosity. The profile default can be overridden per command with `--verbosity`; JSON remains complete at every level, and verbosity never changes collection, model workload, policy, or authority.
 
 ## What inspection covers
 
@@ -109,6 +126,8 @@ Every plan is bound to the collected base SHA, PR head SHA, PR update time, aler
 
 Collection limits are explicit. If a repository exceeds one, the report says which surface was truncated and exits as partial rather than silently claiming completeness.
 
+`doctor` is also non-mutating and never makes a model call. It reports executable versions and authentication readiness without retaining raw command output, verifies the configured branch, reads only configured repositories, and never opens provider credential files. `setup` is the only Phase 5 command that persists anything: one explicitly requested user configuration file, published atomically, containing non-secret choices and verification timestamps.
+
 ## Output and exit codes
 
 | Code | Meaning |
@@ -116,12 +135,12 @@ Collection limits are explicit. If a repository exceeds one, the report says whi
 | `0` | Complete inspection |
 | `2` | CLI or configuration error |
 | `3` | GitHub CLI/authentication failure before inspection |
-| `4` | Partial result because inspection or advisory processing was incomplete |
+| `4` | Partial inspection/advice, or a doctor report requiring attention |
 | `5` | Advisory provider could not be initialized |
 | `6` | Planning input contract error |
 | `70` | Unexpected internal failure |
 
-The JSON output is versioned with `schema_version: 1`. See [the architecture](docs/architecture.md), [advisory contract](docs/advisory-contract.md), [planning contract](docs/planning-contract.md), [output contract](docs/output-contract.md), [configuration reference](docs/configuration.md), and [roadmap](docs/roadmap.md).
+The JSON output is versioned with `schema_version: 1`. See [the architecture](docs/architecture.md), [setup guide](docs/setup.md), [advisory contract](docs/advisory-contract.md), [planning contract](docs/planning-contract.md), [output contract](docs/output-contract.md), [configuration reference](docs/configuration.md), and [roadmap](docs/roadmap.md).
 
 ## Platform status
 

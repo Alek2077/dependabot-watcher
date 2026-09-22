@@ -7,6 +7,7 @@ import pytest
 
 from dependabot_watcher.output import render_plan
 from dependabot_watcher.planning import PlanningError, plan_from_advisory
+from dependabot_watcher.output import render_plan
 
 
 def _pull_request(
@@ -221,6 +222,21 @@ def test_plan_builds_deterministic_recommended_order_and_suppresses_likely_alert
     assert all(item["freshness"]["reinspection_required"] is True for item in steps)
     assert all(item["mutation_authorized"] is False for item in steps)
     assert report["mutation_authorized"] is False
+
+
+def test_plan_verbosity_changes_human_detail_only() -> None:
+    report = plan_from_advisory(_advisory_report())  # type: ignore[arg-type]
+
+    concise = render_plan(report, "text", verbosity="concise")
+    detailed = render_plan(report, "text", verbosity="detailed")
+
+    assert "Validation:" not in concise
+    assert "Validation:" in detailed
+    assert "Freshness:" in detailed
+    assert len(concise) < len(detailed)
+    assert json.loads(render_plan(report, "json", verbosity="concise")) == json.loads(
+        render_plan(report, "json", verbosity="detailed")
+    )
 
 
 def test_model_advice_can_make_action_more_conservative_without_changing_order() -> None:

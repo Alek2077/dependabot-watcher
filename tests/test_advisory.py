@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -225,6 +226,20 @@ def test_off_mode_makes_no_provider_calls_and_preserves_inspection() -> None:
     assert all(
         item["mutation_authorized"] is False
         for item in report["advisory"]["deferred"]
+    )
+
+
+def test_advisory_verbosity_changes_human_detail_only() -> None:
+    report = advise_from_inspection(_config("economy"), _inspection(), FakeProvider())
+
+    concise = render_advisory(report, "text", verbosity="concise")
+    detailed = render_advisory(report, "text", verbosity="detailed")
+
+    assert "Rationale:" not in concise
+    assert "Rationale:" in detailed
+    assert len(concise) < len(detailed)
+    assert json.loads(render_advisory(report, "json", verbosity="concise")) == json.loads(
+        render_advisory(report, "json", verbosity="detailed")
     )
 
 

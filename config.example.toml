@@ -1,5 +1,11 @@
 schema_version = 1
 
+[operation]
+autonomy = "read_only"
+mutation_enabled = false
+report_verbosity = "concise"
+machine_output = "json"
+
 [collection]
 history_lookback_days = 30
 max_open_prs = 100
