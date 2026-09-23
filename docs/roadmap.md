@@ -6,6 +6,25 @@ Historical phase requirements remain as design records. Record verified delivery
 
 The current read-only position remains “a local-first, provider-neutral control plane for inspecting and safely triaging Dependabot activity across multiple repositories.” The intended mature position is safe automation of the Dependabot maintenance loop, not full repository maintenance: collect evidence, recommend an order, recheck live state, execute only policy-authorized actions, and retain a concise human summary plus complete structured audit evidence.
 
+## Phase entry gate
+
+Before committing to a new phase or material feature, briefly revalidate its premise against the current product, user evidence, dependencies, safety boundary, and relevant external ecosystem. Ask whether the work is still needed, whether its intended outcome remains justified, and whether the planned approach is still the best proportionate option.
+
+This is a high-level decision gate, not an invitation to repeatedly reopen settled requirements or research every implementation detail. Use targeted local inspection or current primary-source research only when a material assumption is uncertain or may have changed. Record any material scope or direction change and its rationale before implementation.
+
+## Phase map
+
+1. **Deterministic safety restoration — complete.** Freeze unsafe private execution, restore a genuinely non-mutating inspection boundary, bind candidate identity to collector-owned evidence, and correct pagination, correlation, and freshness defects.
+2. **Standalone multi-user core — complete.** Extract the generic read-only product into its own repository with typed configuration, packaging, deterministic tests, structured output, and Ubuntu CI.
+3. **Provider-neutral advisory layer — complete.** Add model-off, economy, and reviewed modes behind a stable advisory contract, with one tested provider adapter and model output kept non-authoritative.
+4. **Ordered planning and evidence graph — complete.** Add complete-queue ordering, PR-alert relationship levels, bounded manifest evidence, workflow profiles, conflicts, validation gates, and freshness binding without mutation.
+5. **Setup, discovery, and operational profile — complete.** Add safe setup, `doctor`, a versioned non-secret profile, ecosystem-readiness reporting, and selectable human verbosity.
+6. **Gated execution and autonomy — next.** Execute only fresh plans with exact target/head binding, live rechecks, repository-policy enforcement, bounded actions, idempotency, audit history, and recovery guidance. Introduce approval-gated action before a narrowly defined fully automatic policy class.
+7. **Operational deployment and platform adapters.** Prove repeated WSL2 and Ubuntu operation, retain scheduler-independent run-once behavior, then add optional scheduling and sparse action-oriented notifications. Validate macOS and native Windows before claiming support.
+8. **Private dogfood and publication gate.** Require repeated installed-path reliability, an explicitly approved exact-head-bound mutation and recovery exercise, security/privacy/history review, license and public documentation, synthetic examples, contribution/support expectations, release packaging, functioning CI, and final canonical-source migration before changing visibility.
+
+The preliminary private safety freeze was treated as the opening step of Phase 1 rather than a separate product phase. Cross-cutting tests, proportional independent review, documentation, live read-only checks, and founder checkpoints apply throughout rather than being deferred to Phase 8.
+
 ## Delivered foundation
 
 - Side-effect-free, model-free inspection across configured repositories.
@@ -62,11 +81,11 @@ Context collection should be progressive rather than artificially minimal. A pro
 
 Provider neutrality includes multiple transport types. An adapter may use an officially supported subscription-authenticated local CLI, a direct provider API, an aggregation service, or a compatible endpoint. Setup must state which transport is active, whether it can incur separate cost, and what authentication mechanism the provider officially supports. The product must not read secret files, silently enable spending, or imply that subscription authentication exists where the provider does not offer it.
 
-## Current phase: setup, discovery, and operational profile
+## Phase 5 design contract and delivery status
 
-This product layer reduces setup friction without weakening consent, privacy, or deterministic safety.
+The following requirements recorded the Phase 5 design contract for reducing setup friction without weakening consent, privacy, or deterministic safety.
 
-The Phase 5 implementation is adding `doctor`, exclusive safe setup, versioned operational metadata in the existing configuration source of truth, and presentation-only human verbosity. It remains incomplete until deterministic validation, installed-path dogfood, live read-only preflight, and independent review finish.
+Phase 5 was not complete until `doctor`, exclusive safe setup, versioned operational metadata in the existing configuration source of truth, and presentation-only human verbosity passed deterministic validation, installed-path dogfood, a live read-only preflight, and independent review.
 
 ### Read-only environment discovery
 
@@ -126,6 +145,8 @@ A later opt-in local diagnostic mode may retain more detail only with explicit d
 
 Human reporting should eventually offer concise, standard, and detailed levels over the same underlying structured record. Changing verbosity must not change policy or action authority.
 
+The Phase 5 implementation added `setup`, `doctor`, the versioned non-secret operational profile, presentation-only verbosity, fail-visible Dependabot readiness checks, and conservative first-use documentation. Deterministic validation, installed-path dogfood, live read-only preflight, and independent review completed before merge. It deliberately leaves scheduling, notifications, persistent operational history, and mutation for later phases.
+
 ## Later: gated execution and autonomy
 
 Mutation authority is separate from provider selection, analysis spend, and report verbosity. Potential modes are:
@@ -142,6 +163,12 @@ The long-term fully automated mode should produce concise action summaries—wha
 
 - WSL2 and ordinary Linux validation first.
 - macOS and native Windows CI plus real smoke tests before support claims.
+- Publish an ordinary Python package and make one package-index command the primary cross-platform installation path. Keep source-checkout installation for development and private prereleases.
+- Treat Homebrew, signed release archives, and maintained bootstrap installers as later distribution channels that require versioned releases and platform validation; they do not require rewriting the Python application.
+- Document and validate a least-privilege GitHub credential profile for the exact repository, pull-request, check, content, and Dependabot-alert reads used by the product.
+- Preserve GitHub CLI as the first supported GitHub adapter while keeping the core transport boundary open to a direct fine-grained token, OAuth/device flow, or GitHub App when user evidence justifies the additional surface.
+- Do not infer or extract credentials from VS Code or another IDE. An IDE is not required, and its private authentication state is not a supported cross-application credential interface.
+- Add only truthful README badges and product imagery after the corresponding license, release, platform, and hosted-CI claims are established.
 - Optional scheduler and notification adapters.
 - Read-only Dependabot readiness/preflight validation before any automatic configuration feature.
 - Additional providers based on demand and testability.

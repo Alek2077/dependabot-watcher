@@ -1,36 +1,67 @@
 # Dependabot Watcher
 
-> A local-first, provider-neutral control plane for inspecting and safely triaging Dependabot activity across multiple repositories.
+**Turn scattered Dependabot pull requests and security alerts into one clear, ordered action list across your repositories.**
 
-Dependabot Watcher is currently a **read-only private pre-release**. It works with existing Dependabot installations, reads multiple repositories from one command, correlates pull requests with security alerts and recent sensitive changes, and produces text, JSON, or Markdown on stdout. It can turn that evidence into a concise deterministic Recommended Order. Optional provider-neutral advice can interpret evidence conservatively without authorizing or performing GitHub changes.
+Dependabot Watcher is a local-first, provider-neutral control plane for Dependabot activity. It focuses on open pull requests authored by Dependabot, connects them to security alerts and recent sensitive changes, and can provide raw inspection facts, optional model-assisted advice, or a deterministic order of actions for handling the queue.
+
+The project is currently a **read-only private pre-release**. It produces text, JSON, or Markdown on stdout, but does not authorize or perform GitHub changes.
 
 It does not merge, close, comment, approve, label, notify, clone target repositories, or write persistent runtime state. `setup` is the sole explicit configuration-writing command. The default configuration invokes no model.
 
 The intended product end state is safe automation of the Dependabot maintenance loop: inspect, plan, recheck, execute only policy-authorized actions, and report what changed or still needs attention. Future provider adapters may use an officially supported subscription-authenticated CLI or an API credential, depending on what each provider permits. Deterministic collection, candidate grouping, sufficient decision-relevant context, and escalation only when useful should keep ordinary runs efficient without assuming that every repository needs the strongest available model.
 
-## Install and set up
+## Install and set up this private pre-release
+
+The current release is installed from a local source checkout. A package-index installation is planned before public release; Homebrew, standalone installers, and release binaries remain later distribution options rather than current claims.
 
 Prerequisites:
 
 - Python 3.10 or newer;
-- [GitHub CLI](https://cli.github.com/) installed and authenticated with `gh auth login`; and
+- [`uv`](https://docs.astral.sh/uv/) (recommended) or [`pipx`](https://pipx.pypa.io/);
+- [GitHub CLI](https://cli.github.com/) installed and authenticated; and
 - access to every configured repository and its Dependabot alerts.
 
-Install from a checkout with either tool:
+GitHub authorization is required because Dependabot security alerts and private repository evidence are not anonymous data. The current adapter uses `gh` for read-only GitHub API requests and credential handling. No IDE is required, and the watcher does not inspect or reuse a VS Code login. The credential held by `gh` may have broader permissions than the watcher uses; a tested least-privilege credential profile is a gate for public release.
+
+Clone the private repository and enter its directory:
+
+```bash
+git clone https://github.com/Alek2077/dependabot-watcher.git
+cd dependabot-watcher
+```
+
+Install the command with `uv` (recommended):
 
 ```bash
 uv tool install .
-# or
+```
+
+Here `.` means the Python project in the current `dependabot-watcher` directory. `uv` installs it in an isolated user-level tool environment and exposes the `dependabot-watcher` command without modifying the system Python.
+
+Alternatively, install the same checkout with `pipx`:
+
+```bash
 pipx install .
 ```
 
-The recommended setup verifies GitHub CLI authentication and read-only access, discovers the repository's default branch, then creates a non-secret, model-off, read-only profile:
+The recommended setup verifies GitHub CLI authentication and read-only access, discovers the repository's default branch, then creates a non-secret, model-off, read-only profile. Replace `OWNER/REPOSITORY` with the GitHub repository you want to inspect:
 
 ```bash
-dependabot-watcher setup --repo example-org/example-app
+dependabot-watcher setup --repo OWNER/REPOSITORY
 ```
 
-Setup never invokes a model, changes GitHub, schedules work, or sends a notification. It refuses to overwrite an existing configuration. Run the read-only preflight and then inspect or plan:
+Setup saves these choices in the watcher's configuration profile, so they do not need to be supplied on every command. It never invokes a model, changes GitHub, schedules work, or sends a notification, and it refuses to overwrite an existing configuration.
+
+Choose the command that matches the result you want:
+
+| Command | Practical result |
+|---|---|
+| `dependabot-watcher doctor` | Checks whether the installation, GitHub access, configuration, and configured repositories are ready. |
+| `dependabot-watcher inspect` | Returns current Dependabot PR, alert, check, and repository facts without using a model. |
+| `dependabot-watcher advise` | Adds optional per-PR or per-alert model recommendations when advice is explicitly configured. |
+| `dependabot-watcher plan` | Produces an ordered action list for the complete queue, using optional advice if configured; it does not execute the actions. |
+
+Run the preflight, then inspect the evidence or request the ordered action list:
 
 ```bash
 dependabot-watcher doctor
@@ -38,23 +69,21 @@ dependabot-watcher inspect
 dependabot-watcher plan
 ```
 
-Useful variants:
+Common output and scope options:
 
 ```bash
-dependabot-watcher inspect --format json
-dependabot-watcher inspect --format markdown
-dependabot-watcher inspect --repo example-org/example-app
-dependabot-watcher inspect --config /path/to/config.toml
-dependabot-watcher plan --verbosity detailed
+dependabot-watcher inspect --format json                 # Complete machine-readable evidence
+dependabot-watcher inspect --format markdown             # Human-readable Markdown
+dependabot-watcher inspect --repo OWNER/REPOSITORY       # One configured repository
+dependabot-watcher inspect --config /path/to/config.toml # A non-default profile
+dependabot-watcher plan --verbosity detailed             # More human-facing detail
 ```
 
-Optional advice is a separate command:
+Optional advice is a separate, explicit operation:
 
 ```bash
 dependabot-watcher advise
 dependabot-watcher advise --format json
-dependabot-watcher plan
-dependabot-watcher plan --format markdown
 ```
 
 Advice defaults to `off`. Enabling `economy` or `reviewed` requires explicit provider configuration; see the [configuration reference](docs/configuration.md).
@@ -63,7 +92,7 @@ Advanced setup can record a tested provider choice while still making no model c
 
 ```bash
 dependabot-watcher setup \
-  --repo example-org/example-app \
+  --repo OWNER/REPOSITORY \
   --advisory-mode economy \
   --triage-model your-model-id \
   --triage-reasoning high \
@@ -72,7 +101,7 @@ dependabot-watcher setup \
 
 Use `--offline` only when setup cannot verify GitHub access; the resulting profile remains visibly unverified. Use `--branch owner/repository=branch` for an intentional branch override. See the [setup and diagnostics guide](docs/setup.md).
 
-`plan` always collects fresh inspection evidence and uses the configured advisory mode. With the default `off` mode it makes zero model calls. Its concise output shows current repository state followed by an ordered maintenance strategy, expected alert impact, blockers, and the reinspection gate after every step. Plans never authorize mutation.
+`plan` always collects fresh inspection evidence and uses the configured advisory mode. With the default `off` mode it makes zero model calls. Its concise output shows current repository state followed by an ordered action list for the Dependabot queue, expected alert impact, blockers, and the reinspection gate after every step. Plans never authorize mutation.
 
 The default config path is `$XDG_CONFIG_HOME/dependabot-watcher/config.toml` or `~/.config/dependabot-watcher/config.toml`. On native Windows it resolves under `%APPDATA%`. `DEPENDABOT_WATCHER_CONFIG` can override it.
 
@@ -108,7 +137,7 @@ The provider boundary is generic, but only the first-party Codex CLI adapter is 
 
 Model output is treated as untrusted advice. The watcher binds it back to opaque collector-issued candidate IDs, rejects missing/unknown/duplicate results, and retains collector-owned repository, PR, alert, base, and head identity. Provider failure is reported without erasing deterministic inspection evidence.
 
-## Recommended Order planning
+## Ordered action planning
 
 `plan` keeps responsibilities separate: inspection owns facts, optional advice supplies bounded interpretation, and deterministic planning owns ordering, freshness, prerequisites, conflicts, and validation gates. A provider can make a recommendation more conservative, but cannot promote blocked work, change hard priority classes, invent a target, or make a plan executable.
 
