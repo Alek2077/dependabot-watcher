@@ -69,6 +69,14 @@ inspection + optional advice -> deterministic evidence graph -> Recommended Orde
 
 The GitHub collection and planning contracts are ecosystem-neutral wherever GitHub supplies normalized Dependabot evidence. Ecosystem adapters add bounded deterministic evidence; they do not replace the generic core or silently widen automatic-action eligibility. Provider adapters likewise translate one supported CLI or API transport into the stable advisory contract without owning repository policy, context selection, or action authority.
 
+## GitHub access boundary
+
+Authenticated access is a product requirement for private repositories and Dependabot security alerts; GitHub CLI is only the first implementation of that requirement. The current adapter delegates read-only repository, pull-request, and API calls to `gh`, which also supplies its supported browser, credential-store, or environment-token authentication. No IDE is required.
+
+Editor authentication is intentionally outside this boundary. The watcher does not inspect or extract VS Code or extension credentials, because they belong to another application's private integration and are not a safe or durable credential API.
+
+The `GitHubClient` protocol keeps collection and policy independent from GitHub CLI subprocess details. A later direct REST client, fine-grained-token adapter, OAuth/device flow, or GitHub App must preserve the same bounded reads, pagination, error visibility, secret-handling rules, and repository identity contract. Adding an adapter may reduce installation friction; it does not remove the need for explicit authorization.
+
 ## Safety invariants
 
 - The standalone core contains no GitHub mutation method.

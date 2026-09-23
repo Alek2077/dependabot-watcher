@@ -2,15 +2,27 @@
 
 Phase 5 adds a bounded first-use path without enabling mutation, scheduling, notifications, or silent model usage.
 
+## GitHub access and authentication
+
+GitHub authorization is unavoidable for private repositories and Dependabot security alerts. The current implementation uses GitHub CLI as its first GitHub transport and credential broker: the adapter issues bounded `gh pr`, `gh repo`, and `gh api` reads while the core depends on a transport-neutral `GitHubClient` protocol.
+
+GitHub CLI does not require an IDE. Its browser login, credential store, and supported token environment variables are independent from VS Code or another editor. The watcher deliberately does not inspect, extract, or reuse editor-managed credentials; those credentials are scoped to another application and are not a stable public integration contract.
+
+The current code issues read-only GitHub requests, but a user's existing `gh` credential may carry broader authority. Before public release, document and validate a least-privilege credential profile scoped to the selected repositories and required read surfaces. Future GitHub adapters may support a directly supplied fine-grained token, OAuth/device flow, or a GitHub App when their added complexity is justified. These adapters can remove the hard GitHub CLI dependency, but not the underlying authorization requirement.
+
 ## Recommended setup
 
 ```bash
 dependabot-watcher setup --repo owner/repository
 ```
 
+`owner/repository` denotes the GitHub repository identifier and must be replaced with a real value. It is example syntax, not a built-in demonstration repository.
+
 The command checks GitHub CLI authentication, verifies read-only repository and configured-branch access, discovers default branches, creates a non-secret operational profile, and prints the exact `doctor` and `plan` commands to run next.
 
 The generated profile is deliberately conservative: advisory mode `off`, autonomy `read_only`, mutation disabled, concise human reporting, complete JSON machine output, and no scheduler or notification configuration.
+
+Subsequent commands load this profile automatically from the platform configuration path. Setup flags are initial choices, not arguments users or agents must repeat for every run.
 
 Setup publishes the complete file atomically and refuses to overwrite an existing path. Move or edit an existing configuration deliberately rather than relying on a destructive force flag.
 
