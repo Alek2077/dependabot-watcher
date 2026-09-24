@@ -32,7 +32,9 @@ Actual execution creates a current-user-owned private state directory, takes an 
 
 A retry reads live PR state. If the exact planned head is already merged, it does not call the merge endpoint again; an authorized retry appends a reconciliation event and records whether a prior success event exists. A closed-unmerged PR, changed head/base, partial reinspection, policy change, malformed audit, insecure state permissions, or existing lock fails closed.
 
-After success or failure, re-run inspection before considering another action. A leftover lock after interruption must be inspected alongside GitHub state and the audit log; it is not automatically deleted as stale.
+After a successful merge, execution performs a model-free repository reinspection before releasing the local action flow. The response identifies the validated deterministic classification and required checks, GitHub merge result, and refreshed counts for open PRs, open alerts, alerts without direct open-PR coverage, attention-required items, and recommended remaining steps. Counts are shown only for complete, structurally valid collection. This is an immediate observation rather than a promise that GitHub has already completed every downstream dependency scan. If reinspection is partial, malformed, or fails after GitHub has accepted the merge, the merge remains reported as successful and the post-action state is explicitly unavailable; run `inspect` and `plan` before considering another action.
+
+After failure, re-run inspection before considering another action. A leftover lock after interruption must be inspected alongside GitHub state and the audit log; it is not automatically deleted as stale.
 
 ## Automatic execution boundary
 

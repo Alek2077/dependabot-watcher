@@ -606,6 +606,7 @@ def render_execution(report: dict[str, Any], output_format: str) -> str:
     if output_format == "json":
         return render_json(report)
     binding = report.get("binding") or {}
+    decision = report.get("decision") or {}
     heading = (
         "Dependabot Watcher execution preflight"
         if report.get("mode") == "execute_preflight"
@@ -618,10 +619,43 @@ def render_execution(report: dict[str, Any], output_format: str) -> str:
             f"Target: {binding.get('repository')} PR #{binding.get('pull_request')} "
             f"@ {binding.get('head_sha')}"
         ),
+        f"Update: {decision.get('title') or 'unknown'}",
+        f"Base: {binding.get('expected_base')}",
         f"Merge method: {binding.get('merge_method')}",
+        f"Classification: {decision.get('classification') or 'unknown'}",
+        "Decision source: deterministic policy (no model used)",
         f"Action: {report.get('action_id')}",
         f"Mutation performed: {'yes' if report.get('mutation_performed') else 'no'}",
     ]
+    required_checks = decision.get("required_checks") or []
+    if required_checks:
+        checks = ", ".join(
+            f"{item.get('name')} ({item.get('state')})" for item in required_checks
+        )
+        lines.append(f"Required checks: {checks}")
+    result = report.get("result") or {}
+    if result:
+        result_text = str(result.get("message") or report.get("status"))
+        if result.get("merge_commit_sha"):
+            result_text += f" @ {result['merge_commit_sha']}"
+        lines.append(f"Result: {result_text}")
+    post_action = report.get("post_action_state") or {}
+    if post_action:
+        lines.append(f"Post-action reinspection: {post_action.get('status')}")
+        if post_action.get("status") != "unavailable":
+            lines.append(
+                "Remaining: "
+                f"{post_action.get('open_pull_requests')} open PRs | "
+                f"{post_action.get('open_alerts')} open alerts | "
+                f"{post_action.get('alerts_without_direct_open_pr_coverage')} "
+                "without direct open-PR coverage | "
+                f"{post_action.get('attention_required')} attention required | "
+                f"{post_action.get('recommended_steps')} recommended steps"
+            )
+        if post_action.get("reason"):
+            lines.append(f"Post-action note: {post_action['reason']}")
+        if post_action.get("next"):
+            lines.append(f"Next: {post_action['next']}")
     if report.get("approval_token"):
         lines.append(f"Approval token: {report['approval_token']}")
     if report.get("next"):
