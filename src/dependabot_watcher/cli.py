@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import contextmanager
 from enum import IntEnum
 from pathlib import Path
+from typing import Iterator, TextIO
 
 from . import __version__
 from .advisory import AdvisoryError, advise
@@ -25,6 +27,37 @@ class ExitCode(IntEnum):
     ADVISORY_ERROR = 5
     PLANNING_ERROR = 6
     INTERNAL_ERROR = 70
+
+
+@contextmanager
+def _live_progress(
+    message: str,
+    *,
+    enabled: bool,
+    stream: TextIO,
+) -> Iterator[None]:
+    """Show transient progress without contaminating redirected or structured output."""
+
+    if not enabled:
+        yield
+        return
+    stream.write(message)
+    stream.flush()
+    try:
+        yield
+    finally:
+        stream.write("\r" + (" " * len(message)) + "\r")
+        stream.flush()
+
+
+def _progress_enabled(output_format: str, *, stdout: TextIO, stderr: TextIO) -> bool:
+    """Return whether transient progress is safe for this output boundary."""
+
+    return (
+        output_format == "text"
+        and bool(getattr(stdout, "isatty", lambda: False)())
+        and bool(getattr(stderr, "isatty", lambda: False)())
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -218,17 +251,32 @@ def main(argv: list[str] | None = None) -> int:
         config = _select_repositories(load_config(args.config), args.repositories)
         client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
         verbosity = args.verbosity or config.operation.report_verbosity
-        if args.command == "inspect":
-            report = inspect(config, client)
-            rendered = render(report, args.output_format, verbosity=verbosity)
-        elif args.command == "advise":
-            report = advise(config, client)
-            rendered = render_advisory(report, args.output_format, verbosity=verbosity)
-        elif args.command == "plan":
-            report = plan(config, client)
-            rendered = render_plan(report, args.output_format, verbosity=verbosity)
-        else:  # pragma: no cover - protected by argparse
-            parser.error("A command is required.")
+        progress_messages = {
+            "inspect": "Collecting live GitHub evidence...",
+            "advise": "Collecting evidence and preparing optional advice...",
+            "plan": "Collecting evidence and building the maintenance plan...",
+        }
+        progress_enabled = _progress_enabled(
+            args.output_format,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+        with _live_progress(
+            progress_messages[args.command],
+            enabled=progress_enabled,
+            stream=sys.stderr,
+        ):
+            if args.command == "inspect":
+                report = inspect(config, client)
+                rendered = render(report, args.output_format, verbosity=verbosity)
+            elif args.command == "advise":
+                report = advise(config, client)
+                rendered = render_advisory(report, args.output_format, verbosity=verbosity)
+            elif args.command == "plan":
+                report = plan(config, client)
+                rendered = render_plan(report, args.output_format, verbosity=verbosity)
+            else:  # pragma: no cover - protected by argparse
+                parser.error("A command is required.")
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return ExitCode.CONFIGURATION_ERROR

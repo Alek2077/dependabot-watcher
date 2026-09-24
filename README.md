@@ -74,6 +74,7 @@ Common output and scope options:
 ```bash
 dependabot-watcher inspect --format json                 # Complete machine-readable evidence
 dependabot-watcher inspect --format markdown             # Human-readable Markdown
+dependabot-watcher inspect --verbosity standard          # Item-level PR and alert details
 dependabot-watcher inspect --repo OWNER/REPOSITORY       # One configured repository
 dependabot-watcher inspect --config /path/to/config.toml # A non-default profile
 dependabot-watcher plan --verbosity detailed             # More human-facing detail
@@ -102,6 +103,8 @@ dependabot-watcher setup \
 Use `--offline` only when setup cannot verify GitHub access; the resulting profile remains visibly unverified. Use `--branch owner/repository=branch` for an intentional branch override. See the [setup and diagnostics guide](docs/setup.md).
 
 `plan` always collects fresh inspection evidence and uses the configured advisory mode. With the default `off` mode it makes zero model calls. Its concise output shows current repository state followed by an ordered action list for the Dependabot queue, expected alert impact, blockers, and the reinspection gate after every step. Plans never authorize mutation.
+
+A deterministic plan prioritizes collected GitHub, manifest, check, and policy evidence; it is not proof that an update is compatible with the application. For ambiguous, grouped, transitive, major, sensitive, or otherwise complex updates, use optional model advice together with repository-specific tests and deployment checks. Model advice can improve investigation or make an action more conservative, but it cannot authorize mutation or replace validation.
 
 The default config path is `$XDG_CONFIG_HOME/dependabot-watcher/config.toml` or `~/.config/dependabot-watcher/config.toml`. On native Windows it resolves under `%APPDATA%`. `DEPENDABOT_WATCHER_CONFIG` can override it.
 
@@ -185,5 +188,8 @@ The core commands are scheduler-independent. Task Scheduler, cron/systemd, launc
 python -m pip install -e '.[dev]'
 pytest
 ```
+
+Material features and onboarding changes should also pass the documented
+[installed-path validation workflow](docs/validation-workflow.md).
 
 This repository intentionally contains only synthetic examples and fixtures. Private repository identities, workstation paths, schedules, notification settings, and historical runtime artifacts belong outside the product source.

@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping
 
 from .config import (
     ConfigError,
+    default_config_path,
     normalize_branch_name,
     normalize_repository_name,
     parse_config,
@@ -349,12 +350,17 @@ def setup(
     except ConfigError as exc:
         raise SetupError(f"Setup choices are invalid: {exc}") from exc
     _write_exclusive(expanded, _render_config(data))
+    automatically_loaded = expanded.resolve() == default_config_path().expanduser().resolve()
+    config_argument = (
+        "" if automatically_loaded else f" --config {_toml_string(str(expanded))}"
+    )
     return {
         "schema_version": SETUP_SCHEMA_VERSION,
         "mode": "setup",
         "generated_at": generated_at,
         "status": "created",
         "configuration_path": str(expanded),
+        "configuration_auto_loaded": automatically_loaded,
         "profile_source": data["profile"]["source"],
         "repositories": data["repositories"],
         "operation": data["operation"],
@@ -372,7 +378,7 @@ def setup(
             "persistent_local_writes": True,
         },
         "next_commands": [
-            f"dependabot-watcher doctor --config {_toml_string(str(expanded))}",
-            f"dependabot-watcher plan --config {_toml_string(str(expanded))}",
+            f"dependabot-watcher doctor{config_argument}",
+            f"dependabot-watcher plan{config_argument}",
         ],
     }

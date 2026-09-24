@@ -46,8 +46,12 @@ def test_cli_offline_setup_creates_safe_profile_without_external_calls(
     assert report["capabilities"]["persistent_local_writes"] is True
     assert config.repositories[0].default_branch == "develop"
     assert config.operation.mutation_enabled is False
-    assert "Verification: offline" in render_operational(report, "text")
-    assert "Verification: `offline`" in render_operational(report, "markdown")
+    assert "Verification: offline; GitHub access was not verified" in render_operational(
+        report, "text"
+    )
+    assert "Verification: offline; GitHub access was not verified" in render_operational(
+        report, "markdown"
+    )
 
 
 def test_cli_doctor_uses_partial_exit_for_attention_report(
@@ -157,6 +161,7 @@ def test_doctor_human_outputs_include_actionable_error_detail() -> None:
     assert "Next: Correct the configuration." in text
     assert "Unknown operation key: unsafe." in markdown
     assert "Next: Correct the configuration." in markdown
+    assert "not checked (advice is off)" in text
 
 
 def test_cli_setup_defaults_to_human_text_and_existing_path_fails_cleanly(

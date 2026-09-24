@@ -147,6 +147,8 @@ Human reporting should eventually offer concise, standard, and detailed levels o
 
 The Phase 5 implementation added `setup`, `doctor`, the versioned non-secret operational profile, presentation-only verbosity, fail-visible Dependabot readiness checks, and conservative first-use documentation. Deterministic validation, installed-path dogfood, live read-only preflight, and independent review completed before merge. It deliberately leaves scheduling, notifications, persistent operational history, and mutation for later phases.
 
+The current `setup` command creates a conservative profile from explicit repository and provider choices. Online setup verifies GitHub access and the selected repository/branch; `--offline` creates an explicitly unverified profile for later `doctor` validation. Setup does not enumerate arbitrary installed agent tools or silently choose a provider, model, spend level, or autonomy level. A later guided setup may use bounded `doctor` evidence and supported-adapter metadata to recommend those choices, while retaining non-interactive flags for agents. It must not inspect secret stores, infer credentials from unrelated applications, or infer consent to model spend or GitHub mutation.
+
 ## Later: gated execution and autonomy
 
 Mutation authority is separate from provider selection, analysis spend, and report verbosity. Potential modes are:
@@ -156,6 +158,8 @@ Mutation authority is separate from provider selection, analysis spend, and repo
 - fully automatic actions inside explicit deterministic policy.
 
 Recommended setup must remain non-mutating until an execution phase is implemented and validated. Later mutation requires explicit opt-in, exact repository/PR/head binding, current live-state rechecks, repository merge-policy enforcement, bounded action counts, audit records, and recovery/downstream-impact guidance. A model may recommend or veto; it does not independently authorize an action or expand its target.
+
+A deterministic plan alone is never sufficient evidence for mutation. Phase 6 should classify execution policy by risk and evidence. Model-free execution may eventually be allowed only for an explicit, narrowly bounded, dogfooded low-risk policy class with complete deterministic evidence and required repository validation. Ambiguous, sensitive, major, ecosystem-unsupported, or otherwise higher-risk actions should require configured model review and/or human approval. If a policy requires model review and the provider is unavailable, incomplete, or over budget, execution must fail closed rather than silently fall back to model-free mutation. Passing model review does not replace tests, required checks, deployment gates, or freshness reinspection.
 
 The long-term fully automated mode should produce concise action summaries—what merged, closed, deferred, or failed and why—while retaining detailed machine-readable evidence for agents and audits.
 
@@ -175,4 +179,6 @@ The long-term fully automated mode should produce concise action summaries—wha
 - A high-coverage/high-spend analysis mode after evaluating whether triage still adds value or direct review is clearer.
 - Bounded commit, patch, and PR-body-staleness evidence when the API-first inspection record is insufficient; these signals should be collected or derived by the core rather than accepted as model-owned facts.
 - Repeated private dogfooding through the same installation and setup path intended for users.
+- Apply the [installed-path validation workflow](validation-workflow.md) proportionately after material features or onboarding changes so human, agent, machine-output, safety, and cleanup behavior are exercised rather than inferred from unit tests alone.
+- After Phase 6 proves the first gated-action exercise, create one concise, sanitized, self-contained `docs/validation.md` before publication. Record reproducible commands and results, live dogfood boundaries, independently validated AI-review findings and fix-check closure, known limitations, and links to public PRs, commits, and CI. Preserve detailed private Lab records as source evidence; do not copy private paths, target identities, internal agent handles, quota anecdotes, or model scorecards into the public repository.
 - Security, privacy, history, license, contribution, support, and release gates before public visibility.
