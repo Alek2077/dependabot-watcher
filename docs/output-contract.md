@@ -16,7 +16,7 @@ JSON is the automation contract. Its top-level fields are:
 - `summary`: aggregate counts; and
 - `repositories`: per-repository PR, alert, recent-sensitive-change, truncation, and error evidence.
 
-Every inspected pull request includes collector-owned repository, PR, base, and head identity plus normalized named status-check evidence. `classification` is either `baseline_candidate`, `attention_required`, or `collection_error`. It is not an execution decision, and `mutation_authorized` is always false.
+Every inspected pull request includes collector-owned repository, PR, base, and head identity plus normalized named status-check evidence. Each status-check record preserves whether GitHub supplied a Checks API `check_run` or a legacy commit `status_context`; duplicate names remain visible instead of being collapsed. `classification` is either `baseline_candidate`, `attention_required`, or `collection_error`. It is not an execution decision, and `mutation_authorized` is always false.
 
 An open alert is called `likely_covered_by_open_pr` only when a verified Dependabot PR matches the exact package, ecosystem branch, and manifest path, and its target release meets the alert's first-patched threshold. For plain numeric dotted releases, the report distinguishes `exact`, `equivalent_release` (for example `2.9` versus `2.9.0`), `newer_release`, and `older_release`. Qualified or otherwise non-numeric versions remain `unverified` rather than being guessed. A related PR without complete evidence remains `related_open_pr_unverified` and still counts as unresolved. Open alerts possibly associated with a recent merge also remain in the unresolved count until GitHub closes them.
 
@@ -68,13 +68,13 @@ Conflict records identify overlapping changed paths or shared alert impact betwe
 
 ## Operational output
 
-`dependabot-watcher doctor` emits a separate versioned report with runtime details, sanitized tool readiness, configuration/profile status, configured repository and branch access, the configuration path actually detected, ecosystems/support depth, findings, and all mutation/model/persistence capabilities explicitly false. A doctor status of `attention` or `blocked` exits with code `4`; the report remains available on stdout.
+`dependabot-watcher doctor` emits a separate versioned report with runtime details, sanitized tool readiness, configuration/profile status, configured repository and branch access, bounded Dependabot-alert read readiness, the configuration path actually detected, ecosystems/support depth, findings, and all mutation/model/persistence capabilities explicitly false. A doctor status of `attention` or `blocked` exits with code `4`; the report remains available on stdout.
 
 `dependabot-watcher setup` emits a versioned receipt for the one configuration file it explicitly created, the selected repositories and safe operation settings, verification state, and exact next commands. Its `persistent_local_writes` capability is true because setup is explicitly a configuration-writing command; model calls, GitHub mutation, notifications, and scheduling remain false. Operational reports use the same established `persistent_local_writes` and `github_mutations` capability keys as inspection, advice, and planning.
 
 ## Execution output and audit
 
-Calling `execute` without `--approval-token` is a read-only live preflight. A ready report includes the exact target binding, stable action ID, `mutation_performed: false`, `mutation_authorized: false`, and the approval token for that current action. An already-applied report returns no token.
+Calling `execute` without `--approval-token` is a read-only live preflight. A ready report includes the exact target binding, stable action ID, `mutation_performed: false`, `mutation_authorized: false`, and the deterministic approval confirmation token for that current action. This token provides exact-action two-step confirmation; it is not an independent credential, signature, approver identity, or proof of human interaction. An already-applied report returns no token.
 
 Calling it with the current token repeats the recheck and may return `merged`, `already_applied`, or an error. A merged report includes `mutation_performed: true`, `mutation_authorized: true`, the exact binding, validated deterministic decision context, GitHub's bounded merge result, audit path, and recovery/next-step guidance. It also includes a model-free post-action observation with remaining PR, alert, uncovered-alert, attention-required, and recommended-step counts when that follow-up collection is complete and structurally valid. A partial, malformed, or failed follow-up collection is represented as unavailable and its counts are suppressed without disguising or reversing the already completed merge. The authority applies only to that completed attempt; it does not change the saved plan or authorize later work.
 

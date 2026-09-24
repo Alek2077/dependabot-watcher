@@ -657,7 +657,7 @@ def render_execution(report: dict[str, Any], output_format: str) -> str:
         if post_action.get("next"):
             lines.append(f"Next: {post_action['next']}")
     if report.get("approval_token"):
-        lines.append(f"Approval token: {report['approval_token']}")
+        lines.append(f"Approval confirmation token: {report['approval_token']}")
     if report.get("next"):
         lines.append(f"Next: {report['next']}")
     if report.get("audit_path"):

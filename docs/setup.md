@@ -8,7 +8,7 @@ GitHub authorization is unavoidable for private repositories and Dependabot secu
 
 GitHub CLI does not require an IDE. Its browser login, credential store, and supported token environment variables are independent from VS Code or another editor. The watcher deliberately does not inspect, extract, or reuse editor-managed credentials; those credentials are scoped to another application and are not a stable public integration contract.
 
-The current code issues read-only GitHub requests, but a user's existing `gh` credential may carry broader authority. Before public release, document and validate a least-privilege credential profile scoped to the selected repositories and required read surfaces. Future GitHub adapters may support a directly supplied fine-grained token, OAuth/device flow, or a GitHub App when their added complexity is justified. These adapters can remove the hard GitHub CLI dependency, but not the underlying authorization requirement.
+The default product path issues read-only GitHub requests. The sole mutating edge is the explicitly enabled exact-head PR merge in `execute`; a user's existing `gh` credential may carry broader authority than either path needs. Before public release, document and validate least-privilege credential profiles for the selected repositories, required read surfaces, and the optional merge capability. Future GitHub adapters may support a directly supplied fine-grained token, OAuth/device flow, or a GitHub App when their added complexity is justified. These adapters can remove the hard GitHub CLI dependency, but not the underlying authorization requirement.
 
 ## Recommended setup
 
@@ -47,7 +47,7 @@ Setup checks Codex CLI availability and authentication but never invokes a model
 
 ## Approval-gated execution setup
 
-Use the execution option only after verifying the repository's real merge method and exact required-check names:
+Use the execution option only after verifying the repository's real merge method and exact required-check names. A read-only `inspect --verbosity standard` or `plan --format json` report exposes observed names; confirm them against the repository's branch protection or ruleset rather than guessing:
 
 ```bash
 dependabot-watcher setup \
@@ -58,9 +58,9 @@ dependabot-watcher setup \
   --acknowledge-mutation
 ```
 
-Repeat `--required-check` for every check the watcher must observe as passing. For multiple repositories, supply repository-qualified merge/check settings for each. Check names containing spaces should be shell-quoted.
+Repeat `--required-check` for every check the watcher must observe as explicitly successful. Names match exactly and case-sensitively, and ambiguous duplicate names fail closed. A qualifying result is either a completed check run with `conclusion = SUCCESS` or a legacy commit-status context with `state = SUCCESS`; `NEUTRAL`, `SKIPPED`, pending, missing, malformed, unknown, and failing evidence does not satisfy an execution gate. For multiple repositories, supply repository-qualified merge/check settings for each. Check names containing spaces should be shell-quoted.
 
-This setup call still performs no mutation. It records that later `execute` calls may request approval. Each action separately requires a complete saved JSON plan, a read-only live execution preflight, and the exact approval token bound to that current repository, PR, base, head SHA, and merge method. Setup refuses to infer mutation consent from model/provider choices.
+This setup call still performs no mutation. It records that later `execute` calls may request approval. Each action separately requires a complete saved JSON plan, a read-only live execution preflight, and the exact approval confirmation token bound to that current repository, PR, base, head SHA, and merge method. The deterministic token is a two-invocation confirmation value, not a secret, signature, separate approver identity, or proof of human interaction. Setup refuses to infer mutation consent from model/provider choices.
 
 ## Doctor
 
@@ -70,7 +70,7 @@ dependabot-watcher doctor --format json
 dependabot-watcher doctor --offline
 ```
 
-`doctor` reports OS/Python runtime, CLI readiness, configuration/profile status, read-only repository and configured-branch access, default-branch drift, detected Dependabot ecosystems, and support depth. It recognizes both `.github/dependabot.yml` and `.github/dependabot.yaml`; missing, inaccessible, malformed, oversized, or structurally excessive configuration remains visible as an attention state rather than being treated as ready.
+`doctor` reports OS/Python runtime, CLI readiness, configuration/profile status, read-only repository and configured-branch access, Dependabot security-alert read access, default-branch drift, detected Dependabot ecosystems, and support depth. Its bounded alert probe retrieves at most one open alert and retains only the readiness state. It recognizes both `.github/dependabot.yml` and `.github/dependabot.yaml`; missing, inaccessible, malformed, oversized, or structurally excessive configuration remains visible as an attention state rather than being treated as ready.
 
 `doctor` discards raw authentication output. It never shows tokens, reads secret files, invokes a model, writes state, mutates GitHub, sends notifications, or creates schedules. Provider authentication is not probed when advisory mode is off. `--offline` still checks local executable versions but skips authentication and repository calls, so its result remains `attention` rather than claiming verified readiness.
 

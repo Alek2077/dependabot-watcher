@@ -77,6 +77,7 @@ def saved_plan() -> dict[str, Any]:
         "status_checks": [
             {
                 "name": "CI",
+                "kind": "check_run",
                 "state": "passing",
                 "status": "COMPLETED",
                 "conclusion": "SUCCESS",
@@ -306,9 +307,11 @@ def test_preflight_rejects_changed_material_repository_evidence(
 ) -> None:
     report = saved_plan()
     changed = saved_plan()
-    changed["repositories"][0]["recommended_order"][0]["status_checks"][0][
-        "conclusion"
-    ] = "NEUTRAL"
+    changed_digest = "e" * 64
+    changed["repositories"][0]["alert_snapshot"]["digest"] = changed_digest
+    changed["repositories"][0]["recommended_order"][0]["freshness"][
+        "alert_snapshot_digest"
+    ] = changed_digest
     refresh_plan_identities(changed)
     monkeypatch.setattr(
         "dependabot_watcher.execution.plan",
@@ -350,6 +353,121 @@ def test_preflight_requires_configured_passing_checks(
             ExecutionClient(),
             report,
             plan_step_id(report),
+        )
+
+
+@pytest.mark.parametrize("conclusion", ["NEUTRAL", "SKIPPED"])
+def test_preflight_requires_explicit_success_for_configured_check(
+    conclusion: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    check = report["repositories"][0]["recommended_order"][0]["status_checks"][0]
+    check["conclusion"] = conclusion
+    refresh_plan_identities(report)
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+
+    with pytest.raises(ExecutionError, match="not explicitly successful"):
+        preflight_execution(
+            execution_config(),
+            ExecutionClient(),
+            report,
+            plan_step_id(report),
+        )
+
+
+def test_preflight_accepts_successful_legacy_status_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    check = report["repositories"][0]["recommended_order"][0]["status_checks"][0]
+    check.update(
+        {
+            "kind": "status_context",
+            "state": "passing",
+            "status": "",
+            "conclusion": "SUCCESS",
+        }
+    )
+    refresh_plan_identities(report)
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+
+    result = preflight_execution(
+        execution_config(), ExecutionClient(), report, plan_step_id(report)
+    )
+
+    assert result["status"] == "ready"
+
+
+@pytest.mark.parametrize(
+    ("check_update", "message"),
+    [
+        ({"kind": "check_run", "status": "BOGUS", "conclusion": "SUCCESS"}, "not explicitly successful"),
+        ({"kind": "", "status": "COMPLETED", "conclusion": "SUCCESS"}, "not explicitly successful"),
+        (
+            {
+                "kind": "status_context",
+                "state": "unknown",
+                "status": "",
+                "conclusion": "SUCCESS",
+            },
+            "not explicitly successful",
+        ),
+    ],
+)
+def test_preflight_rejects_malformed_success_check_evidence(
+    check_update: dict[str, str],
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    check = report["repositories"][0]["recommended_order"][0]["status_checks"][0]
+    check.update(check_update)
+    refresh_plan_identities(report)
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+
+    with pytest.raises(ExecutionError, match=message):
+        preflight_execution(
+            execution_config(), ExecutionClient(), report, plan_step_id(report)
+        )
+
+
+@pytest.mark.parametrize("duplicate_name", ["CI", "ci"])
+def test_preflight_rejects_ambiguous_duplicate_check_names(
+    duplicate_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    duplicate = dict(
+        report["repositories"][0]["recommended_order"][0]["status_checks"][0]
+    )
+    duplicate["name"] = duplicate_name
+    duplicate["conclusion"] = "SKIPPED"
+    report["repositories"][0]["recommended_order"][0]["status_checks"].append(
+        duplicate
+    )
+    refresh_plan_identities(report)
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+
+    with pytest.raises(ExecutionError, match="ambiguous duplicate"):
+        preflight_execution(
+            execution_config(), ExecutionClient(), report, plan_step_id(report)
+        )
+
+
+def test_preflight_matches_configured_check_names_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    report["repositories"][0]["recommended_order"][0]["status_checks"][0][
+        "name"
+    ] = "ci"
+    refresh_plan_identities(report)
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+
+    with pytest.raises(ExecutionError, match="CI"):
+        preflight_execution(
+            execution_config(), ExecutionClient(), report, plan_step_id(report)
         )
 
 

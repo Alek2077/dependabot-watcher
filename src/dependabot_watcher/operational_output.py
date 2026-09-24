@@ -46,7 +46,7 @@ def _doctor_text(report: dict[str, Any]) -> str:
         (
             "Execution: "
             + (
-                "approval-gated capability enabled; every action still requires an exact token"
+                "approval-gated capability enabled; every action still requires an exact confirmation token"
                 if (configuration.get("operation") or {}).get("mutation_enabled")
                 else "read-only"
             )
@@ -70,6 +70,7 @@ def _doctor_text(report: dict[str, Any]) -> str:
         ecosystems = ", ".join(repository["ecosystems"]) or "not detected"
         lines.append(
             f"{repository['repository']}: access {repository['access']} | "
+            f"alerts {repository['dependabot_alert_access']} | "
             f"configured branch {repository['configured_branch']} "
             f"({repository['configured_branch_access']}) | "
             f"remote default {repository['observed_default_branch'] or 'unknown'} | "
@@ -99,7 +100,7 @@ def _doctor_markdown(report: dict[str, Any]) -> str:
         f"Status: **{_escape(report['status'])}**  ",
         f"Configuration: `{_escape(configuration['status'])}` at `{_escape(configuration['path'])}`  ",
         (
-            "Execution: **approval-gated capability enabled**; every action still requires an exact token  "
+            "Execution: **approval-gated capability enabled**; every action still requires an exact confirmation token  "
             if (configuration.get("operation") or {}).get("mutation_enabled")
             else "Execution: **read-only**  "
         ),
@@ -128,14 +129,15 @@ def _doctor_markdown(report: dict[str, Any]) -> str:
     if report["repositories"]:
         lines.extend(
             [
-                "| Repository | Access | Configured branch | Remote default | Ecosystems |",
-                "|---|---|---|---|---|",
+                "| Repository | Access | Alert access | Configured branch | Remote default | Ecosystems |",
+                "|---|---|---|---|---|---|",
             ]
         )
         for repository in report["repositories"]:
             ecosystems = ", ".join(repository["ecosystems"]) or "not detected"
             lines.append(
                 f"| {_escape(repository['repository'])} | {_escape(repository['access'])} | "
+                f"{_escape(repository['dependabot_alert_access'])} | "
                 f"{_escape(repository['configured_branch'])} "
                 f"({_escape(repository['configured_branch_access'])}) | "
                 f"{_escape(repository['observed_default_branch'] or 'unknown')} | "
@@ -166,7 +168,7 @@ def _setup_text(report: dict[str, Any]) -> str:
     verification_mode = (
         "offline; GitHub access was not verified"
         if report["verification"]["mode"] == "offline"
-        else "read-only GitHub access verified"
+        else "read-only repository access verified; run doctor for alert readiness"
     )
     lines = [
         "Dependabot Watcher setup",
@@ -197,7 +199,7 @@ def _setup_markdown(report: dict[str, Any]) -> str:
     verification_mode = (
         "offline; GitHub access was not verified"
         if report["verification"]["mode"] == "offline"
-        else "read-only GitHub access verified"
+        else "read-only repository access verified; run doctor for alert readiness"
     )
     lines = [
         "# Dependabot Watcher setup",

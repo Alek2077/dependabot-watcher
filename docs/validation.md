@@ -27,6 +27,24 @@ The real exercise exposed one usability gap: the merged command required a separ
 
 The implementation and pre-merge evidence were merged in [PR #8](https://github.com/Alek2077/dependabot-watcher/pull/8). Hosted GitHub Actions did not start because of an external account-level billing/authorization restriction, so this record does not claim a remote matrix result. Functioning hosted CI on the release commit remains a publication gate.
 
+## Post-Phase 6 authority and onboarding correction — 2026-09-24
+
+A private authenticated onboarding checkpoint used the same read-only third-party-adoption prompt across six model/harness combinations. The reviewers materially agreed on the product's approval-gated, non-unattended boundary and exposed several authority and onboarding details that needed correction rather than a Phase 6 redesign.
+
+The resulting correction:
+
+- requires exact, case-sensitive, unambiguous configured check names;
+- preserves GitHub's distinct CheckRun and legacy StatusContext evidence instead of collapsing duplicate names;
+- accepts execution success only from a structurally valid completed CheckRun with `conclusion = SUCCESS` or a structurally valid StatusContext with `state = SUCCESS`;
+- rejects neutral, skipped, pending, missing, malformed, mixed-kind, coerced, boundary-whitespace, duplicate, unknown, and failing check evidence;
+- adds a bounded, projected Dependabot-alert permission/readiness probe to `doctor`, with sanitized attention results for command, size, JSON, and shape failures;
+- characterizes the deterministic approval value as an exact-action two-invocation confirmation rather than a secret, signature, separate approver identity, or proof of human presence; and
+- clarifies private saved-plan handling, authenticated cloning, setup/audit persistence, rebase-merge terminology, required-check discovery, one-action plan invalidation, optional-model evidence/cost disclosure, and the longer-term closed-loop automation/recovery direction.
+
+The final deterministic suite passed 266 tests. Pyright reported zero diagnostics; compileall and repository diff checks passed. A wheel built from an isolated copy of the final tree was installed into a disposable tool environment and exercised through `--version`, `--help`, approval-gated setup, live `doctor`, `inspect`, `plan`, and tokenless `execute` preflight. Doctor reported Dependabot-alert access available, inspection and planning were complete, the live required check retained its `check_run` kind with explicit success, and preflight remained model-free, mutation-free, state-free, and audit-free. The disposable checkout, installation, configuration, plan, and generated confirmation value were removed afterward.
+
+Independent OpenAI Codex and Google Gemini fix checks inspected the final correction. The Codex reviewer found and drove closure of ambiguous/malformed status-record and alert-parser cases across iterative checks; its closure pass reported no remaining medium/high finding. The fresh Gemini fix check independently reported no medium/high finding. Reviewer claims were checked against source and deterministic/live validation rather than accepted automatically.
+
 ## Known limits
 
 - This proves one approval-gated merge and idempotent retry, not unattended execution.
