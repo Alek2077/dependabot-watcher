@@ -1,12 +1,12 @@
 # Dependabot Watcher
 
-**Turn scattered Dependabot pull requests and security alerts into one clear, ordered action list across your repositories.**
+**Turn scattered Dependabot pull requests and security alerts into one clear action list, then safely execute one approved update at a time.**
 
 Dependabot Watcher is a local-first, provider-neutral control plane for Dependabot activity. It focuses on open pull requests authored by Dependabot, connects them to security alerts and recent sensitive changes, and can provide raw inspection facts, optional model-assisted advice, or a deterministic order of actions for handling the queue.
 
-The project is currently a **read-only private pre-release**. It produces text, JSON, or Markdown on stdout, but does not authorize or perform GitHub changes.
+The project is currently a **private pre-release with one narrow approval-gated action**. Inspection, advice, and planning remain non-mutating. An explicitly enabled `execute` command can merge one exact, freshly revalidated Dependabot pull request only after a separate preflight produces an action-bound approval token.
 
-It does not merge, close, comment, approve, label, notify, clone target repositories, or write persistent runtime state. `setup` is the sole explicit configuration-writing command. The default configuration invokes no model.
+It does not close, comment, approve, label, rebase, create remediation changes, notify, clone target repositories, schedule itself, or execute unattended. The default setup remains model-off and read-only. Approved execution writes a local append-only audit trail; no other runtime command persists product state.
 
 The intended product end state is safe automation of the Dependabot maintenance loop: inspect, plan, recheck, execute only policy-authorized actions, and report what changed or still needs attention. Future provider adapters may use an officially supported subscription-authenticated CLI or an API credential, depending on what each provider permits. Deterministic collection, candidate grouping, sufficient decision-relevant context, and escalation only when useful should keep ordinary runs efficient without assuming that every repository needs the strongest available model.
 
@@ -60,6 +60,7 @@ Choose the command that matches the result you want:
 | `dependabot-watcher inspect` | Returns current Dependabot PR, alert, check, and repository facts without using a model. |
 | `dependabot-watcher advise` | Adds optional per-PR or per-alert model recommendations when advice is explicitly configured. |
 | `dependabot-watcher plan` | Produces an ordered action list for the complete queue, using optional advice if configured; it does not execute the actions. |
+| `dependabot-watcher execute` | Revalidates one saved plan step, then either prints its exact approval token or uses that token to merge only the bound PR head. |
 
 Run the preflight, then inspect the evidence or request the ordered action list:
 
@@ -106,6 +107,39 @@ Use `--offline` only when setup cannot verify GitHub access; the resulting profi
 
 A deterministic plan prioritizes collected GitHub, manifest, check, and policy evidence; it is not proof that an update is compatible with the application. For ambiguous, grouped, transitive, major, sensitive, or otherwise complex updates, use optional model advice together with repository-specific tests and deployment checks. Model advice can improve investigation or make an action more conservative, but it cannot authorize mutation or replace validation.
 
+## Approval-gated execution
+
+Execution is off by default. A new profile can opt in only by naming an explicit merge method and at least one required passing check for every selected repository:
+
+```bash
+dependabot-watcher setup \
+  --repo OWNER/REPOSITORY \
+  --autonomy approval_required \
+  --merge-method OWNER/REPOSITORY=squash \
+  --required-check OWNER/REPOSITORY=CI \
+  --acknowledge-mutation
+```
+
+Save a complete machine-readable plan, then run a non-mutating execution preflight for one displayed step ID:
+
+```bash
+dependabot-watcher plan --format json > watcher-plan.json
+dependabot-watcher execute --plan-file watcher-plan.json --step-id STEP_ID
+```
+
+If the exact action is eligible, preflight prints an approval token bound to the saved repository plan, step, repository, PR number, base, head SHA, and merge method. Supplying that token is the separate mutation authorization:
+
+```bash
+dependabot-watcher execute \
+  --plan-file watcher-plan.json \
+  --step-id STEP_ID \
+  --approval-token APPROVAL_TOKEN
+```
+
+The preflight and mutating invocation repeat deterministic live collection without making another model call. Stable identities are recomputed from the saved plan before use, so editing its material action, evidence, or advice without producing a new plan is rejected and any conservative model conclusion remains binding. The mutating invocation performs one final recheck under an execution lock and submits the planned head SHA to GitHub. Any changed head, base, alert/check evidence, policy, incomplete collection, missing required check, unsupported workflow gate, or invalid token fails closed. Each invocation performs at most one merge. The audit log is stored under the platform state directory (`~/.local/state/dependabot-watcher` on ordinary Linux unless `XDG_STATE_HOME` is set) as a current-user-owned regular file with user-only permissions.
+
+This first execution surface is intentionally not automatic. It accepts only an unblocked `validate_then_merge` step that remains a deterministic baseline candidate. Model advice may veto or make the plan more conservative, but neither a model recommendation nor the plan itself authorizes the merge.
+
 The default config path is `$XDG_CONFIG_HOME/dependabot-watcher/config.toml` or `~/.config/dependabot-watcher/config.toml`. On native Windows it resolves under `%APPDATA%`. `DEPENDABOT_WATCHER_CONFIG` can override it.
 
 Human text and Markdown support `concise`, `standard`, and `detailed` verbosity. The profile default can be overridden per command with `--verbosity`; JSON remains complete at every level, and verbosity never changes collection, model workload, policy, or authority.
@@ -128,7 +162,7 @@ For Python requirements files, inspection follows bounded local `-r`/`--requirem
 
 Generic inspection and planning are not Python-specific: they operate on Dependabot PRs, alerts, checks, changed paths, and repository state exposed by GitHub. Python requirements relationships are the first deeper ecosystem adapter. Until equivalent adapters are implemented and validated, other supported Dependabot ecosystems receive generic evidence rather than unearned ecosystem-specific conclusions. A public support matrix will distinguish generic inspection, deeper analysis, and eligibility for later automatic execution.
 
-`baseline_candidate` is inspection evidence, not merge authorization. Every report explicitly records `mutation_authorized: false`.
+`baseline_candidate` is inspection evidence, not merge authorization. Inspection, advice, and planning reports explicitly record `mutation_authorized: false`; authorization exists only for the single exact execution attempt carrying a current matching token.
 
 ## Optional advisory modes
 
@@ -158,7 +192,7 @@ Every plan is bound to the collected base SHA, PR head SHA, PR update time, aler
 
 Collection limits are explicit. If a repository exceeds one, the report says which surface was truncated and exits as partial rather than silently claiming completeness.
 
-`doctor` is also non-mutating and never makes a model call. It reports executable versions and authentication readiness without retaining raw command output, verifies the configured branch, reads only configured repositories, and never opens provider credential files. `setup` is the only Phase 5 command that persists anything: one explicitly requested user configuration file, published atomically, containing non-secret choices and verification timestamps.
+`doctor` is also non-mutating and never makes a model call. It reports executable versions and authentication readiness without retaining raw command output, verifies the configured branch, reads only configured repositories, and never opens provider credential files. `setup` persists one explicitly requested non-secret configuration file. Approved execution is the only GitHub mutation and the only other persistent path: it appends sanitized start/outcome events to a user-private local audit log.
 
 ## Output and exit codes
 
@@ -166,13 +200,14 @@ Collection limits are explicit. If a repository exceeds one, the report says whi
 |---:|---|
 | `0` | Complete inspection |
 | `2` | CLI or configuration error |
-| `3` | GitHub CLI/authentication failure before inspection |
+| `3` | GitHub CLI, authentication, collection, or merge-API failure |
 | `4` | Partial inspection/advice, or a doctor report requiring attention |
 | `5` | Advisory provider could not be initialized |
 | `6` | Planning input contract error |
+| `7` | Execution eligibility, freshness, approval, or audit error |
 | `70` | Unexpected internal failure |
 
-The JSON output is versioned with `schema_version: 1`. See [the architecture](docs/architecture.md), [setup guide](docs/setup.md), [advisory contract](docs/advisory-contract.md), [planning contract](docs/planning-contract.md), [output contract](docs/output-contract.md), [configuration reference](docs/configuration.md), and [roadmap](docs/roadmap.md).
+The JSON output is versioned with `schema_version: 1`. See [the architecture](docs/architecture.md), [setup guide](docs/setup.md), [advisory contract](docs/advisory-contract.md), [planning contract](docs/planning-contract.md), [execution contract](docs/execution-contract.md), [output contract](docs/output-contract.md), [configuration reference](docs/configuration.md), and [roadmap](docs/roadmap.md).
 
 ## Platform status
 
@@ -180,7 +215,7 @@ The initial implementation targets WSL2 and ordinary Linux. Ubuntu CI covers the
 
 The private pre-release currently retains Python 3.10 compatibility so it can be validated in the existing WSL environment. Before public release, the project must move its minimum to a still-supported Python version and align packaging metadata, classifiers, static analysis, CI, and installation validation with that floor.
 
-The core commands are scheduler-independent. Task Scheduler, cron/systemd, launchd, GitHub Actions, additional model providers, notifications, persistent decision records, and gated mutation belong to later separately tested adapters.
+The core commands are scheduler-independent. Task Scheduler, cron/systemd, launchd, GitHub Actions, additional model providers, notifications, and unattended execution belong to later separately tested adapters.
 
 ## Development
 

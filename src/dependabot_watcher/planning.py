@@ -78,6 +78,93 @@ def _required_string(value: object, location: str) -> str:
     return value
 
 
+def _step_identifier(
+    repository: str,
+    repository_plan_core: Mapping[str, Any],
+    step_core: Mapping[str, Any],
+) -> str:
+    evidence = repository_plan_core.get("evidence_snapshot")
+    alert_snapshot = repository_plan_core.get("alert_snapshot")
+    evidence_mapping = evidence if isinstance(evidence, Mapping) else {}
+    alert_mapping = alert_snapshot if isinstance(alert_snapshot, Mapping) else {}
+    identity = {
+        "repository": repository,
+        "base_sha": evidence_mapping.get("base_sha"),
+        "alert_snapshot_digest": alert_mapping.get("digest"),
+        "step": _identity_snapshot(step_core),
+    }
+    return f"step_{_stable_digest(identity)[:16]}"
+
+
+def _repository_plan_identifier(repository_plan_core: Mapping[str, Any]) -> str:
+    identity = {
+        "repository": repository_plan_core.get("repository"),
+        "plan": _identity_snapshot(repository_plan_core),
+    }
+    return f"plan_{_stable_digest(identity)[:16]}"
+
+
+def _overall_plan_identifier(status: object, repository_plan_ids: list[str]) -> str:
+    return f"plan_{_stable_digest({'status': status, 'repository_plan_ids': repository_plan_ids})[:16]}"
+
+
+def validate_plan_identities(report: Mapping[str, Any]) -> None:
+    """Verify that stable plan identities still match the material saved content."""
+
+    repositories = report.get("repositories")
+    if not isinstance(repositories, list):
+        raise PlanningError("Plan identity validation requires repository records.")
+    repository_plan_ids: list[str] = []
+    for index, repository_plan in enumerate(repositories):
+        if not isinstance(repository_plan, Mapping):
+            raise PlanningError(f"Plan repository record {index} is malformed.")
+        repository = _required_string(
+            repository_plan.get("repository"), f"repository identity at index {index}"
+        )
+        observed_plan_id = _required_string(
+            repository_plan.get("plan_id"), f"repository plan ID for {repository}"
+        )
+        repository_plan_core = dict(repository_plan)
+        repository_plan_core.pop("plan_id", None)
+        expected_plan_id = _repository_plan_identifier(repository_plan_core)
+        if observed_plan_id != expected_plan_id:
+            raise PlanningError(
+                f"Repository plan identity does not match its saved content for {repository}."
+            )
+        evidence = repository_plan_core.get("evidence_snapshot")
+        alert_snapshot = repository_plan_core.get("alert_snapshot")
+        if not isinstance(evidence, Mapping) or not isinstance(alert_snapshot, Mapping):
+            raise PlanningError(
+                f"Repository plan identity lacks snapshot evidence for {repository}."
+            )
+        steps = repository_plan_core.get("recommended_order")
+        if not isinstance(steps, list):
+            raise PlanningError(f"Repository plan steps are malformed for {repository}.")
+        for step in steps:
+            if not isinstance(step, Mapping):
+                raise PlanningError(f"Repository plan step is malformed for {repository}.")
+            observed_step_id = _required_string(
+                step.get("step_id"), f"step ID for {repository}"
+            )
+            step_core = dict(step)
+            step_core.pop("step_id", None)
+            step_core.pop("order", None)
+            step_core["prerequisites"] = []
+            step_core["conflicts"] = []
+            if observed_step_id != _step_identifier(
+                repository, repository_plan_core, step_core
+            ):
+                raise PlanningError(
+                    f"Plan step identity does not match its saved content for {repository}."
+                )
+        repository_plan_ids.append(observed_plan_id)
+    observed_plan_id = _required_string(report.get("plan_id"), "overall plan ID")
+    if observed_plan_id != _overall_plan_identifier(
+        report.get("status"), repository_plan_ids
+    ):
+        raise PlanningError("Overall plan identity does not match its saved content.")
+
+
 def _validate_collection_records(
     repository_report: Mapping[str, Any], repository: str
 ) -> None:
@@ -368,6 +455,19 @@ def _validate_pull_request_input(
         if not reasons:
             raise PlanningError(f"Collection-error PR #{number} has no failure evidence.")
         return number
+    status_checks = pull_request.get("status_checks")
+    if not isinstance(status_checks, list):
+        raise PlanningError(f"Planning input has malformed status-check evidence for PR #{number}.")
+    seen_checks: set[str] = set()
+    for check in status_checks:
+        if not isinstance(check, Mapping):
+            raise PlanningError(f"Planning input has malformed status check for PR #{number}.")
+        name = _required_string(check.get("name"), f"PR #{number} status-check name")
+        if name.casefold() in seen_checks:
+            raise PlanningError(f"Planning input repeats status check {name!r} for PR #{number}.")
+        seen_checks.add(name.casefold())
+        if check.get("state") not in {"passing", "pending", "failing", "unknown", "missing"}:
+            raise PlanningError(f"Planning input has unknown status-check state for PR #{number}.")
     observed_base = _required_string(identity.get("observed_base"), f"PR #{number} observed base")
     for field in ("head_ref", "head_sha"):
         _required_string(identity.get(field), f"PR #{number} {field}")
@@ -765,6 +865,7 @@ def _pr_step(
             for item in (pull_request.get("path_assessment") or {}).get("files") or []
             if isinstance(item, dict) and item.get("path")
         ],
+        "status_checks": [dict(item) for item in pull_request.get("status_checks") or []],
         "validation_gates": _validation_gates(workflow, has_head=bool(head_sha)),
         "freshness": {
             "base_sha": snapshot.get("base_sha"),
@@ -777,14 +878,15 @@ def _pr_step(
         },
         "mutation_authorized": False,
     }
-    step_identity = {
-        "repository": repository,
-        "base_sha": snapshot.get("base_sha"),
-        "alert_snapshot_digest": alert_snapshot.get("digest"),
-        "step": _identity_snapshot(step_core),
-    }
     step = {
-        "step_id": f"step_{_stable_digest(step_identity)[:16]}",
+        "step_id": _step_identifier(
+            repository,
+            {
+                "evidence_snapshot": snapshot,
+                "alert_snapshot": alert_snapshot,
+            },
+            step_core,
+        ),
         **step_core,
     }
     return ((group, severity_rank, coverage_rank, int(number or 0)), step)
@@ -868,14 +970,15 @@ def _alert_step(
         },
         "mutation_authorized": False,
     }
-    step_identity = {
-        "repository": repository,
-        "base_sha": snapshot.get("base_sha"),
-        "alert_snapshot_digest": alert_snapshot.get("digest"),
-        "step": _identity_snapshot(step_core),
-    }
     step = {
-        "step_id": f"step_{_stable_digest(step_identity)[:16]}",
+        "step_id": _step_identifier(
+            repository,
+            {
+                "evidence_snapshot": snapshot,
+                "alert_snapshot": alert_snapshot,
+            },
+            step_core,
+        ),
         **step_core,
     }
     return ((group, severity_rank, best_coverage, int(number or 0)), step)
@@ -1044,28 +1147,21 @@ def plan_from_advisory(advisory_report: dict[str, Any]) -> dict[str, Any]:
             "unresolved_evidence": unresolved_evidence,
             "mutation_authorized": False,
         }
-        repository_plan_identity = {
-            "repository": repository,
-            "plan": _identity_snapshot(repository_plan_core),
-        }
         repository_plans.append(
             {
-                "plan_id": f"plan_{_stable_digest(repository_plan_identity)[:16]}",
+                "plan_id": _repository_plan_identifier(repository_plan_core),
                 **repository_plan_core,
             }
         )
     status = "partial" if advisory_report.get("status") == "partial" or any(
         item["status"] == "partial" for item in repository_plans
     ) else "complete"
-    plan_identity = {
-        "status": status,
-        "repository_plan_ids": [item["plan_id"] for item in repository_plans],
-    }
+    repository_plan_ids = [item["plan_id"] for item in repository_plans]
     return {
         "schema_version": PLAN_SCHEMA_VERSION,
         "mode": "plan",
         "generated_at": advisory_report.get("generated_at"),
-        "plan_id": f"plan_{_stable_digest(plan_identity)[:16]}",
+        "plan_id": _overall_plan_identifier(status, repository_plan_ids),
         "status": status,
         "mutation_authorized": False,
         "capabilities": {

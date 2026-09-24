@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from dependabot_watcher import cli
 from dependabot_watcher.config import load_config
@@ -52,6 +53,245 @@ def test_cli_offline_setup_creates_safe_profile_without_external_calls(
     assert "Verification: offline; GitHub access was not verified" in render_operational(
         report, "markdown"
     )
+
+
+def test_cli_execute_without_token_runs_read_only_preflight(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    plan_path = tmp_path / "plan.json"
+    config_path.write_text("placeholder", encoding="utf-8")
+    plan_path.write_text("{}", encoding="utf-8")
+    config = SimpleNamespace(collection=SimpleNamespace(command_timeout_seconds=120))
+    saved_plan = {"saved": True}
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "load_plan", lambda path: saved_plan)
+    monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
+
+    def preflight(config_arg, client_arg, plan_arg, step_id):
+        observed.update(
+            config=config_arg,
+            plan=plan_arg,
+            step_id=step_id,
+        )
+        return {
+            "mode": "execute_preflight",
+            "status": "ready",
+            "binding": {
+                "repository": "example-org/example-app",
+                "pull_request": 42,
+                "head_sha": "a" * 40,
+                "merge_method": "squash",
+            },
+            "action_id": "action_test",
+            "mutation_performed": False,
+            "approval_token": "approve_test",
+            "next": "Approve exactly this action.",
+        }
+
+    monkeypatch.setattr(cli, "preflight_execution", preflight)
+
+    exit_code = cli.main(
+        [
+            "execute",
+            "--config",
+            str(config_path),
+            "--plan-file",
+            str(plan_path),
+            "--step-id",
+            "step_exact",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.ExitCode.SUCCESS
+    assert observed == {"config": config, "plan": saved_plan, "step_id": "step_exact"}
+    assert "Mutation performed: no" in captured.out
+    assert "approve_test" in captured.out
+
+
+def test_cli_execute_already_applied_shows_next_step(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    plan_path = tmp_path / "plan.json"
+    config_path.write_text("placeholder", encoding="utf-8")
+    plan_path.write_text("{}", encoding="utf-8")
+    config = SimpleNamespace(collection=SimpleNamespace(command_timeout_seconds=120))
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "load_plan", lambda path: {"saved": True})
+    monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
+    monkeypatch.setattr(
+        cli,
+        "preflight_execution",
+        lambda *args: {
+            "mode": "execute_preflight",
+            "status": "already_applied",
+            "binding": {
+                "repository": "example-org/example-app",
+                "pull_request": 42,
+                "head_sha": "a" * 40,
+                "merge_method": "squash",
+            },
+            "action_id": "action_test",
+            "mutation_performed": False,
+            "approval_token": None,
+            "next": "No action is needed; GitHub reports this exact head as already merged.",
+        },
+    )
+
+    exit_code = cli.main(
+        [
+            "execute",
+            "--config",
+            str(config_path),
+            "--plan-file",
+            str(plan_path),
+            "--step-id",
+            "step_exact",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.ExitCode.SUCCESS
+    assert "Status: already_applied" in captured.out
+    assert "Next: No action is needed" in captured.out
+
+
+def test_cli_execute_with_token_routes_approved_execution(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    plan_path = tmp_path / "plan.json"
+    config_path.write_text("placeholder", encoding="utf-8")
+    plan_path.write_text("{}", encoding="utf-8")
+    config = SimpleNamespace(collection=SimpleNamespace(command_timeout_seconds=120))
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "load_plan", lambda path: {"saved": True})
+    monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
+
+    def execute(config_arg, client_arg, plan_arg, step_id, token):
+        observed.update(step_id=step_id, token=token)
+        return {
+            "schema_version": 1,
+            "mode": "execute",
+            "status": "merged",
+            "mutation_performed": True,
+            "mutation_authorized": True,
+            "binding": {
+                "repository": "example-org/example-app",
+                "pull_request": 42,
+                "head_sha": "a" * 40,
+                "merge_method": "squash",
+            },
+            "action_id": "action_test",
+        }
+
+    monkeypatch.setattr(cli, "execute_approved", execute)
+
+    exit_code = cli.main(
+        [
+            "execute",
+            "--config",
+            str(config_path),
+            "--plan-file",
+            str(plan_path),
+            "--step-id",
+            "step_exact",
+            "--approval-token",
+            "approve_exact",
+            "--format",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.ExitCode.SUCCESS
+    assert observed == {"step_id": "step_exact", "token": "approve_exact"}
+    assert json.loads(captured.out)["status"] == "merged"
+
+
+def test_cli_execute_reports_execution_error_with_specific_exit_code(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    plan_path = tmp_path / "plan.json"
+    config_path.write_text("placeholder", encoding="utf-8")
+    plan_path.write_text("{}", encoding="utf-8")
+    config = SimpleNamespace(collection=SimpleNamespace(command_timeout_seconds=120))
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "load_plan", lambda path: {"saved": True})
+    monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
+    monkeypatch.setattr(
+        cli,
+        "preflight_execution",
+        lambda *args: (_ for _ in ()).throw(cli.ExecutionError("stale exact action")),
+    )
+
+    exit_code = cli.main(
+        [
+            "execute",
+            "--config",
+            str(config_path),
+            "--plan-file",
+            str(plan_path),
+            "--step-id",
+            "step_exact",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.ExitCode.EXECUTION_ERROR
+    assert captured.out == ""
+    assert "Execution error: stale exact action" in captured.err
+
+
+def test_cli_setup_can_create_explicit_approval_gated_profile(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    path = tmp_path / "config.toml"
+
+    exit_code = cli.main(
+        [
+            "setup",
+            "--config",
+            str(path),
+            "--repo",
+            "example-org/example-app",
+            "--branch",
+            "example-org/example-app=main",
+            "--autonomy",
+            "approval_required",
+            "--merge-method",
+            "example-org/example-app=squash",
+            "--required-check",
+            "example-org/example-app=CI",
+            "--acknowledge-mutation",
+            "--offline",
+            "--format",
+            "json",
+        ]
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    config = load_config(path)
+    assert exit_code == cli.ExitCode.SUCCESS
+    assert report["operation"]["autonomy"] == "approval_required"
+    assert config.operation.mutation_enabled is True
+    assert config.repositories[0].workflow.merge_method == "squash"
+    assert config.repositories[0].workflow.required_checks == ("CI",)
 
 
 def test_cli_doctor_uses_partial_exit_for_attention_report(

@@ -46,7 +46,9 @@ validation_notes = []
 
 ## Operational profile
 
-The configuration is also the current non-secret operational profile. `operation.autonomy` currently accepts only `read_only`, and `operation.mutation_enabled` must remain `false`; unsupported authority fails closed instead of being accepted as a promise the executable cannot enforce.
+The configuration is also the current non-secret operational profile. `operation.autonomy` accepts `read_only` or `approval_required`. The booleans must match: `read_only` requires `mutation_enabled = false`, while `approval_required` requires `mutation_enabled = true`. Unsupported or contradictory authority fails closed.
+
+This opt-in enables the execution capability, not any particular action. A mutation still requires a saved complete plan, an eligible exact step, a fresh live recheck, configured repository policy, and the approval token produced by a preceding non-mutating execution preflight. Automatic execution is not supported.
 
 `report_verbosity` accepts `concise`, `standard`, or `detailed`. It affects human text and Markdown only. JSON stays complete, and presentation depth never changes evidence collection, advisory workload, policy, or action authority. `machine_output` currently accepts only `json`.
 
@@ -62,7 +64,15 @@ Patterns under the top-level `path_policy` apply to every repository. Patterns u
 
 Additional dependency patterns identify files that are safe to classify as dependency-related evidence. Additional sensitive patterns make the classification more conservative. They do not authorize mutation.
 
-Each repository may define an optional `workflow` table. `merge_method` accepts `repository_default`, `merge`, `squash`, or `rebase`. `promotion_branch` is optional. `required_checks`, `deployment_environments`, and `validation_notes` are bounded single-line string arrays. These fields are planning evidence only: the watcher does not run configured strings, deploy, promote branches, or mutate GitHub.
+Each repository may define an optional `workflow` table. `merge_method` accepts `repository_default`, `merge`, `squash`, or `rebase`. `promotion_branch` is optional. `required_checks`, `deployment_environments`, and `validation_notes` are bounded single-line string arrays.
+
+Planning displays all workflow fields as evidence and never executes strings. The initial approval-gated merge surface requires an explicit `merge`, `squash`, or `rebase` method and at least one named required check observed as passing. It refuses `repository_default` and any configured promotion branch, deployment environment, or free-form validation note because it cannot yet verify those gates. The watcher does not deploy or promote branches.
+
+## Execution state and audit
+
+Approved execution writes `execution-audit.jsonl` under the platform state directory. On ordinary Linux this defaults to `$XDG_STATE_HOME/dependabot-watcher` or `~/.local/state/dependabot-watcher`; `DEPENDABOT_WATCHER_STATE_DIR` provides an explicit override for isolated validation and managed environments. The directory and file must not be symbolic links or accessible to group/other users.
+
+Audit events contain the action binding, timestamps, outcome, merge commit when available, and recovery guidance. They never contain tokens, credentials, raw provider output, or raw GitHub error text. A sibling exclusive lock prevents concurrent execution. A leftover lock after an interrupted process must be inspected deliberately rather than automatically discarded.
 
 ## Collection bounds
 

@@ -600,3 +600,38 @@ def render_plan(
     if output_format == "text":
         return render_plan_text(report, verbosity)
     return render_plan_markdown(report, verbosity)
+
+
+def render_execution(report: dict[str, Any], output_format: str) -> str:
+    if output_format == "json":
+        return render_json(report)
+    binding = report.get("binding") or {}
+    heading = (
+        "Dependabot Watcher execution preflight"
+        if report.get("mode") == "execute_preflight"
+        else "Dependabot Watcher execution"
+    )
+    lines = [
+        heading,
+        f"Status: {report.get('status')}",
+        (
+            f"Target: {binding.get('repository')} PR #{binding.get('pull_request')} "
+            f"@ {binding.get('head_sha')}"
+        ),
+        f"Merge method: {binding.get('merge_method')}",
+        f"Action: {report.get('action_id')}",
+        f"Mutation performed: {'yes' if report.get('mutation_performed') else 'no'}",
+    ]
+    if report.get("approval_token"):
+        lines.append(f"Approval token: {report['approval_token']}")
+    if report.get("next"):
+        lines.append(f"Next: {report['next']}")
+    if report.get("audit_path"):
+        lines.append(f"Audit: {report['audit_path']}")
+    for item in report.get("recovery") or []:
+        lines.append(f"Next: {item}")
+    if output_format == "text":
+        return "\n".join(lines) + "\n"
+    markdown = [f"# {heading}", ""]
+    markdown.extend(f"- {_escape_markdown(line)}" for line in lines[1:])
+    return "\n".join(markdown) + "\n"

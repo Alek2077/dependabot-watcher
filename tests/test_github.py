@@ -107,6 +107,81 @@ def test_text_file_read_rejects_oversized_metadata_before_decode() -> None:
         )
 
 
+def test_pull_request_state_lookup_is_read_only_and_identity_bound() -> None:
+    captured: list[str] = []
+
+    def runner(command: Sequence[str], timeout: int) -> str:
+        captured.extend(command)
+        return json.dumps(
+            {
+                "number": 42,
+                "state": "OPEN",
+                "mergedAt": None,
+                "headRefOid": "a" * 40,
+                "baseRefName": "main",
+                "url": "https://github.com/example-org/example-app/pull/42",
+            }
+        )
+
+    state = GhCliClient(runner=runner).fetch_pull_request_state(
+        "example-org/example-app", 42
+    )
+
+    assert state["state"] == "OPEN"
+    assert captured[:4] == ["gh", "pr", "view", "42"]
+    assert "--repo" in captured
+
+
+def test_merge_uses_exact_repository_pr_head_and_method() -> None:
+    captured: list[str] = []
+
+    def runner(command: Sequence[str], timeout: int) -> str:
+        captured.extend(command)
+        return json.dumps({"merged": True, "message": "merged", "sha": "c" * 40})
+
+    result = GhCliClient(runner=runner).merge_pull_request(
+        "example-org/example-app",
+        42,
+        head_sha="a" * 40,
+        merge_method="squash",
+    )
+
+    assert result["merged"] is True
+    assert captured == [
+        "gh",
+        "api",
+        "--method",
+        "PUT",
+        "/repos/example-org/example-app/pulls/42/merge",
+        "-f",
+        f"sha={'a' * 40}",
+        "-f",
+        "merge_method=squash",
+    ]
+
+
+def test_merge_rejects_unbound_sha_before_github_call() -> None:
+    def runner(command: Sequence[str], timeout: int) -> str:
+        pytest.fail("Invalid execution identity must fail before a GitHub call")
+
+    with pytest.raises(GitHubError, match="full Git commit SHA"):
+        GhCliClient(runner=runner).merge_pull_request(
+            "example-org/example-app", 42, head_sha="short", merge_method="squash"
+        )
+
+
+def test_merge_rejects_invalid_response_sha() -> None:
+    def runner(command: Sequence[str], timeout: int) -> str:
+        return json.dumps({"merged": True, "message": "merged", "sha": "not-a-sha"})
+
+    with pytest.raises(GitHubError, match="invalid merge commit SHA"):
+        GhCliClient(runner=runner).merge_pull_request(
+            "example-org/example-app",
+            42,
+            head_sha="a" * 40,
+            merge_method="squash",
+        )
+
 @pytest.mark.parametrize(
     "unsafe_path",
     [

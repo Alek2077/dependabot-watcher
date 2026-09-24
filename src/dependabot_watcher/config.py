@@ -213,13 +213,18 @@ def _operation(value: object) -> OperationConfig:
         "operation",
     )
     autonomy = _optional_string(data.get("autonomy", "read_only"), "operation.autonomy")
-    if autonomy != "read_only":
-        raise ConfigError("operation.autonomy currently supports only 'read_only'.")
+    if autonomy not in {"read_only", "approval_required"}:
+        raise ConfigError(
+            "operation.autonomy must be one of: read_only, approval_required."
+        )
     mutation_enabled = data.get("mutation_enabled", False)
     if not isinstance(mutation_enabled, bool):
         raise ConfigError("operation.mutation_enabled must be a boolean.")
-    if mutation_enabled:
-        raise ConfigError("operation.mutation_enabled must remain false in this release.")
+    if mutation_enabled != (autonomy == "approval_required"):
+        raise ConfigError(
+            "operation.mutation_enabled must be true only when autonomy is "
+            "'approval_required', and false for 'read_only'."
+        )
     report_verbosity = _optional_string(
         data.get("report_verbosity", "concise"),
         "operation.report_verbosity",
@@ -236,7 +241,7 @@ def _operation(value: object) -> OperationConfig:
         raise ConfigError("operation.machine_output currently supports only 'json'.")
     return OperationConfig(
         autonomy=autonomy,
-        mutation_enabled=False,
+        mutation_enabled=mutation_enabled,
         report_verbosity=report_verbosity,
         machine_output=machine_output,
     )

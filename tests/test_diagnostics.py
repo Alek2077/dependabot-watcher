@@ -124,6 +124,155 @@ def test_offline_doctor_skips_auth_and_repository_calls(
     assert all(command[1:] == ("--version",) for command in commands)
 
 
+def test_doctor_reports_approval_gated_audit_state_without_writing_it(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    state_path = tmp_path / "state"
+    config_path.write_text(
+        "schema_version = 1\n"
+        "[operation]\n"
+        'autonomy = "approval_required"\n'
+        "mutation_enabled = true\n"
+        "[[repositories]]\n"
+        'name = "example-org/example-app"\n'
+        'default_branch = "main"\n'
+        "[repositories.workflow]\n"
+        'merge_method = "squash"\n'
+        'required_checks = ["CI"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DEPENDABOT_WATCHER_STATE_DIR", str(state_path))
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
+
+    report = doctor(
+        config_path,
+        offline=True,
+        runner=lambda command, timeout: CommandResult(0, f"{command[0]} version test\n"),
+    )
+
+    assert report["state"] == {
+        "persistent_runtime_state": "approval_gated_execution_audit",
+        "path": str(state_path),
+    }
+    assert not state_path.exists()
+
+
+def test_doctor_reports_regular_file_execution_state_without_crashing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    state_path = tmp_path / "state"
+    config_path.write_text(
+        "schema_version = 1\n"
+        "[operation]\n"
+        'autonomy = "approval_required"\n'
+        "mutation_enabled = true\n"
+        "[[repositories]]\n"
+        'name = "example-org/example-app"\n'
+        'default_branch = "main"\n'
+        "[repositories.workflow]\n"
+        'merge_method = "squash"\n'
+        'required_checks = ["CI"]\n',
+        encoding="utf-8",
+    )
+    state_path.write_text("not a directory\n", encoding="utf-8")
+    monkeypatch.setenv("DEPENDABOT_WATCHER_STATE_DIR", str(state_path))
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
+
+    report = doctor(
+        config_path,
+        offline=True,
+        runner=lambda command, timeout: CommandResult(0, f"{command[0]} version test\n"),
+    )
+
+    assert report["status"] == "blocked"
+    assert any(
+        finding["code"] == "execution_state_permissions"
+        for finding in report["findings"]
+    )
+
+
+def test_doctor_reports_malformed_execution_audit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    state_path = tmp_path / "state"
+    config_path.write_text(
+        "schema_version = 1\n"
+        "[operation]\n"
+        'autonomy = "approval_required"\n'
+        "mutation_enabled = true\n"
+        "[[repositories]]\n"
+        'name = "example-org/example-app"\n'
+        'default_branch = "main"\n'
+        "[repositories.workflow]\n"
+        'merge_method = "squash"\n'
+        'required_checks = ["CI"]\n',
+        encoding="utf-8",
+    )
+    state_path.mkdir(mode=0o700)
+    audit_path = state_path / "execution-audit.jsonl"
+    audit_path.write_text("not-json\n", encoding="utf-8")
+    audit_path.chmod(0o600)
+    monkeypatch.setenv("DEPENDABOT_WATCHER_STATE_DIR", str(state_path))
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
+
+    report = doctor(
+        config_path,
+        offline=True,
+        runner=lambda command, timeout: CommandResult(0, f"{command[0]} version test\n"),
+    )
+
+    assert report["status"] == "blocked"
+    assert any(
+        finding["code"] == "execution_audit_invalid"
+        for finding in report["findings"]
+    )
+
+
+def test_doctor_reports_non_utf8_execution_audit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    state_path = tmp_path / "state"
+    config_path.write_text(
+        "schema_version = 1\n"
+        "[operation]\n"
+        'autonomy = "approval_required"\n'
+        "mutation_enabled = true\n"
+        "[[repositories]]\n"
+        'name = "example-org/example-app"\n'
+        'default_branch = "main"\n'
+        "[repositories.workflow]\n"
+        'merge_method = "squash"\n'
+        'required_checks = ["CI"]\n',
+        encoding="utf-8",
+    )
+    state_path.mkdir(mode=0o700)
+    audit_path = state_path / "execution-audit.jsonl"
+    audit_path.write_bytes(b"\xff\xfe\x00")
+    audit_path.chmod(0o600)
+    monkeypatch.setenv("DEPENDABOT_WATCHER_STATE_DIR", str(state_path))
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
+
+    report = doctor(
+        config_path,
+        offline=True,
+        runner=lambda command, timeout: CommandResult(0, f"{command[0]} version test\n"),
+    )
+
+    assert report["status"] == "blocked"
+    assert any(
+        finding["code"] == "execution_audit_invalid"
+        for finding in report["findings"]
+    )
+
+
 def test_doctor_suppresses_auth_failure_output(
     tmp_path: Path,
     monkeypatch,

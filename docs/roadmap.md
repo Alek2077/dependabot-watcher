@@ -149,7 +149,7 @@ The Phase 5 implementation added `setup`, `doctor`, the versioned non-secret ope
 
 The current `setup` command creates a conservative profile from explicit repository and provider choices. Online setup verifies GitHub access and the selected repository/branch; `--offline` creates an explicitly unverified profile for later `doctor` validation. Setup does not enumerate arbitrary installed agent tools or silently choose a provider, model, spend level, or autonomy level. A later guided setup may use bounded `doctor` evidence and supported-adapter metadata to recommend those choices, while retaining non-interactive flags for agents. It must not inspect secret stores, infer credentials from unrelated applications, or infer consent to model spend or GitHub mutation.
 
-## Later: gated execution and autonomy
+## Phase 6 design contract: gated execution and autonomy
 
 Mutation authority is separate from provider selection, analysis spend, and report verbosity. Potential modes are:
 
@@ -162,6 +162,14 @@ Recommended setup must remain non-mutating until an execution phase is implement
 A deterministic plan alone is never sufficient evidence for mutation. Phase 6 should classify execution policy by risk and evidence. Model-free execution may eventually be allowed only for an explicit, narrowly bounded, dogfooded low-risk policy class with complete deterministic evidence and required repository validation. Ambiguous, sensitive, major, ecosystem-unsupported, or otherwise higher-risk actions should require configured model review and/or human approval. If a policy requires model review and the provider is unavailable, incomplete, or over budget, execution must fail closed rather than silently fall back to model-free mutation. Passing model review does not replace tests, required checks, deployment gates, or freshness reinspection.
 
 The long-term fully automated mode should produce concise action summaries—what merged, closed, deferred, or failed and why—while retaining detailed machine-readable evidence for agents and audits.
+
+Phase 6 starts with one intentionally narrow mutation surface: approval-gated merging of one Dependabot pull request already present as a `validate_then_merge` step in a saved JSON plan. A read-only execution preflight must recollect current evidence and produce an approval token bound to the plan, step, repository, pull-request number, expected base, head SHA, and explicit merge method. The mutating invocation must present that exact token, repeat the live recheck, and submit the expected head SHA to GitHub so a changed pull request fails closed.
+
+Execution additionally requires explicit profile opt-in, complete collection, a deterministic baseline-candidate assessment, configured required checks observed as passing, and an explicit repository merge method. `repository_default`, missing checks, workflow validation that the tool cannot verify, advisory confidence, and a plan action by themselves are not execution authority. The first implementation performs at most one action per invocation.
+
+Every attempt must produce permission-restricted append-only audit events with a stable action identity, sanitized outcome or failure evidence, and recovery guidance. Concurrent execution against one state directory must fail closed. A retry must reconcile live pull-request state and prior success evidence instead of blindly repeating the mutation.
+
+Automatic execution remains unavailable until the approval-gated path completes an explicitly authorized real-world action and recovery exercise. That checkpoint must reassess the evidence and define a narrowly dogfooded low-risk class before any no-prompt mutation is implemented; it is not unlocked merely because the execution command exists.
 
 ## Later platform and product gates
 
