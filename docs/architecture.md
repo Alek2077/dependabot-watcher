@@ -1,6 +1,6 @@
 # Architecture
 
-Dependabot Watcher has a side-effect-free inspection core, an optional advisory layer, and a deterministic planning layer.
+Dependabot Watcher has a side-effect-free inspection core, an optional advisory layer, a deterministic planning layer, and one separately gated execution edge.
 
 The documentation and command contracts are maintained for both human operators and capable automation agents. Future changes should preserve explicit scope and authority, structured evidence, and clear operational commands.
 
@@ -50,17 +50,28 @@ inspection + optional advice -> deterministic evidence graph -> Recommended Orde
                           freshness / hard priority      text / JSON / Markdown
 ```
 
+Execution never consumes model-selected identity or a free-form instruction:
+
+```text
+saved JSON plan -> live replan -> exact material-evidence match -> approval token
+                                                              |
+                                     final locked recheck -----+
+                                                              v
+                                            exact-head GitHub merge -> audit events
+```
+
 ## Ownership boundaries
 
 - `config.py` owns schema versioning, validation, platform config paths, collection bounds, repository identities, and user path-policy overrides.
 - `setup.py` owns validated setup choices and exclusive creation of one non-secret user profile. It does not overwrite existing configuration or invoke a model.
 - `diagnostics.py` owns bounded executable/auth/repository/configured-branch readiness checks and Dependabot ecosystem support reporting. Provider commands are adapter-owned rather than configuration-selected, repository YAML is safely bounded, and raw command output is not retained in reports.
 - `operational_output.py` renders setup and diagnostic reports without mixing them into inspection evidence.
-- `github.py` owns the read-only GitHub adapter. The inspector depends on the `GitHubClient` protocol rather than subprocess details.
+- `github.py` owns the GitHub transport. Collection methods remain read-only; the sole mutation method merges one named PR using an explicit expected head SHA and supported merge method.
 - `policy.py` owns deterministic path categorization, check-state assessment, collector-owned candidate identity, recent-sensitive-change matching, and alert correlation.
 - `inspector.py` owns bounded multi-repository orchestration and explicit partial-result accounting.
 - `manifests.py` owns bounded, data-only Python requirements inclusion evidence.
 - `planning.py` owns stable plan identity, deterministic ordering, PR/alert relationship levels, freshness, and validation gates.
+- `execution.py` owns saved-plan validation, live material-evidence matching, exact approval tokens, execution eligibility, one-action locking, audit events, reconciliation, and the call to the sole GitHub mutation method.
 - `output.py` owns the three stdout representations.
 - `cli.py` owns command parsing and stable process exit semantics.
 - `advisory.py` owns provider-neutral request/result contracts, deterministic candidate priority, budgets, batching, escalation, identity rebinding, and advisory orchestration.
@@ -79,7 +90,7 @@ The `GitHubClient` protocol keeps collection and policy independent from GitHub 
 
 ## Safety invariants
 
-- The standalone core contains no GitHub mutation method.
+- The only GitHub mutation method is an exact repository/PR/head-bound merge. No generic command runner or model-selected mutation surface exists.
 - Repository, PR number, base, head reference, and head SHA come from configuration and GitHub collection, never from a model.
 - `inspect` never invokes a model. `advise` and `plan` invoke one only when explicitly enabled in configuration.
 - Model output is advisory and is rebound through an opaque collector-issued candidate ID.
@@ -91,8 +102,13 @@ The `GitHubClient` protocol keeps collection and policy independent from GitHub 
 - Incomplete recent merged history blocks baseline-candidate classification because sensitive-change evidence is not complete.
 - A `baseline_candidate` classification is evidence for later policy evaluation, never authorization to merge.
 - Plans bind repository/base state, alert snapshot, and PR head state; every step requires reinspection and remains non-mutating.
-- Repository workflow strings are displayed as configuration evidence and are never executed.
-- Configuration cannot claim mutation authority in Phase 5: autonomy is `read_only` and mutation must be false.
+- Repository workflow strings are displayed as configuration evidence and are never executed. Initial execution refuses promotion, deployment, or free-form validation gates it cannot verify.
+- Configuration may enable only `approval_required` execution; it cannot authorize a particular action. The default remains `read_only`, and unsupported authority fails closed.
+- A saved plan, `baseline_candidate`, advisory result, or approval token alone is insufficient. Execution requires a matching fresh plan, configured required checks observed as passing, an explicit merge method, a second recheck under the execution lock, and the exact current token.
+- Execution reinspection is deterministic and makes no new model call. A model-conservative saved action remains binding, while model prose or nondeterminism cannot destabilize the freshness identity.
+- Each invocation mutates at most one pull request. The GitHub merge request includes the expected head SHA.
+- Execution audit records are append-only JSON Lines with user-only permissions. They exclude credentials, raw provider output, and raw GitHub error text.
+- Concurrent mutation against one state directory fails closed. Already-merged exact heads reconcile without repeating the mutation.
 - Human verbosity changes presentation only; JSON evidence, collection, workload, and authority are invariant.
 - Setup can persist only the explicitly requested non-secret profile; doctor remains non-persistent and model-free.
 
@@ -106,4 +122,4 @@ Modes control workload rather than universal model names. Provider/model/reasoni
 
 ## Future boundaries
 
-Additional providers, persistent decision records, schedulers, notifications, gated mutation, high-coverage analysis, and user-selectable autonomy/observability belong to later phases. They must consume the same trusted identity and deterministic evidence without weakening fail-closed behavior.
+Additional providers, schedulers, notifications, broader mutation types, automatic execution, high-coverage analysis, and wider autonomy/observability belong to later phases. They must consume the same trusted identity and deterministic evidence without weakening fail-closed behavior.

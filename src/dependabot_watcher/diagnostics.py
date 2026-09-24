@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -15,6 +17,7 @@ from urllib.parse import quote, urlencode
 import yaml
 
 from .config import ConfigError, WatcherConfig, load_config
+from .execution import ExecutionError, default_state_directory, validate_audit_history
 
 
 DIAGNOSTIC_SCHEMA_VERSION = 1
@@ -387,6 +390,58 @@ def doctor(
         timeout_seconds=timeout_seconds,
     )
     advisory_mode = config.advisory.mode if config is not None else "off"
+    execution_enabled = bool(
+        config is not None
+        and config.operation.autonomy == "approval_required"
+        and config.operation.mutation_enabled
+    )
+    state_path = default_state_directory() if execution_enabled else None
+    state_directory_valid = False
+    if state_path is not None:
+        try:
+            state_exists = state_path.exists() or state_path.is_symlink()
+            state = state_path.stat() if state_exists and not state_path.is_symlink() else None
+        except OSError:
+            state_exists = True
+            state = None
+        if state_exists and (
+            state_path.is_symlink()
+            or state is None
+            or not stat.S_ISDIR(state.st_mode)
+            or (hasattr(os, "getuid") and state.st_uid != os.getuid())
+            or stat.S_IMODE(state.st_mode) & 0o077
+        ):
+            findings.append(
+                _finding(
+                    "error",
+                    "execution_state_permissions",
+                    "Execution state must be a user-private, non-symbolic-link directory.",
+                    f"Correct permissions or configure a safe state directory at {state_path}.",
+                )
+            )
+        elif state_exists:
+            state_directory_valid = True
+        if state_directory_valid and (state_path / "execution.lock").exists():
+            findings.append(
+                _finding(
+                    "warning",
+                    "execution_lock_present",
+                    "An execution lock is present; another action may be active or interrupted.",
+                    "Inspect the lock and audit history before attempting recovery.",
+                )
+            )
+        if state_directory_valid:
+            try:
+                validate_audit_history(state_path)
+            except ExecutionError:
+                findings.append(
+                    _finding(
+                        "error",
+                        "execution_audit_invalid",
+                        "Execution audit history is malformed or unsafe.",
+                        "Archive or repair the audit deliberately before execution.",
+                    )
+                )
     codex = _tool_status(
         "codex",
         version_args=("--version",),
@@ -583,8 +638,10 @@ def doctor(
         },
         "configuration": configuration,
         "state": {
-            "persistent_runtime_state": "not_used",
-            "path": None,
+            "persistent_runtime_state": (
+                "approval_gated_execution_audit" if execution_enabled else "not_used"
+            ),
+            "path": str(state_path) if state_path is not None else None,
         },
         "tools": {"github_cli": gh, "codex_cli": codex},
         "deployment_adapters": {

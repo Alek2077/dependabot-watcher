@@ -1,6 +1,6 @@
 # Setup and diagnostics
 
-Phase 5 adds a bounded first-use path without enabling mutation, scheduling, notifications, or silent model usage.
+The default first-use path remains read-only and model-off. Phase 6 adds a separate explicit setup option for approval-gated execution; scheduling, notifications, silent model use, and unattended mutation remain unavailable.
 
 ## GitHub access and authentication
 
@@ -45,6 +45,23 @@ dependabot-watcher setup \
 
 Setup checks Codex CLI availability and authentication but never invokes a model. The acknowledgement records consent to later quota/cost consumption; it does not authorize GitHub mutation. Provider credentials remain in the provider's supported authentication store and never enter the Watcher profile.
 
+## Approval-gated execution setup
+
+Use the execution option only after verifying the repository's real merge method and exact required-check names:
+
+```bash
+dependabot-watcher setup \
+  --repo owner/repository \
+  --autonomy approval_required \
+  --merge-method owner/repository=squash \
+  --required-check owner/repository=CI \
+  --acknowledge-mutation
+```
+
+Repeat `--required-check` for every check the watcher must observe as passing. For multiple repositories, supply repository-qualified merge/check settings for each. Check names containing spaces should be shell-quoted.
+
+This setup call still performs no mutation. It records that later `execute` calls may request approval. Each action separately requires a complete saved JSON plan, a read-only live execution preflight, and the exact approval token bound to that current repository, PR, base, head SHA, and merge method. Setup refuses to infer mutation consent from model/provider choices.
+
 ## Doctor
 
 ```bash
@@ -57,7 +74,7 @@ dependabot-watcher doctor --offline
 
 `doctor` discards raw authentication output. It never shows tokens, reads secret files, invokes a model, writes state, mutates GitHub, sends notifications, or creates schedules. Provider authentication is not probed when advisory mode is off. `--offline` still checks local executable versions but skips authentication and repository calls, so its result remains `attention` rather than claiming verified readiness.
 
-The current deeper adapter is limited to bounded Python requirements inclusion evidence. Every detected Dependabot ecosystem still receives generic GitHub-based inspection and planning; no ecosystem is eligible for automatic execution in Phase 5.
+The current deeper adapter is limited to bounded Python requirements inclusion evidence. Every detected Dependabot ecosystem still receives generic GitHub-based inspection and planning. Approval-gated execution is based on generic exact PR/check/path evidence rather than ecosystem-specific compatibility claims; no ecosystem is eligible for automatic execution.
 
 ## Operational profile
 

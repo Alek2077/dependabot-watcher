@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dependabot-watcher"
-version = "0.2.0.dev0"
+version = "0.3.0.dev0"
 description = "Local-first inspection and triage for Dependabot activity across repositories."
 readme = "README.md"
 requires-python = ">=3.10"

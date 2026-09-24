@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -36,6 +36,8 @@ class SetupError(RuntimeError):
 class SetupRequest:
     repositories: tuple[str, ...]
     branches: Mapping[str, str]
+    merge_methods: Mapping[str, str] = field(default_factory=dict)
+    required_checks: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     report_verbosity: str = "concise"
     advisory_mode: str = "off"
     triage_model: str | None = None
@@ -43,6 +45,8 @@ class SetupRequest:
     review_model: str | None = None
     review_reasoning: str | None = None
     acknowledge_model_use: bool = False
+    autonomy: str = "read_only"
+    acknowledge_mutation: bool = False
     offline: bool = False
 
 
@@ -67,14 +71,16 @@ def _config_data(
 ) -> dict[str, Any]:
     source = (
         "setup_quick"
-        if request.advisory_mode == "off" and request.report_verbosity == "concise"
+        if request.advisory_mode == "off"
+        and request.report_verbosity == "concise"
+        and request.autonomy == "read_only"
         else "setup_advanced"
     )
     data: dict[str, Any] = {
         "schema_version": 1,
         "operation": {
-            "autonomy": "read_only",
-            "mutation_enabled": False,
+            "autonomy": request.autonomy,
+            "mutation_enabled": request.autonomy == "approval_required",
             "report_verbosity": request.report_verbosity,
             "machine_output": "json",
         },
@@ -90,6 +96,16 @@ def _config_data(
                 "default_branch": request.branches.get(repository)
                 or observed_branches.get(repository)
                 or "main",
+                **(
+                    {
+                        "workflow": {
+                            "merge_method": request.merge_methods[repository],
+                            "required_checks": list(request.required_checks[repository]),
+                        }
+                    }
+                    if request.autonomy == "approval_required"
+                    else {}
+                ),
             }
             for repository in request.repositories
         ],
@@ -168,6 +184,18 @@ def _render_config(data: Mapping[str, Any]) -> str:
                 f"default_branch = {_toml_string(repository['default_branch'])}",
             ]
         )
+        workflow = repository.get("workflow")
+        if workflow:
+            lines.extend(
+                [
+                    "",
+                    "[repositories.workflow]",
+                    f"merge_method = {_toml_string(workflow['merge_method'])}",
+                    "required_checks = ["
+                    + ", ".join(_toml_string(item) for item in workflow["required_checks"])
+                    + "]",
+                ]
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -228,6 +256,41 @@ def _validate_request(request: SetupRequest) -> None:
             + ", ".join(unknown_branches)
             + "."
         )
+    if request.autonomy not in {"read_only", "approval_required"}:
+        raise SetupError("Setup autonomy must be read_only or approval_required.")
+    if request.autonomy == "approval_required" and not request.acknowledge_mutation:
+        raise SetupError(
+            "Approval-gated execution requires --acknowledge-mutation; "
+            "setup itself performs no GitHub mutation."
+        )
+    merge_methods = request.merge_methods or {}
+    required_checks = request.required_checks or {}
+    unknown_workflows = sorted(
+        (set(merge_methods) | set(required_checks)) - set(request.repositories)
+    )
+    if unknown_workflows:
+        raise SetupError(
+            "Workflow settings reference repositories not selected for setup: "
+            + ", ".join(unknown_workflows)
+            + "."
+        )
+    if request.autonomy == "approval_required":
+        missing_methods = [name for name in request.repositories if name not in merge_methods]
+        missing_checks = [name for name in request.repositories if not required_checks.get(name)]
+        if missing_methods:
+            raise SetupError(
+                "Approval-gated setup requires --merge-method for: "
+                + ", ".join(missing_methods)
+                + "."
+            )
+        if missing_checks:
+            raise SetupError(
+                "Approval-gated setup requires at least one --required-check for: "
+                + ", ".join(missing_checks)
+                + "."
+            )
+        if any(method not in {"merge", "squash", "rebase"} for method in merge_methods.values()):
+            raise SetupError("Approval-gated merge methods must be merge, squash, or rebase.")
     if request.advisory_mode != "off" and not request.acknowledge_model_use:
         raise SetupError(
             "Enabling model advice requires --acknowledge-model-use; setup itself makes no model call."

@@ -6,6 +6,13 @@ The objective is to exercise the product as a user or supervising agent receives
 
 Agents should run the applicable deterministic, installed-path, and review checks before Gitflow by default. Founder hands-on testing is optional for ordinary changes rather than a mandatory release tax. Request or recommend a founder checkpoint when the change materially affects first-use onboarding, authorization, mutation, autonomy policy, destructive/recovery behavior, or public-release experience, and whenever the founder wants direct product feedback before Gitflow.
 
+For a material capability that does not yet exist on remote `main`, use two distinct stages rather than treating one as a substitute for the other:
+
+1. **Before Gitflow:** build the current artifact and install that artifact in an isolated temporary environment. Exercise the complete applicable command path through read-only/live preflight. Do not install directly from the active development checkout and call that installed-path validation.
+2. **After Gitflow:** make a new clone from the merged remote branch, install through the documented user path, and repeat the end-to-end workflow from repository acquisition onward. When the milestone includes an explicitly approved real mutation, perform that one exact action only from this fresh-clone installation, then verify audit, reinspection, idempotent retry/reconciliation, and cleanup.
+
+The post-Gitflow fresh-clone exercise is agent-owned validation, not optional founder manual testing. A real mutation still requires separate authorization for the exact repository, PR, and head SHA.
+
 ## Safety boundary
 
 - Use a temporary clean checkout or built distribution, not the active development import path.
@@ -18,12 +25,14 @@ Agents should run the applicable deterministic, installed-path, and review check
 ## Validation sequence
 
 1. Run the deterministic suite, static analysis, compilation, packaging, and documentation checks appropriate to the changed surface.
-2. Install the current artifact through the documented path in a clean environment. Confirm the executable and version resolve from the installed environment rather than the development checkout.
-3. Exercise `--help`, `setup`, `doctor`, `inspect`, and `plan` when the change could affect the end-to-end path. Keep setup and all later commands bound to the isolated temporary configuration. Exercise `advise` only with an explicitly approved provider configuration and usage boundary.
+2. Build the current artifact, then install that artifact through the documented path in a clean environment. Confirm the executable and version resolve from the installed environment rather than the development checkout. Installing `.` directly from the active checkout is a development smoke, not sufficient installed-artifact evidence for a material phase.
+3. Exercise `--help`, `setup`, `doctor`, `inspect`, and `plan` when the change could affect the end-to-end path. Keep setup and all later commands bound to the isolated temporary configuration. Exercise `advise` only with an explicitly approved provider configuration and usage boundary. For execution changes, save JSON plan output and exercise the no-token live preflight; do not supply an approval token or enable real mutation without separate authorization for the exact repository, PR, and head SHA.
 4. Repeat the specific changed workflow using representative success, partial-evidence, and failure inputs where practical.
 5. Verify structured output separately. JSON must remain parseable and complete, stdout must contain only the selected report, and transient progress or diagnostics must not contaminate pipes or machine consumers.
 6. When onboarding or agent usability changed, repeat the task in a fresh minimally briefed agent session using only public repository documentation. Require the agent to explain its plan and safety boundary before installation or mutation.
 7. Record material findings, fixes, accepted limitations, commands, and cleanup. Remove the temporary profile as well as the checkout and tool environment. Keep private details in private evidence surfaces; publish only sanitized, reproducible validation evidence.
+
+For an explicitly approved mutation exercise, capture the before state, saved plan identity, preflight binding, exact approved head, configured merge/check policy, audit events, GitHub result, after-state reinspection, idempotent retry behavior, and recovery outcome. Stop after one bounded action. A general implementation or test request never substitutes for this exact mutation approval.
 
 ## Human and agent experience checks
 

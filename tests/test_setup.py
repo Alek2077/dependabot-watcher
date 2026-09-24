@@ -93,6 +93,37 @@ def test_default_configuration_is_reused_without_redundant_flags(
     ]
 
 
+def test_setup_requires_separate_acknowledgement_for_approval_gated_execution(
+    tmp_path: Path,
+) -> None:
+    request = SetupRequest(
+        repositories=("example-org/example-app",),
+        branches={"example-org/example-app": "main"},
+        autonomy="approval_required",
+        offline=True,
+    )
+
+    with pytest.raises(SetupError, match="acknowledge-mutation"):
+        setup(tmp_path / "rejected.toml", request)
+
+    report = setup(
+        tmp_path / "accepted.toml",
+        SetupRequest(
+            repositories=request.repositories,
+            branches=request.branches,
+            autonomy="approval_required",
+            acknowledge_mutation=True,
+            merge_methods={"example-org/example-app": "squash"},
+            required_checks={"example-org/example-app": ("CI",)},
+            offline=True,
+        ),
+    )
+    config = load_config(tmp_path / "accepted.toml")
+    assert config.operation.autonomy == "approval_required"
+    assert config.operation.mutation_enabled is True
+    assert report["operation"]["mutation_enabled"] is True
+
+
 def test_setup_refuses_to_overwrite_existing_configuration(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text("keep me", encoding="utf-8")

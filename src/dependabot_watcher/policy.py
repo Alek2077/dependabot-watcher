@@ -235,6 +235,33 @@ def check_state(checks: list[dict[str, Any]] | None) -> str:
     return "unknown" if unknown else "passing"
 
 
+def normalized_status_checks(
+    checks: list[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
+    """Return stable check identities and states for policy enforcement."""
+
+    normalized: dict[str, dict[str, str]] = {}
+    rank = {"missing": 0, "passing": 1, "unknown": 2, "pending": 3, "failing": 4}
+    for check in checks or []:
+        name = str(check.get("name") or check.get("context") or "").strip()
+        if not name:
+            continue
+        conclusion = str(check.get("conclusion") or "").upper()
+        state = str(check.get("state") or "").upper()
+        status = str(check.get("status") or "").upper()
+        item = {
+            "name": name,
+            "state": check_state([check]),
+            "status": status,
+            "conclusion": conclusion or state,
+        }
+        key = name.casefold()
+        existing = normalized.get(key)
+        if existing is None or rank[item["state"]] > rank[existing["state"]]:
+            normalized[key] = item
+    return sorted(normalized.values(), key=lambda item: item["name"].casefold())
+
+
 def sensitive_recent_merges(
     merged_pull_requests: Iterable[dict[str, Any]],
     policy: PathPolicy,
@@ -281,6 +308,7 @@ def assess_pull_request(
     ]
     path_assessment = assess_paths(changed_paths, policy)
     checks = check_state(details.get("statusCheckRollup"))
+    status_checks = normalized_status_checks(details.get("statusCheckRollup"))
     author = str((details.get("author") or {}).get("login") or "")
     identity = {
         "repository": repository,
@@ -334,6 +362,7 @@ def assess_pull_request(
         "merge_state_status": details.get("mergeStateStatus"),
         "is_draft": bool(details.get("isDraft")),
         "checks": checks,
+        "status_checks": status_checks,
         "path_assessment": path_assessment,
         "recent_sensitive_overlap": overlap,
         "classification": "baseline_candidate" if not reasons else "attention_required",

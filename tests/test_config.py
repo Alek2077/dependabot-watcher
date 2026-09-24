@@ -278,11 +278,25 @@ def test_operational_profile_is_typed_and_non_mutating() -> None:
     assert config.profile.source == "setup_advanced"
 
 
+def test_operational_profile_accepts_only_approval_gated_mutation_pair() -> None:
+    data = valid_config()
+    data["operation"] = {
+        "autonomy": "approval_required",
+        "mutation_enabled": True,
+    }
+
+    config = parse_config(data)
+
+    assert config.operation.autonomy == "approval_required"
+    assert config.operation.mutation_enabled is True
+
+
 @pytest.mark.parametrize(
     "operation",
     [
         {"autonomy": "automatic"},
         {"mutation_enabled": True},
+        {"autonomy": "approval_required", "mutation_enabled": False},
         {"report_verbosity": "noisy"},
         {"machine_output": "pickle"},
     ],

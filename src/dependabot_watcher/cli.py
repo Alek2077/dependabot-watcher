@@ -11,10 +11,11 @@ from . import __version__
 from .advisory import AdvisoryError, advise
 from .config import ConfigError, WatcherConfig, default_config_path, load_config
 from .diagnostics import doctor
+from .execution import ExecutionError, execute_approved, load_plan, preflight_execution
 from .github import GhCliClient, GitHubError
 from .inspector import inspect
 from .operational_output import render_operational
-from .output import render, render_advisory, render_plan
+from .output import render, render_advisory, render_execution, render_plan
 from .planning import PlanningError, plan
 from .setup import SetupError, SetupRequest, setup
 
@@ -26,6 +27,7 @@ class ExitCode(IntEnum):
     PARTIAL_INSPECTION = 4
     ADVISORY_ERROR = 5
     PLANNING_ERROR = 6
+    EXECUTION_ERROR = 7
     INTERNAL_ERROR = 70
 
 
@@ -63,7 +65,10 @@ def _progress_enabled(output_format: str, *, stdout: TextIO, stderr: TextIO) -> 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dependabot-watcher",
-        description="Inspect Dependabot activity across configured GitHub repositories.",
+        description=(
+            "Inspect, plan, and safely gate Dependabot activity across configured "
+            "GitHub repositories."
+        ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -83,6 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser = commands.add_parser(
         "setup",
         help="Create a safe, non-secret operational profile.",
+    )
+    execute_parser = commands.add_parser(
+        "execute",
+        help="Preflight or perform one exact approval-gated plan action.",
     )
     for command_parser in (inspect_parser, advise_parser, plan_parser):
         command_parser.add_argument(
@@ -134,6 +143,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Configuration path to create (existing files are never overwritten).",
     )
     setup_parser.add_argument(
+        "--autonomy",
+        choices=("read_only", "approval_required"),
+        default="read_only",
+        help="Operational authority; approval_required enables only exact-token actions.",
+    )
+    setup_parser.add_argument(
+        "--acknowledge-mutation",
+        action="store_true",
+        help="Acknowledge that a later exact-token execute call may mutate GitHub.",
+    )
+    setup_parser.add_argument(
+        "--merge-method",
+        action="append",
+        default=[],
+        metavar="OWNER/REPO=METHOD",
+        help="Explicit merge, squash, or rebase method for one selected repository.",
+    )
+    setup_parser.add_argument(
+        "--required-check",
+        action="append",
+        default=[],
+        metavar="OWNER/REPO=CHECK",
+        help="Required passing check for one selected repository; repeat as needed.",
+    )
+    setup_parser.add_argument(
         "--repo",
         action="append",
         required=True,
@@ -173,6 +207,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create an unverified profile without authentication or repository calls.",
     )
     setup_parser.add_argument(
+        "--format",
+        choices=("text", "json", "markdown"),
+        default="text",
+        dest="output_format",
+    )
+    execute_parser.add_argument(
+        "--config",
+        type=Path,
+        default=default_config_path(),
+        help="TOML configuration path (default: platform user config path).",
+    )
+    execute_parser.add_argument(
+        "--plan-file",
+        type=Path,
+        required=True,
+        help="Saved JSON output from `plan --format json`.",
+    )
+    execute_parser.add_argument("--step-id", required=True, help="Exact saved plan step ID.")
+    execute_parser.add_argument(
+        "--approval-token",
+        help="Exact token from a preceding read-only execution preflight.",
+    )
+    execute_parser.add_argument(
         "--format",
         choices=("text", "json", "markdown"),
         default="text",
@@ -218,6 +275,35 @@ def _branch_overrides(values: list[str]) -> dict[str, str]:
     return result
 
 
+def _merge_method_overrides(values: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise ConfigError("--merge-method must use OWNER/REPO=METHOD form.")
+        repository, method = (item.strip() for item in value.split("=", 1))
+        if not repository or method not in {"merge", "squash", "rebase"}:
+            raise ConfigError("--merge-method must name merge, squash, or rebase.")
+        if repository in result:
+            raise ConfigError(f"Duplicate --merge-method for {repository}.")
+        result[repository] = method
+    return result
+
+
+def _required_check_overrides(values: list[str]) -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {}
+    for value in values:
+        if "=" not in value:
+            raise ConfigError("--required-check must use OWNER/REPO=CHECK form.")
+        repository, check = (item.strip() for item in value.split("=", 1))
+        if not repository or not check or "\n" in check or "\r" in check:
+            raise ConfigError("--required-check must use OWNER/REPO=CHECK form.")
+        checks = grouped.setdefault(repository, [])
+        if check in checks:
+            raise ConfigError(f"Duplicate --required-check {check!r} for {repository}.")
+        checks.append(check)
+    return {repository: tuple(checks) for repository, checks in grouped.items()}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -236,6 +322,8 @@ def main(argv: list[str] | None = None) -> int:
                 SetupRequest(
                     repositories=tuple(args.repositories),
                     branches=_branch_overrides(args.branch),
+                    merge_methods=_merge_method_overrides(args.merge_method),
+                    required_checks=_required_check_overrides(args.required_check),
                     report_verbosity=args.verbosity,
                     advisory_mode=args.advisory_mode,
                     triage_model=args.triage_model,
@@ -243,10 +331,39 @@ def main(argv: list[str] | None = None) -> int:
                     review_model=args.review_model,
                     review_reasoning=args.review_reasoning,
                     acknowledge_model_use=args.acknowledge_model_use,
+                    autonomy=args.autonomy,
+                    acknowledge_mutation=args.acknowledge_mutation,
                     offline=args.offline,
                 ),
             )
             sys.stdout.write(render_operational(report, args.output_format))
+            return ExitCode.SUCCESS
+        if args.command == "execute":
+            config = load_config(args.config)
+            client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
+            saved_plan = load_plan(args.plan_file)
+            with _live_progress(
+                "Rechecking the exact plan action against live GitHub state...",
+                enabled=_progress_enabled(
+                    args.output_format,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                ),
+                stream=sys.stderr,
+            ):
+                if args.approval_token:
+                    report = execute_approved(
+                        config,
+                        client,
+                        saved_plan,
+                        args.step_id,
+                        args.approval_token,
+                    )
+                else:
+                    report = preflight_execution(
+                        config, client, saved_plan, args.step_id
+                    )
+            sys.stdout.write(render_execution(report, args.output_format))
             return ExitCode.SUCCESS
         config = _select_repositories(load_config(args.config), args.repositories)
         client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
@@ -292,6 +409,9 @@ def main(argv: list[str] | None = None) -> int:
     except SetupError as exc:
         print(f"Setup error: {exc}", file=sys.stderr)
         return ExitCode.CONFIGURATION_ERROR
+    except ExecutionError as exc:
+        print(f"Execution error: {exc}", file=sys.stderr)
+        return ExitCode.EXECUTION_ERROR
     except Exception as exc:  # defensive CLI boundary
         print(f"Unexpected error: {exc}", file=sys.stderr)
         return ExitCode.INTERNAL_ERROR

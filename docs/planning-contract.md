@@ -7,7 +7,7 @@
 - Inspection owns GitHub facts and bounded ecosystem evidence.
 - Advice may explain risk or make a candidate more conservative.
 - Planning owns hard priority classes, relationship levels, freshness, step identity, and validation gates.
-- A later executor may consume only a fresh plan under separately configured deterministic action authority.
+- The executor consumes only a saved complete JSON plan under separately configured approval-gated capability and exact action authority.
 
 The planner processes the complete inspected queue even when advisory budgets defer model analysis. Missing advice never removes a candidate from the plan.
 
@@ -34,8 +34,8 @@ PR steps with overlapping changed paths or shared alert impact contain symmetric
 
 ## Workflow profiles
 
-Repository configuration may supply merge method, promotion branch, required checks, deployment environments, and validation notes. These values are bounded data used to explain gates. They are never shell commands and are never executed.
+Repository configuration may supply merge method, promotion branch, required checks, deployment environments, and validation notes. These values are bounded data used to explain gates. They are never shell commands. The initial executor enforces explicit merge method and named passing checks, and refuses workflow gates it cannot verify.
 
 ## Safety
 
-Plan actions are recommendations such as `validate_then_merge`, `investigate`, `hold`, `human_attention`, or `no_action`. They do not grant capability. The report and every step state `mutation_authorized: false`; GitHub mutation, notifications, scheduling, persistent writes, and repository checkout remain outside Phase 4.
+Plan actions are recommendations such as `validate_then_merge`, `investigate`, `hold`, `human_attention`, or `no_action`. They do not grant capability. The report and every step state `mutation_authorized: false`. The Phase 6 executor separately requires a fresh matching material-evidence snapshot and an exact approval token; planning itself remains non-mutating and non-persistent.

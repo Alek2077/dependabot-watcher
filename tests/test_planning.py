@@ -34,6 +34,14 @@ def _pull_request(
         "merge_state_status": "CLEAN",
         "is_draft": False,
         "checks": "passing",
+        "status_checks": [
+            {
+                "name": "CI",
+                "state": "passing",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            }
+        ],
         "classification": classification,
         "reasons": [] if classification == "baseline_candidate" else ["Checks are pending."],
         "path_assessment": {

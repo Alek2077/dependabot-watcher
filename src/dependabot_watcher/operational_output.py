@@ -44,6 +44,14 @@ def _doctor_text(report: dict[str, Any]) -> str:
         f"Configuration: {configuration['status']} ({configuration['path']})",
         f"Runtime: {runtime['platform']} | Python {runtime['python']}",
         (
+            "Execution: "
+            + (
+                "approval-gated capability enabled; every action still requires an exact token"
+                if (configuration.get("operation") or {}).get("mutation_enabled")
+                else "read-only"
+            )
+        ),
+        (
             "GitHub CLI: "
             f"{_availability(tools['github_cli']['availability'])} / "
             f"{_authentication(tools['github_cli']['authentication'])}"
@@ -54,6 +62,8 @@ def _doctor_text(report: dict[str, Any]) -> str:
             f"{_authentication(tools['codex_cli']['authentication'])}"
         ),
     ]
+    if report.get("state", {}).get("path"):
+        lines.append(f"Audit state: {report['state']['path']}")
     if configuration.get("error"):
         lines.append(f"Configuration error: {_plain(configuration['error'])}")
     for repository in report["repositories"]:
@@ -88,11 +98,18 @@ def _doctor_markdown(report: dict[str, Any]) -> str:
         "",
         f"Status: **{_escape(report['status'])}**  ",
         f"Configuration: `{_escape(configuration['status'])}` at `{_escape(configuration['path'])}`  ",
+        (
+            "Execution: **approval-gated capability enabled**; every action still requires an exact token  "
+            if (configuration.get("operation") or {}).get("mutation_enabled")
+            else "Execution: **read-only**  "
+        ),
         "Mutation authorized: **no**",
         "",
         "| Tool | Availability | Authentication | Version |",
         "|---|---|---|---|",
     ]
+    if report.get("state", {}).get("path"):
+        lines.insert(7, f"Audit state: `{_escape(report['state']['path'])}`  ")
     if configuration.get("error"):
         lines.extend(
             [
@@ -158,6 +175,7 @@ def _setup_text(report: dict[str, Any]) -> str:
         f"Profile: {report['profile_source']}",
         f"Repositories: {len(report['repositories'])}",
         f"Advisory mode: {report['advisory']['mode']}",
+        f"Autonomy: {report['operation']['autonomy']}",
         (
             f"Verification: {verification_mode} | GitHub "
             f"{_authentication(report['verification']['github_authentication'])} | provider "
@@ -188,6 +206,7 @@ def _setup_markdown(report: dict[str, Any]) -> str:
         f"Configuration: `{_escape(report['configuration_path'])}`{configuration_suffix}  ",
         f"Profile: `{_escape(report['profile_source'])}`  ",
         f"Advisory mode: `{_escape(report['advisory']['mode'])}`  ",
+        f"Autonomy: `{_escape(report['operation']['autonomy'])}`  ",
         (
             f"Verification: {_escape(verification_mode)}; GitHub "
             f"{_escape(_authentication(report['verification']['github_authentication']))}; provider "

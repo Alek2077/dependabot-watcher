@@ -59,6 +59,25 @@ class GitHubClient(Protocol):
     ) -> CollectionResult[dict[str, Any]]: ...
 
 
+class ExecutionGitHubClient(Protocol):
+    """Narrow execution-edge capabilities kept outside the collection protocol."""
+
+    def fetch_pull_request_state(
+        self,
+        repository: str,
+        number: int,
+    ) -> dict[str, Any]: ...
+
+    def merge_pull_request(
+        self,
+        repository: str,
+        number: int,
+        *,
+        head_sha: str,
+        merge_method: str,
+    ) -> dict[str, Any]: ...
+
+
 CommandRunner = Callable[[Sequence[str], int], str]
 
 
@@ -546,6 +565,74 @@ class GhCliClient:
         self._validate_pull_request_details(validated[0], requested_number=number)
         validated[0]["files"] = self._list_pull_request_files(repository, number, file_limit)
         return validated[0]
+
+    def fetch_pull_request_state(
+        self,
+        repository: str,
+        number: int,
+    ) -> dict[str, Any]:
+        item = self._json(
+            [
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                repository,
+                "--json",
+                "number,state,mergedAt,headRefOid,baseRefName,url",
+            ]
+        )
+        if not isinstance(item, dict):
+            raise GitHubError(f"GitHub returned unexpected state for PR #{number}.")
+        validated = self._validated_items(
+            [item],
+            surface=f"pull-request #{number} state",
+            required_fields=("number", "state", "headRefOid", "baseRefName", "url"),
+        )[0]
+        if validated["number"] != number:
+            raise GitHubError(f"GitHub returned mismatched state for PR #{number}.")
+        return validated
+
+    def merge_pull_request(
+        self,
+        repository: str,
+        number: int,
+        *,
+        head_sha: str,
+        merge_method: str,
+    ) -> dict[str, Any]:
+        if merge_method not in {"merge", "squash", "rebase"}:
+            raise GitHubError("Execution requires an explicit supported merge method.")
+        if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", head_sha):
+            raise GitHubError("Execution requires a full Git commit SHA.")
+        response = self._json(
+            [
+                "api",
+                "--method",
+                "PUT",
+                f"/repos/{repository}/pulls/{number}/merge",
+                "-f",
+                f"sha={head_sha}",
+                "-f",
+                f"merge_method={merge_method}",
+            ]
+        )
+        if not isinstance(response, dict) or not isinstance(response.get("merged"), bool):
+            raise GitHubError("GitHub returned an invalid merge response.")
+        if response["merged"] is not True:
+            message = str(response.get("message") or "GitHub did not merge the pull request.")
+            raise GitHubError(message[:2000])
+        merge_commit_sha = response.get("sha")
+        if merge_commit_sha is not None and (
+            not isinstance(merge_commit_sha, str)
+            or not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", merge_commit_sha)
+        ):
+            raise GitHubError("GitHub returned an invalid merge commit SHA.")
+        return {
+            "merged": True,
+            "message": str(response.get("message") or "Pull request merged.")[:2000],
+            "merge_commit_sha": merge_commit_sha,
+        }
 
     def list_recent_merged_prs(
         self,
