@@ -364,6 +364,114 @@ def _fresh_preflight(
     return saved_binding, fresh_repository, fresh_step
 
 
+def _decision_context(
+    step: Mapping[str, Any], repository_config: RepositoryConfig
+) -> dict[str, Any]:
+    identity_value = step.get("identity")
+    identity = identity_value if isinstance(identity_value, Mapping) else {}
+    checks_value = step.get("status_checks")
+    checks = checks_value if isinstance(checks_value, list) else []
+    observed_checks: dict[str, str] = {}
+    for item in checks:
+        if isinstance(item, Mapping) and isinstance(item.get("name"), str):
+            observed_checks[str(item["name"]).casefold()] = str(
+                item.get("state") or "unknown"
+            )
+    return {
+        "title": str(identity.get("title") or f"PR #{identity.get('number') or 'unknown'}"),
+        "classification": str(
+            step.get("deterministic_classification") or "unknown"
+        ),
+        "decision_source": "deterministic_policy",
+        "model_used": False,
+        "required_checks": [
+            {
+                "name": name,
+                "state": observed_checks.get(name.casefold(), "unknown"),
+            }
+            for name in repository_config.workflow.required_checks
+        ],
+    }
+
+
+def _post_action_state(
+    config: WatcherConfig,
+    client: ExecutionGitHubClient,
+    repository_config: RepositoryConfig,
+) -> dict[str, Any]:
+    deterministic_config = replace(
+        config,
+        repositories=(repository_config,),
+        advisory=AdvisoryConfig(),
+    )
+    try:
+        refreshed = plan(deterministic_config, cast(GitHubClient, client))
+        if refreshed.get("status") != "complete":
+            raise ValueError("incomplete refreshed plan")
+        repositories = refreshed.get("repositories")
+        if not isinstance(repositories, list):
+            raise ValueError("missing repositories")
+        if (
+            len(repositories) != 1
+            or not isinstance(repositories[0], Mapping)
+            or repositories[0].get("repository") != repository_config.name
+        ):
+            raise ValueError("unexpected refreshed repository scope")
+        repository = repositories[0]
+        if repository.get("status") != "complete":
+            raise ValueError("incomplete refreshed repository")
+        state = repository.get("state")
+        recommended_order = repository.get("recommended_order")
+        if not isinstance(state, Mapping) or not isinstance(recommended_order, list):
+            raise ValueError("missing refreshed state")
+        if any(
+            not isinstance(item, Mapping)
+            or not isinstance(item.get("step_id"), str)
+            or not isinstance(item.get("action"), str)
+            or not isinstance(item.get("summary"), str)
+            for item in recommended_order
+        ):
+            raise ValueError("invalid refreshed recommendation")
+        count_fields = {
+            "open_pull_requests": state.get("open_pull_request_count"),
+            "open_alerts": state.get("open_alert_count"),
+            "alerts_without_direct_open_pr_coverage": state.get(
+                "unresolved_alert_count"
+            ),
+            "attention_required": state.get("attention_required_count"),
+        }
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in count_fields.values()
+        ):
+            raise ValueError("invalid refreshed counts")
+        next_step = recommended_order[0] if recommended_order else None
+        return {
+            "status": "complete",
+            "observed_at": refreshed.get("generated_at"),
+            "repository": repository_config.name,
+            **count_fields,
+            "recommended_steps": len(recommended_order),
+            "next_step": (
+                {
+                    "action": next_step.get("action"),
+                    "summary": next_step.get("summary"),
+                }
+                if next_step is not None
+                else None
+            ),
+        }
+    except Exception:
+        # The remote mutation has already completed. Preserve that success while
+        # making the failed follow-up observation explicit and actionable.
+        return {
+            "status": "unavailable",
+            "repository": repository_config.name,
+            "reason": "Post-action reinspection was incomplete or unavailable.",
+            "next": "Run `dependabot-watcher inspect` and `dependabot-watcher plan` before another action.",
+        }
+
+
 def preflight_execution(
     config: WatcherConfig,
     client: ExecutionGitHubClient,
@@ -376,6 +484,8 @@ def preflight_execution(
         )
     binding, _, fresh_step = _fresh_preflight(config, client, saved_plan, step_id)
     already_applied = bool(fresh_step.get("already_applied"))
+    _, saved_step = _find_step(saved_plan, step_id)
+    repository_config = _repository_config(config, str(binding["repository"]))
     return {
         "schema_version": EXECUTION_SCHEMA_VERSION,
         "mode": "execute_preflight",
@@ -390,6 +500,9 @@ def preflight_execution(
             "notifications": False,
         },
         "binding": binding,
+        "decision": _decision_context(
+            saved_step if already_applied else fresh_step, repository_config
+        ),
         "action_id": _action_id(binding),
         "approval_token": None if already_applied else approval_token(binding),
         "next": (
@@ -710,6 +823,7 @@ def execute_approved(
                     "notifications": False,
                 },
                 "binding": binding,
+                "decision": _decision_context(saved_step, repository_config),
                 "action_id": _action_id(binding),
                 "audit_path": str(audit_path),
                 "next": "No action is needed; GitHub reports this exact head as already merged.",
@@ -751,6 +865,7 @@ def execute_approved(
                 merge_commit_sha=result.get("merge_commit_sha"),
             ),
         )
+        post_action_state = _post_action_state(config, client, repository_config)
         return {
             "schema_version": EXECUTION_SCHEMA_VERSION,
             "mode": "execute",
@@ -765,8 +880,10 @@ def execute_approved(
                 "notifications": False,
             },
             "binding": binding,
+            "decision": _decision_context(current, repository_config),
             "action_id": _action_id(binding),
             "result": result,
+            "post_action_state": post_action_state,
             "audit_path": str(audit_path),
             "recovery": [
                 "Reinspect the repository before taking another action.",

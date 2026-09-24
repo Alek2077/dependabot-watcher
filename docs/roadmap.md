@@ -19,11 +19,19 @@ This is a high-level decision gate, not an invitation to repeatedly reopen settl
 3. **Provider-neutral advisory layer — complete.** Add model-off, economy, and reviewed modes behind a stable advisory contract, with one tested provider adapter and model output kept non-authoritative.
 4. **Ordered planning and evidence graph — complete.** Add complete-queue ordering, PR-alert relationship levels, bounded manifest evidence, workflow profiles, conflicts, validation gates, and freshness binding without mutation.
 5. **Setup, discovery, and operational profile — complete.** Add safe setup, `doctor`, a versioned non-secret profile, ecosystem-readiness reporting, and selectable human verbosity.
-6. **Gated execution and autonomy — next.** Execute only fresh plans with exact target/head binding, live rechecks, repository-policy enforcement, bounded actions, idempotency, audit history, and recovery guidance. Introduce approval-gated action before a narrowly defined fully automatic policy class.
+6. **Gated execution and autonomy — complete for approval-gated execution.** Execute only fresh plans with exact target/head binding, live rechecks, repository-policy enforcement, bounded actions, idempotency, audit history, and recovery guidance. A narrowly defined fully automatic policy class remains deferred until repeated private dogfooding justifies it.
 7. **Operational deployment, terminal experience, and platform adapters.** Prove repeated WSL2 and Ubuntu operation, retain scheduler-independent run-once behavior, add a restrained interactive spinner/status hierarchy, then add optional scheduling and sparse action-oriented notifications. Validate macOS and native Windows before claiming support.
 8. **Private dogfood and publication gate.** Require repeated installed-path reliability, an explicitly approved exact-head-bound mutation and recovery exercise, security/privacy/history review, license and public documentation, synthetic examples, contribution/support expectations, release packaging, functioning CI, and final canonical-source migration before changing visibility. After public visibility, repeat anonymous multi-agent onboarding from the public surface before release promotion.
 
 The preliminary private safety freeze was treated as the opening step of Phase 1 rather than a separate product phase. Cross-cutting tests, proportional independent review, documentation, live read-only checks, and founder checkpoints apply throughout rather than being deferred to Phase 8.
+
+### Phase 6 delivery status
+
+Phase 6 delivered one approval-gated `validate_then_merge` action with explicit profile opt-in, saved-plan integrity checks, an exact repository/PR/base/head/merge-method approval token, a final model-free live reinspection, required-check and workflow-policy enforcement, a single exact-head GitHub merge, private append-only audit events, and idempotent live-state reconciliation.
+
+The installed product completed one explicitly approved real merge from a fresh remote clone. Independent GitHub verification confirmed the exact planned head was merged; audit history recorded start, success, and an idempotent retry reconciliation; a repeated invocation made no second mutation; and post-action inspection observed the reduced open-PR queue. The sanitized validation record is in [validation.md](validation.md).
+
+This evidence completes the approval-gated Phase 6 milestone. It does not justify unattended execution yet. Reassess a narrowly bounded automatic class only after repeated installed-path dogfooding shows that eligibility, downstream validation, reporting, and recovery remain reliable across more than one repository/update shape.
 
 ## Delivered foundation
 

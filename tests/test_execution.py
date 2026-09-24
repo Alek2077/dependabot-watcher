@@ -58,11 +58,13 @@ def saved_plan() -> dict[str, Any]:
     step_core = {
         "kind": "pull_request",
         "action": "validate_then_merge",
+        "summary": "Validate then merge PR #42.",
         "deterministic_classification": "baseline_candidate",
         "blockers": [],
         "identity": {
             "repository": "example-org/example-app",
             "number": 42,
+            "title": "fix(deps): bump example from 1.0 to 1.1",
             "expected_base": "main",
             "observed_base": "main",
             "head_sha": HEAD_SHA,
@@ -108,6 +110,12 @@ def saved_plan() -> dict[str, Any]:
             "validation_notes": [],
         },
         "recommended_order": [step],
+        "state": {
+            "open_pull_request_count": 1,
+            "open_alert_count": 2,
+            "unresolved_alert_count": 0,
+            "attention_required_count": 0,
+        },
         "mutation_authorized": False,
     }
     repository_plan_id = _repository_plan_identifier(repository_core)
@@ -248,6 +256,13 @@ def test_preflight_rechecks_and_binds_exact_approval(
         "head_sha": HEAD_SHA,
         "merge_method": "squash",
     }
+    assert result["decision"] == {
+        "title": "fix(deps): bump example from 1.0 to 1.1",
+        "classification": "baseline_candidate",
+        "decision_source": "deterministic_policy",
+        "model_used": False,
+        "required_checks": [{"name": "CI", "state": "passing"}],
+    }
 
 
 def test_already_applied_human_output_explains_that_no_action_is_needed(
@@ -363,6 +378,20 @@ def test_execute_requires_token_then_writes_locked_append_only_audit(
 
     assert result["status"] == "merged"
     assert result["mutation_performed"] is True
+    assert result["post_action_state"] == {
+        "status": "complete",
+        "observed_at": None,
+        "repository": "example-org/example-app",
+        "open_pull_requests": 1,
+        "open_alerts": 2,
+        "alerts_without_direct_open_pr_coverage": 0,
+        "attention_required": 0,
+        "recommended_steps": 1,
+        "next_step": {
+            "action": "validate_then_merge",
+            "summary": "Validate then merge PR #42.",
+        },
+    }
     assert client.merges == [
         {
             "repository": "example-org/example-app",
@@ -427,10 +456,14 @@ def test_approved_execution_performs_one_locked_live_reinspection(
 ) -> None:
     report = saved_plan()
     calls = 0
+    observed_modes: list[str] = []
+    observed_repositories: list[tuple[str, ...]] = []
 
     def fresh_plan(config, client):
         nonlocal calls
         calls += 1
+        observed_modes.append(config.advisory.mode)
+        observed_repositories.append(tuple(item.name for item in config.repositories))
         return report
 
     monkeypatch.setattr("dependabot_watcher.execution.plan", fresh_plan)
@@ -458,8 +491,109 @@ def test_approved_execution_performs_one_locked_live_reinspection(
     )
 
     assert result["status"] == "merged"
-    assert calls == 1
+    assert calls == 2
     assert client.fetches == 1
+    assert observed_modes == ["off", "off"]
+    assert observed_repositories == [
+        ("example-org/example-app",),
+        ("example-org/example-app",),
+    ]
+
+
+@pytest.mark.parametrize(
+    "refresh_kind", ["error", "partial", "malformed_count", "malformed_step"]
+)
+def test_post_action_refresh_failure_preserves_success_and_suppresses_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    refresh_kind: str,
+) -> None:
+    report = saved_plan()
+    calls = 0
+
+    def fresh_plan(config, client):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return report
+        if refresh_kind == "error":
+            raise RuntimeError("simulated refresh failure")
+        refreshed = saved_plan()
+        if refresh_kind == "partial":
+            refreshed["status"] = "partial"
+        elif refresh_kind == "malformed_count":
+            refreshed["repositories"][0]["state"]["open_alert_count"] = "unknown"
+        else:
+            refreshed["repositories"][0]["recommended_order"] = [{"unexpected": 1}]
+        return refreshed
+
+    monkeypatch.setattr("dependabot_watcher.execution.plan", fresh_plan)
+    client = ExecutionClient()
+    step_id = plan_step_id(report)
+    token = approval_token(
+        {
+            "repository_plan_id": report["repositories"][0]["plan_id"],
+            "step_id": step_id,
+            "repository": "example-org/example-app",
+            "pull_request": 42,
+            "expected_base": "main",
+            "head_sha": HEAD_SHA,
+            "merge_method": "squash",
+        }
+    )
+
+    result = execute_approved(
+        execution_config(),
+        client,
+        report,
+        step_id,
+        token,
+        state_directory=tmp_path,
+    )
+    text = render_execution(result, "text")
+
+    assert result["status"] == "merged"
+    assert result["mutation_performed"] is True
+    assert result["post_action_state"]["status"] == "unavailable"
+    assert "open_alerts" not in result["post_action_state"]
+    assert "Post-action reinspection: unavailable" in text
+    assert "Post-action note:" in text
+    assert "Remaining:" not in text
+    assert "Run `dependabot-watcher inspect`" in text
+    assert len(client.merges) == 1
+
+
+def test_merged_human_output_reports_decision_result_and_remaining_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+    client = ExecutionClient()
+    step_id = plan_step_id(report)
+    preflight = preflight_execution(execution_config(), client, report, step_id)
+
+    result = execute_approved(
+        execution_config(),
+        client,
+        report,
+        step_id,
+        preflight["approval_token"],
+        state_directory=tmp_path,
+    )
+    text = render_execution(result, "text")
+
+    assert "Base: main" in text
+    assert "Update: fix(deps): bump example from 1.0 to 1.1" in text
+    assert "Classification: baseline_candidate" in text
+    assert "Decision source: deterministic policy (no model used)" in text
+    assert "Required checks: CI (passing)" in text
+    assert "Result: merged" in text
+    assert "Post-action reinspection: complete" in text
+    assert (
+        "Remaining: 1 open PRs | 2 open alerts | 0 without direct open-PR coverage | "
+        "0 attention required | 1 recommended steps" in text
+    )
 
 
 def test_audit_capacity_failure_prevents_mutation(
