@@ -165,6 +165,39 @@ def _repository_branch_head(
     return sha.strip(), None
 
 
+def _dependabot_alert_access(
+    repository: str,
+    *,
+    runner: CommandRunner,
+    timeout_seconds: int,
+) -> tuple[str, str | None]:
+    max_response_bytes = 256 * 1024
+    query = urlencode({"state": "open", "per_page": 1})
+    endpoint = f"/repos/{repository}/dependabot/alerts?{query}"
+    result = runner(
+        ["gh", "api", endpoint, "--jq", ".[0:2] | map(.number)"],
+        timeout_seconds,
+    )
+    if result.returncode != 0:
+        return "unavailable", "dependabot_alert_access_failed"
+    if len(result.stdout.encode("utf-8")) > max_response_bytes:
+        return "unavailable", "dependabot_alert_response_invalid"
+    try:
+        payload = json.loads(result.stdout)
+    except (ValueError, RecursionError):
+        return "unavailable", "dependabot_alert_response_invalid"
+    if (
+        not isinstance(payload, list)
+        or len(payload) > 1
+        or any(
+            isinstance(number, bool) or not isinstance(number, int) or number <= 0
+            for number in payload
+        )
+    ):
+        return "unavailable", "dependabot_alert_response_invalid"
+    return "available", None
+
+
 def _dependabot_config_text(
     repository: str,
     branch: str,
@@ -500,6 +533,7 @@ def doctor(
                 "configured_branch_head_sha": None,
                 "dependabot_configuration": "unknown",
                 "dependabot_configuration_path": None,
+                "dependabot_alert_access": "unknown" if offline else "unchecked",
                 "ecosystems": [],
                 "support": {},
             }
@@ -522,6 +556,28 @@ def doctor(
                 else:
                     repository_report["access"] = "available"
                     repository_report["observed_default_branch"] = branch
+                    alert_access, alert_error = _dependabot_alert_access(
+                        repository_config.name,
+                        runner=runner,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    repository_report["dependabot_alert_access"] = alert_access
+                    if alert_error is not None:
+                        repository_report["dependabot_alert_access_detail"] = alert_error
+                        findings.append(
+                            _finding(
+                                "warning",
+                                "dependabot_alert_access_unavailable",
+                                (
+                                    "Dependabot security alerts could not be read for "
+                                    f"{repository_config.name}."
+                                ),
+                                (
+                                    "Verify that Dependabot alerts are enabled and that the "
+                                    "GitHub credential can read them, then run doctor again."
+                                ),
+                            )
+                        )
                     matches = branch == repository_config.default_branch
                     repository_report["default_branch_matches"] = matches
                     if not matches:

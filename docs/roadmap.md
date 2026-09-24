@@ -4,7 +4,7 @@ Dependabot Watcher is being restored in bounded phases. This roadmap records pro
 
 Historical phase requirements remain as design records. Record verified delivery status separately rather than rewriting prior requirements as completed behavior.
 
-The current read-only position remains “a local-first, provider-neutral control plane for inspecting and safely triaging Dependabot activity across multiple repositories.” The intended mature position is safe automation of the Dependabot maintenance loop, not full repository maintenance: collect evidence, recommend an order, recheck live state, execute only policy-authorized actions, and retain a concise human summary plus complete structured audit evidence.
+The original read-only position was “a local-first, provider-neutral control plane for inspecting and safely triaging Dependabot activity across multiple repositories.” The intended mature position is safe automation of the Dependabot maintenance loop, not full repository maintenance: collect evidence, recommend an order, recheck live state, execute only policy-authorized actions, and retain a concise human summary plus complete structured audit evidence.
 
 ## Phase entry gate
 
@@ -32,6 +32,16 @@ Phase 6 delivered one approval-gated `validate_then_merge` action with explicit 
 The installed product completed one explicitly approved real merge from a fresh remote clone. Independent GitHub verification confirmed the exact planned head was merged; audit history recorded start, success, and an idempotent retry reconciliation; a repeated invocation made no second mutation; and post-action inspection observed the reduced open-PR queue. The sanitized validation record is in [validation.md](validation.md).
 
 This evidence completes the approval-gated Phase 6 milestone. It does not justify unattended execution yet. Reassess a narrowly bounded automatic class only after repeated installed-path dogfooding shows that eligibility, downstream validation, reporting, and recovery remain reliable across more than one repository/update shape.
+
+A post-delivery multi-model onboarding checkpoint exposed two safety clarifications that the approval-gated contract must preserve: execution-required checks need explicit GitHub success rather than the broader inspection treatment of neutral/skipped conclusions, and the deterministic approval token is an exact-action confirmation value rather than independent human authentication. It also prompted bounded Dependabot-alert permission diagnostics and clearer private-plan, clone/authentication, and one-action freshness guidance. These corrections refine the delivered boundary without changing the historical Phase 6 milestone.
+
+### Closed-loop automation and recovery direction
+
+The mature goal is exception-driven closed-loop automation for routine Dependabot maintenance, not a claim that every dependency problem can be resolved autonomously. Once a repository policy is deliberately configured and dogfooded, the ordinary loop should be able to trigger on a schedule or event, collect fresh evidence, process only a validated low-risk class one action at a time, observe downstream checks and supported deployment gates, replan after every base change, retain an audit history, and report what changed. Major, grouped, sensitive, ambiguous, unsupported, or failed work should halt the affected queue and escalate with sufficient evidence rather than being forced through.
+
+Recovery has distinct layers. Interrupted or ambiguous execution already uses audit, live reconciliation, idempotent retry, and deliberate lock handling. Later automation should add post-merge verification, automatic stopping, and actionable recovery guidance. An approval-gated revert or other bounded recovery action may be justified after real workflow evidence; automatic rollback must not be presumed correct merely because a downstream check failed.
+
+Prefer a scheduler-independent run-once core with optional platform scheduling adapters before introducing an internal daemon. Poll the authoritative GitHub API initially; a GitHub App or webhook adapter may later supply event-driven triggers when demand justifies the added deployment and authorization surface. Email may be a notification destination, not the primary evidence source. Retain the `Dependabot Watcher` name for now and revisit it before public release only if repeated onboarding evidence shows that users materially misread the product as passive despite clear execution messaging; do not add a long-running watch mode merely to justify the name.
 
 ## Delivered foundation
 

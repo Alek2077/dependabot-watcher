@@ -213,6 +213,17 @@ def test_repository_workflow_profile_and_manifest_limits_are_typed() -> None:
     assert config.repositories[0].workflow.required_checks == ("CI",)
 
 
+def test_repository_workflow_rejects_required_check_boundary_whitespace() -> None:
+    data = valid_config()
+    repositories = data["repositories"]
+    assert isinstance(repositories, list)
+    assert isinstance(repositories[0], dict)
+    repositories[0]["workflow"] = {"required_checks": [" CI"]}
+
+    with pytest.raises(ConfigError, match="single-line strings"):
+        parse_config(data)
+
+
 @pytest.mark.parametrize("merge_method", ["octopus", "fast-forward", ""])
 def test_repository_workflow_profile_rejects_unknown_merge_method(merge_method: str) -> None:
     with pytest.raises(ConfigError, match="merge_method"):

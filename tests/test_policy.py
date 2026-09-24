@@ -9,6 +9,7 @@ from dependabot_watcher.policy import (
     build_path_policy,
     check_state,
     correlate_alerts,
+    normalized_status_checks,
     sensitive_recent_merges,
 )
 
@@ -73,6 +74,85 @@ def test_check_state_is_conservative() -> None:
     assert check_state([{"status": "COMPLETED", "conclusion": "FAILURE"}]) == "failing"
     assert check_state([{"status": "COMPLETED", "conclusion": "SUCCESS"}]) == "passing"
     assert check_state([{"state": "PENDING"}]) == "pending"
+
+
+def test_status_check_normalization_preserves_github_check_kinds_and_duplicates() -> None:
+    normalized = normalized_status_checks(
+        [
+            {"name": "CI", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "CI", "status": "COMPLETED", "conclusion": "SKIPPED"},
+            {"context": "legacy-ci", "state": "SUCCESS"},
+            {"name": "Malformed", "status": "BOGUS", "conclusion": "SUCCESS"},
+            {"name": 123, "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": " CI ", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]
+    )
+
+    assert [item["name"] for item in normalized] == [
+        "CI",
+        "CI",
+        "legacy-ci",
+        "Malformed",
+    ]
+    assert normalized[0]["kind"] == "check_run"
+    assert normalized[1]["kind"] == "check_run"
+    assert normalized[2] == {
+        "name": "legacy-ci",
+        "kind": "status_context",
+        "state": "passing",
+        "status": "",
+        "conclusion": "SUCCESS",
+    }
+    assert normalized[3]["state"] == "unknown"
+
+
+def test_malformed_status_context_cannot_look_passing_after_normalization() -> None:
+    normalized = normalized_status_checks(
+        [{"context": "legacy-ci", "state": "SUCCESS", "conclusion": "SKIPPED"}]
+    )
+
+    assert normalized == [
+        {
+            "name": "legacy-ci",
+            "kind": "status_context",
+            "state": "unknown",
+            "status": "",
+            "conclusion": "SUCCESS",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        {"name": "CI", "status": "COMPLETED", "conclusion": False},
+        {"name": "CI", "status": False, "conclusion": "SUCCESS"},
+        {"name": "CI", "context": 123, "status": "COMPLETED", "conclusion": "SUCCESS"},
+        {
+            "__typename": "StatusContext",
+            "name": "CI",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+        },
+        {
+            "__typename": "CheckRun",
+            "name": "CI",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "state": "NEUTRAL",
+        },
+        {"context": "CI", "state": "SUCCESS", "conclusion": False},
+        {"context": "CI", "state": "SUCCESS", "status": "COMPLETED"},
+    ],
+)
+def test_non_string_status_fields_normalize_as_unknown(
+    check: dict[str, object],
+) -> None:
+    normalized = normalized_status_checks([check])
+
+    assert len(normalized) == 1
+    assert normalized[0]["name"] == "CI"
+    assert normalized[0]["state"] == "unknown"
 
 
 def test_pull_request_assessment_never_authorizes_mutation() -> None:

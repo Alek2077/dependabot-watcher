@@ -227,7 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
     execute_parser.add_argument("--step-id", required=True, help="Exact saved plan step ID.")
     execute_parser.add_argument(
         "--approval-token",
-        help="Exact token from a preceding read-only execution preflight.",
+        help="Exact approval confirmation token from a preceding read-only execution preflight.",
     )
     execute_parser.add_argument(
         "--format",
@@ -294,8 +294,15 @@ def _required_check_overrides(values: list[str]) -> dict[str, tuple[str, ...]]:
     for value in values:
         if "=" not in value:
             raise ConfigError("--required-check must use OWNER/REPO=CHECK form.")
-        repository, check = (item.strip() for item in value.split("=", 1))
-        if not repository or not check or "\n" in check or "\r" in check:
+        raw_repository, check = value.split("=", 1)
+        repository = raw_repository.strip()
+        if (
+            not repository
+            or not check
+            or check != check.strip()
+            or "\n" in check
+            or "\r" in check
+        ):
             raise ConfigError("--required-check must use OWNER/REPO=CHECK form.")
         checks = grouped.setdefault(repository, [])
         if check in checks:

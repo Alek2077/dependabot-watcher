@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
+import pytest
+
 from dependabot_watcher import diagnostics
 from dependabot_watcher.diagnostics import CommandResult, doctor
 
@@ -63,6 +65,8 @@ def test_doctor_reports_redacted_read_only_readiness_and_support_depth(
         if command[:2] == ["gh", "api"]:
             if "/commits/" in command[2]:
                 return CommandResult(0, json.dumps({"sha": "a" * 40}))
+            if "/dependabot/alerts?" in command[2]:
+                return CommandResult(0, "[]")
             encoded = base64.b64encode(dependabot_yaml.encode()).decode()
             return CommandResult(
                 0,
@@ -86,6 +90,7 @@ def test_doctor_reports_redacted_read_only_readiness_and_support_depth(
 
     assert report["status"] == "ready"
     assert report["repositories"][0]["ecosystems"] == ["pip", "npm"]
+    assert report["repositories"][0]["dependabot_alert_access"] == "available"
     support = report["repositories"][0]["support"]
     assert support["pip"]["deeper_deterministic_analysis"] == "partial_python_requirements"
     assert support["npm"]["deeper_deterministic_analysis"] == "generic_only"
@@ -102,6 +107,20 @@ def test_doctor_reports_redacted_read_only_readiness_and_support_depth(
         for mutation in ("merge", "close", "comment", "edit")
     )
     assert ("codex", "login", "status") not in commands
+    alert_commands = [
+        command
+        for command in commands
+        if len(command) > 2 and "/dependabot/alerts?" in command[2]
+    ]
+    assert alert_commands == [
+        (
+            "gh",
+            "api",
+            "/repos/example-org/example-app/dependabot/alerts?state=open&per_page=1",
+            "--jq",
+            ".[0:2] | map(.number)",
+        )
+    ]
 
 
 def test_offline_doctor_skips_auth_and_repository_calls(
@@ -404,6 +423,8 @@ def test_doctor_falls_back_to_yaml_and_reads_configured_branch(
             endpoints.append(command[2])
             if "/commits/develop" in command[2]:
                 return CommandResult(0, json.dumps({"sha": "b" * 40}))
+            if "/dependabot/alerts?" in command[2]:
+                return CommandResult(0, "[]")
             if "dependabot.yml" in command[2]:
                 return CommandResult(1)
             if "dependabot.yaml" in command[2]:
@@ -430,6 +451,100 @@ def test_doctor_falls_back_to_yaml_and_reads_configured_branch(
     assert repository["dependabot_configuration_path"] == ".github/dependabot.yaml"
     assert repository["ecosystems"] == ["pip"]
     assert all("ref=develop" in endpoint for endpoint in endpoints if "/contents/" in endpoint)
+
+
+def test_doctor_reports_unavailable_dependabot_alert_access_as_attention(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    _config(config_path)
+    dependabot_yaml = (
+        "version: 2\nupdates:\n"
+        "  - package-ecosystem: pip\n"
+        "    directory: /\n"
+        "    schedule: {interval: weekly}\n"
+    )
+
+    def runner(command: Sequence[str], timeout: int) -> CommandResult:
+        if command[1:] == ["--version"]:
+            return CommandResult(0, f"{command[0]} version test\n")
+        if command[:3] == ["gh", "auth", "status"]:
+            return CommandResult(0)
+        if command[:3] == ["gh", "repo", "view"]:
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "nameWithOwner": "example-org/example-app",
+                        "defaultBranchRef": {"name": "main"},
+                    }
+                ),
+            )
+        if command[:2] == ["gh", "api"] and "/dependabot/alerts?" in command[2]:
+            return CommandResult(1, stderr="permission detail must not escape")
+        if command[:2] == ["gh", "api"] and "/commits/" in command[2]:
+            return CommandResult(0, json.dumps({"sha": "c" * 40}))
+        if command[:2] == ["gh", "api"]:
+            encoded = base64.b64encode(dependabot_yaml.encode()).decode()
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "type": "file",
+                        "size": len(dependabot_yaml.encode()),
+                        "encoding": "base64",
+                        "content": encoded,
+                    }
+                ),
+            )
+        raise AssertionError(f"Unexpected command: {command}")
+
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
+    report = doctor(config_path, runner=runner)
+
+    repository = report["repositories"][0]
+    assert report["status"] == "attention"
+    assert repository["dependabot_alert_access"] == "unavailable"
+    assert repository["dependabot_alert_access_detail"] == "dependabot_alert_access_failed"
+    assert any(
+        finding["code"] == "dependabot_alert_access_unavailable"
+        for finding in report["findings"]
+    )
+    assert "permission detail" not in json.dumps(report)
+
+
+def test_dependabot_alert_probe_rejects_malformed_response() -> None:
+    status, detail = diagnostics._dependabot_alert_access(
+        "example-org/example-app",
+        runner=lambda command, timeout: CommandResult(0, '{"unexpected": true}'),
+        timeout_seconds=30,
+    )
+
+    assert status == "unavailable"
+    assert detail == "dependabot_alert_response_invalid"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "[{}]",
+        "[1, 2]",
+        "[" + "9" * 5000 + "]",
+        json.dumps([1, "x" * (256 * 1024)]),
+    ],
+)
+def test_dependabot_alert_probe_rejects_malformed_or_over_limit_items(
+    payload: str,
+) -> None:
+    status, detail = diagnostics._dependabot_alert_access(
+        "example-org/example-app",
+        runner=lambda command, timeout: CommandResult(0, payload),
+        timeout_seconds=30,
+    )
+
+    assert status == "unavailable"
+    assert detail == "dependabot_alert_response_invalid"
 
 
 def test_doctor_reports_unavailable_dependabot_configuration_as_attention(

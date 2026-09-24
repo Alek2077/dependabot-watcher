@@ -66,7 +66,7 @@ Additional dependency patterns identify files that are safe to classify as depen
 
 Each repository may define an optional `workflow` table. `merge_method` accepts `repository_default`, `merge`, `squash`, or `rebase`. `promotion_branch` is optional. `required_checks`, `deployment_environments`, and `validation_notes` are bounded single-line string arrays.
 
-Planning displays all workflow fields as evidence and never executes strings. The initial approval-gated merge surface requires an explicit `merge`, `squash`, or `rebase` method and at least one named required check observed as passing. It refuses `repository_default` and any configured promotion branch, deployment environment, or free-form validation note because it cannot yet verify those gates. The watcher does not deploy or promote branches.
+Planning displays all workflow fields as evidence and never executes strings. The initial approval-gated merge surface requires an explicit `merge`, `squash`, or `rebase` method and at least one exact, case-sensitive required-check name. Ambiguous duplicates fail closed. Each required check must be either a completed check run with `conclusion = SUCCESS` or a legacy commit-status context with `state = SUCCESS`. `NEUTRAL`, `SKIPPED`, pending, missing, malformed, unknown, and failing checks do not satisfy the execution gate. It refuses `repository_default` and any configured promotion branch, deployment environment, or free-form validation note because it cannot yet verify those gates. The watcher does not deploy or promote branches.
 
 ## Execution state and audit
 

@@ -216,20 +216,30 @@ def _binding(
     status_checks = step.get("status_checks")
     if not isinstance(status_checks, list):
         raise ExecutionError("Execution plan has malformed status-check evidence.")
-    observed: dict[str, str] = {}
+    observed: dict[str, Mapping[str, Any]] = {}
+    observed_casefolded: set[str] = set()
     for item in status_checks:
         if not isinstance(item, Mapping):
             raise ExecutionError("Execution plan has malformed status-check evidence.")
         name = _required_text(item.get("name"), "status-check name")
-        observed[name.casefold()] = str(item.get("state") or "unknown")
+        folded_name = name.casefold()
+        if folded_name in observed_casefolded:
+            raise ExecutionError(
+                "Execution plan has ambiguous duplicate status-check evidence for "
+                f"{name!r}."
+            )
+        observed_casefolded.add(folded_name)
+        observed[name] = item
     missing = [
         name
         for name in repository_config.workflow.required_checks
-        if observed.get(name.casefold()) != "passing"
+        if not _required_check_succeeded(observed.get(name))
     ]
     if missing:
         raise ExecutionError(
-            "Configured required checks are missing or not passing: " + ", ".join(missing) + "."
+            "Configured required checks are missing or not explicitly successful: "
+            + ", ".join(missing)
+            + "."
         )
     return {
         "repository_plan_id": _required_text(repository_plan.get("plan_id"), "repository plan ID"),
@@ -240,6 +250,24 @@ def _binding(
         "head_sha": head_sha,
         "merge_method": merge_method,
     }
+
+
+def _required_check_succeeded(check: Mapping[str, Any] | None) -> bool:
+    """Require a valid explicit GitHub success for an execution-gating check."""
+
+    if check is None:
+        return False
+    kind = str(check.get("kind") or "")
+    state = str(check.get("state") or "")
+    status = str(check.get("status") or "").upper()
+    conclusion = str(check.get("conclusion") or "").upper()
+    if state != "passing":
+        return False
+    if kind == "check_run":
+        return status == "COMPLETED" and conclusion == "SUCCESS"
+    if kind == "status_context":
+        return not status and conclusion == "SUCCESS"
+    return False
 
 
 def approval_token(binding: Mapping[str, Any]) -> str:
@@ -508,7 +536,7 @@ def preflight_execution(
         "next": (
             "No action is needed; GitHub reports this exact head as already merged."
             if already_applied
-            else "Repeat execute with the displayed approval token to authorize this exact action."
+            else "Repeat execute with the displayed approval confirmation token to authorize this exact action."
         ),
     }
 
@@ -791,7 +819,9 @@ def execute_approved(
     if not hmac.compare_digest(
         supplied_approval_token, approval_token(saved_binding)
     ):
-        raise ExecutionError("Approval token does not authorize the current exact action.")
+        raise ExecutionError(
+            "Approval confirmation token does not authorize the current exact action."
+        )
 
     state_path = _prepare_state_directory(state_directory or default_state_directory())
     with _execution_lock(state_path):

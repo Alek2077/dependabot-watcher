@@ -291,6 +291,7 @@ def _bounded_strings(
     *,
     maximum_items: int = 50,
     maximum_length: int = 300,
+    require_exact: bool = False,
 ) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -301,7 +302,12 @@ def _bounded_strings(
     normalized: list[str] = []
     for item in value:
         text = item.strip()
-        if not text or len(text) > maximum_length or any(char in text for char in "\r\n\0"):
+        if (
+            not text
+            or (require_exact and text != item)
+            or len(text) > maximum_length
+            or any(char in text for char in "\r\n\0")
+        ):
             raise ConfigError(
                 f"{location} items must be non-empty single-line strings up to "
                 f"{maximum_length} characters."
@@ -585,6 +591,7 @@ def _repository(value: object, index: int) -> RepositoryConfig:
             required_checks=_bounded_strings(
                 workflow_data.get("required_checks"),
                 f"{location}.workflow.required_checks",
+                require_exact=True,
             ),
             deployment_environments=_bounded_strings(
                 workflow_data.get("deployment_environments"),

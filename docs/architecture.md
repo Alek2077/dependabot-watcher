@@ -82,7 +82,7 @@ The GitHub collection and planning contracts are ecosystem-neutral wherever GitH
 
 ## GitHub access boundary
 
-Authenticated access is a product requirement for private repositories and Dependabot security alerts; GitHub CLI is only the first implementation of that requirement. The current adapter delegates read-only repository, pull-request, and API calls to `gh`, which also supplies its supported browser, credential-store, or environment-token authentication. No IDE is required.
+Authenticated access is a product requirement for private repositories and Dependabot security alerts; GitHub CLI is only the first implementation of that requirement. The current adapter delegates bounded repository, pull-request, and API reads to `gh`, plus the sole explicitly enabled exact-head PR merge call. GitHub CLI also supplies its supported browser, credential-store, or environment-token authentication. No IDE is required.
 
 Editor authentication is intentionally outside this boundary. The watcher does not inspect or extract VS Code or extension credentials, because they belong to another application's private integration and are not a safe or durable credential API.
 
@@ -104,7 +104,7 @@ The `GitHubClient` protocol keeps collection and policy independent from GitHub 
 - Plans bind repository/base state, alert snapshot, and PR head state; every step requires reinspection and remains non-mutating.
 - Repository workflow strings are displayed as configuration evidence and are never executed. Initial execution refuses promotion, deployment, or free-form validation gates it cannot verify.
 - Configuration may enable only `approval_required` execution; it cannot authorize a particular action. The default remains `read_only`, and unsupported authority fails closed.
-- A saved plan, `baseline_candidate`, advisory result, or approval token alone is insufficient. Execution requires a matching fresh plan, configured required checks observed as passing, an explicit merge method, a second recheck under the execution lock, and the exact current token.
+- A saved plan, `baseline_candidate`, advisory result, or approval confirmation token alone is insufficient. Execution requires a matching fresh plan, configured required checks observed with explicit success, an explicit merge method, a second recheck under the execution lock, and the exact current token.
 - Execution reinspection is deterministic and makes no new model call. A model-conservative saved action remains binding, while model prose or nondeterminism cannot destabilize the freshness identity.
 - Each invocation mutates at most one pull request. The GitHub merge request includes the expected head SHA.
 - Execution audit records are append-only JSON Lines with user-only permissions. They exclude credentials, raw provider output, and raw GitHub error text.

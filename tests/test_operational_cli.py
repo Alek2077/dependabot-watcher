@@ -4,8 +4,10 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from dependabot_watcher import cli
-from dependabot_watcher.config import load_config
+from dependabot_watcher.config import ConfigError, load_config
 from dependabot_watcher.operational_output import render_operational
 
 
@@ -292,6 +294,11 @@ def test_cli_setup_can_create_explicit_approval_gated_profile(
     assert config.operation.mutation_enabled is True
     assert config.repositories[0].workflow.merge_method == "squash"
     assert config.repositories[0].workflow.required_checks == ("CI",)
+
+
+def test_cli_rejects_required_check_boundary_whitespace() -> None:
+    with pytest.raises(ConfigError, match="OWNER/REPO=CHECK"):
+        cli._required_check_overrides(["example-org/example-app= CI"])
 
 
 def test_cli_doctor_uses_partial_exit_for_attention_report(

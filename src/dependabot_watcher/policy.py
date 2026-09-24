@@ -240,26 +240,102 @@ def normalized_status_checks(
 ) -> list[dict[str, str]]:
     """Return stable check identities and states for policy enforcement."""
 
-    normalized: dict[str, dict[str, str]] = {}
-    rank = {"missing": 0, "passing": 1, "unknown": 2, "pending": 3, "failing": 4}
+    normalized: list[dict[str, str]] = []
+    check_run_statuses = {
+        "COMPLETED",
+        "IN_PROGRESS",
+        "PENDING",
+        "QUEUED",
+        "REQUESTED",
+        "WAITING",
+    }
+    check_run_conclusions = {
+        "ACTION_REQUIRED",
+        "CANCELLED",
+        "FAILURE",
+        "NEUTRAL",
+        "SKIPPED",
+        "STALE",
+        "STARTUP_FAILURE",
+        "SUCCESS",
+        "TIMED_OUT",
+    }
+    status_context_states = {"ERROR", "EXPECTED", "FAILURE", "PENDING", "SUCCESS"}
     for check in checks or []:
-        name = str(check.get("name") or check.get("context") or "").strip()
-        if not name:
+        raw_check_run_name = check.get("name")
+        raw_status_context_name = check.get("context")
+        identity_fields_valid = all(
+            value is None or isinstance(value, str)
+            for value in (raw_check_run_name, raw_status_context_name)
+        )
+        check_run_name = raw_check_run_name if isinstance(raw_check_run_name, str) else ""
+        status_context_name = (
+            raw_status_context_name if isinstance(raw_status_context_name, str) else ""
+        )
+        if (
+            (check_run_name and check_run_name != check_run_name.strip())
+            or (status_context_name and status_context_name != status_context_name.strip())
+        ):
             continue
-        conclusion = str(check.get("conclusion") or "").upper()
-        state = str(check.get("state") or "").upper()
-        status = str(check.get("status") or "").upper()
+        if bool(check_run_name) == bool(status_context_name):
+            continue
+        name = check_run_name or status_context_name
+        raw_conclusion = check.get("conclusion")
+        raw_state = check.get("state")
+        raw_status = check.get("status")
+        raw_typename = check.get("__typename")
+        result_fields_valid = all(
+            value is None or isinstance(value, str)
+            for value in (raw_conclusion, raw_state, raw_status, raw_typename)
+        )
+        conclusion = raw_conclusion.upper() if isinstance(raw_conclusion, str) else ""
+        state = raw_state.upper() if isinstance(raw_state, str) else ""
+        status = raw_status.upper() if isinstance(raw_status, str) else ""
+        if check_run_name:
+            kind = "check_run"
+            valid = (
+                identity_fields_valid
+                and result_fields_valid
+                and raw_status_context_name is None
+                and raw_state is None
+                and raw_typename in {None, "CheckRun"}
+                and status in check_run_statuses
+                and conclusion in check_run_conclusions | {""}
+                and ((status == "COMPLETED") == bool(conclusion))
+            )
+            normalized_conclusion = conclusion
+        else:
+            kind = "status_context"
+            valid = (
+                identity_fields_valid
+                and result_fields_valid
+                and raw_check_run_name is None
+                and raw_status is None
+                and raw_conclusion is None
+                and raw_typename in {None, "StatusContext"}
+                and state in status_context_states
+                and not status
+                and not conclusion
+            )
+            normalized_conclusion = state
         item = {
             "name": name,
-            "state": check_state([check]),
+            "kind": kind,
+            "state": check_state([check]) if valid else "unknown",
             "status": status,
-            "conclusion": conclusion or state,
+            "conclusion": normalized_conclusion,
         }
-        key = name.casefold()
-        existing = normalized.get(key)
-        if existing is None or rank[item["state"]] > rank[existing["state"]]:
-            normalized[key] = item
-    return sorted(normalized.values(), key=lambda item: item["name"].casefold())
+        normalized.append(item)
+    return sorted(
+        normalized,
+        key=lambda item: (
+            item["name"].casefold(),
+            item["name"],
+            item["kind"],
+            item["status"],
+            item["conclusion"],
+        ),
+    )
 
 
 def sensitive_recent_merges(

@@ -4,9 +4,9 @@
 
 Dependabot Watcher is a local-first, provider-neutral control plane for Dependabot activity. It focuses on open pull requests authored by Dependabot, connects them to security alerts and recent sensitive changes, and can provide raw inspection facts, optional model-assisted advice, or a deterministic order of actions for handling the queue.
 
-The project is currently a **private pre-release with one narrow approval-gated action**. Inspection, advice, and planning remain non-mutating. An explicitly enabled `execute` command can merge one exact, freshly revalidated Dependabot pull request only after a separate preflight produces an action-bound approval token.
+The project is currently a **private pre-release with one narrow approval-gated action**. Inspection, advice, and planning remain non-mutating. An explicitly enabled `execute` command can merge one exact, freshly revalidated Dependabot pull request only after a separate preflight produces an action-bound approval confirmation token.
 
-It does not close, comment, approve, label, rebase, create remediation changes, notify, clone target repositories, schedule itself, or execute unattended. The default setup remains model-off and read-only. Approved execution writes a local append-only audit trail; no other runtime command persists product state.
+It does not close, comment, approve, label, rebase an open PR branch, create remediation changes, notify, clone target repositories, schedule itself, or execute unattended. It may use GitHub's `rebase` merge method when explicitly configured. The default setup remains model-off and read-only. `setup` writes the requested configuration; approved execution writes a local append-only audit trail; inspection, advice, planning, and diagnostics do not persist product runtime state.
 
 The intended product end state is safe automation of the Dependabot maintenance loop: inspect, plan, recheck, execute only policy-authorized actions, and report what changed or still needs attention. Future provider adapters may use an officially supported subscription-authenticated CLI or an API credential, depending on what each provider permits. Deterministic collection, candidate grouping, sufficient decision-relevant context, and escalation only when useful should keep ordinary runs efficient without assuming that every repository needs the strongest available model.
 
@@ -21,12 +21,12 @@ Prerequisites:
 - [GitHub CLI](https://cli.github.com/) installed and authenticated; and
 - access to every configured repository and its Dependabot alerts.
 
-GitHub authorization is required because Dependabot security alerts and private repository evidence are not anonymous data. The current adapter uses `gh` for read-only GitHub API requests and credential handling. No IDE is required, and the watcher does not inspect or reuse a VS Code login. The credential held by `gh` may have broader permissions than the watcher uses; a tested least-privilege credential profile is a gate for public release.
+GitHub authorization is required because Dependabot security alerts and private repository evidence are not anonymous data. The current adapter uses `gh` for credential handling and bounded read-only collection; only explicitly approved `execute` can call the exact-head PR merge endpoint. No IDE is required, and the watcher does not inspect or reuse a VS Code login. The credential held by `gh` may have broader permissions than the watcher uses; a tested least-privilege credential profile is a gate for public release.
 
 Clone the private repository and enter its directory:
 
 ```bash
-git clone https://github.com/Alek2077/dependabot-watcher.git
+gh repo clone Alek2077/dependabot-watcher
 cd dependabot-watcher
 ```
 
@@ -60,7 +60,7 @@ Choose the command that matches the result you want:
 | `dependabot-watcher inspect` | Returns current Dependabot PR, alert, check, and repository facts without using a model. |
 | `dependabot-watcher advise` | Adds optional per-PR or per-alert model recommendations when advice is explicitly configured. |
 | `dependabot-watcher plan` | Produces an ordered action list for the complete queue, using optional advice if configured; it does not execute the actions. |
-| `dependabot-watcher execute` | Revalidates one saved plan step, then either prints its exact approval token or uses that token to merge only the bound PR head. |
+| `dependabot-watcher execute` | Revalidates one saved plan step, then either prints its exact approval confirmation token or uses that token to merge only the bound PR head. |
 
 Run the preflight, then inspect the evidence or request the ordered action list:
 
@@ -89,6 +89,8 @@ dependabot-watcher advise --format json
 ```
 
 Advice defaults to `off`. Enabling `economy` or `reviewed` requires explicit provider configuration; see the [configuration reference](docs/configuration.md).
+
+When advice is enabled, selected repository, PR, alert, dependency, changed-path, check, and deterministic-assessment evidence is sent to the configured provider. Candidate and call limits bound workload; they are not financial spending caps. Cost or subscription usage depends on the provider authentication configured outside the watcher.
 
 Advanced setup can record a tested provider choice while still making no model call:
 
@@ -120,14 +122,18 @@ dependabot-watcher setup \
   --acknowledge-mutation
 ```
 
+Use a prior read-only `inspect --verbosity standard` or `plan --format json` run to discover the exact, case-sensitive observed check names, then verify those names against the repository's branch protection or ruleset. Ambiguous duplicate names fail closed. Execution requires an explicit successful GitHub result for every configured required check: a completed check run with `conclusion = SUCCESS`, or a legacy commit-status context with `state = SUCCESS`. `NEUTRAL`, `SKIPPED`, pending, missing, malformed, unknown, and failing checks do not qualify. Setup refuses to overwrite an existing profile, so either deliberately edit the reviewed profile or create a separate execution profile with `--config` after confirming these settings.
+
 Save a complete machine-readable plan, then run a non-mutating execution preflight for one displayed step ID:
 
 ```bash
-dependabot-watcher plan --format json > watcher-plan.json
+(umask 077 && dependabot-watcher plan --format json > watcher-plan.json)
 dependabot-watcher execute --plan-file watcher-plan.json --step-id STEP_ID
 ```
 
-If the exact action is eligible, preflight prints an approval token bound to the saved repository plan, step, repository, PR number, base, head SHA, and merge method. Supplying that token is the separate mutation authorization:
+The saved plan contains private repository evidence. Keep it in a user-private location, do not publish it, and remove it when no longer needed.
+
+If the exact action is eligible, preflight prints an approval confirmation token bound to the saved repository plan, step, repository, PR number, base, head SHA, and merge method. Supplying that token is the separate mutation authorization:
 
 ```bash
 dependabot-watcher execute \
@@ -136,7 +142,9 @@ dependabot-watcher execute \
   --approval-token APPROVAL_TOKEN
 ```
 
-The preflight and mutating invocation repeat deterministic live collection without making another model call. Stable identities are recomputed from the saved plan before use, so editing its material action, evidence, or advice without producing a new plan is rejected and any conservative model conclusion remains binding. The mutating invocation performs one final recheck under an execution lock and submits the planned head SHA to GitHub. Any changed head, base, alert/check evidence, policy, incomplete collection, missing required check, unsupported workflow gate, or invalid token fails closed. Each invocation performs at most one merge. After a successful merge, the command performs a model-free reinspection and reports the exact action, merge result, remaining PR and alert counts, uncovered-alert count, attention-required count, and remaining recommended-step count. Partial, malformed, or failed follow-up collection is reported as unavailable and its counts are suppressed; the successful mutation remains explicit and the operator is told to run `inspect` and `plan`. The audit log is stored under the platform state directory (`~/.local/state/dependabot-watcher` on ordinary Linux unless `XDG_STATE_HOME` is set) as a current-user-owned regular file with user-only permissions.
+The token is a deterministic, non-secret confirmation value—not a signature, separate approver identity, or proof that a human performed preflight. A local caller able to read the complete binding and run both invocations can reproduce it. The safety boundary therefore also depends on trusted local automation, deliberate profile opt-in, live fail-closed revalidation, and the authority of the active GitHub credential.
+
+The preflight and mutating invocation repeat deterministic live collection without making another model call. Stable identities are recomputed from the saved plan before use, so editing its material action, evidence, or advice without producing a new plan is rejected and any conservative model conclusion remains binding. The mutating invocation performs one final recheck under an execution lock and submits the planned head SHA to GitHub. Any changed head, base, alert/check evidence, policy, incomplete collection, missing required check, unsupported workflow gate, or invalid token fails closed. Each invocation performs at most one merge. After a successful merge, the command performs a model-free reinspection and reports the exact action, merge result, remaining PR and alert counts, uncovered-alert count, attention-required count, and remaining recommended-step count. The merge changes the base SHA and invalidates the remaining saved steps for that repository; generate a fresh plan before another action. Partial, malformed, or failed follow-up collection is reported as unavailable and its counts are suppressed; the successful mutation remains explicit and the operator is told to run `inspect` and `plan`. The audit log is stored under the platform state directory (`~/.local/state/dependabot-watcher` on ordinary Linux unless `XDG_STATE_HOME` is set) as a current-user-owned regular file with user-only permissions.
 
 This first execution surface is intentionally not automatic. It accepts only an unblocked `validate_then_merge` step that remains a deterministic baseline candidate. Model advice may veto or make the plan more conservative, but neither a model recommendation nor the plan itself authorizes the merge.
 
