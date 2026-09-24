@@ -70,6 +70,29 @@ def test_quick_setup_verifies_then_creates_model_off_profile(
     assert not any(command[0] == "codex" for command in commands)
 
 
+def test_default_configuration_is_reused_without_redundant_flags(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "config.toml"
+    monkeypatch.setenv("DEPENDABOT_WATCHER_CONFIG", str(path))
+
+    report = setup(
+        path,
+        SetupRequest(
+            repositories=("example-org/example-app",),
+            branches={"example-org/example-app": "main"},
+            offline=True,
+        ),
+    )
+
+    assert report["configuration_auto_loaded"] is True
+    assert report["next_commands"] == [
+        "dependabot-watcher doctor",
+        "dependabot-watcher plan",
+    ]
+
+
 def test_setup_refuses_to_overwrite_existing_configuration(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text("keep me", encoding="utf-8")

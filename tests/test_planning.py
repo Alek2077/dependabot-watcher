@@ -233,6 +233,8 @@ def test_plan_verbosity_changes_human_detail_only() -> None:
     assert "Validation:" not in concise
     assert "Validation:" in detailed
     assert "Freshness:" in detailed
+    assert "Decision source: deterministic policy (no model used)" in concise
+    assert "without direct open-PR coverage" in concise
     assert len(concise) < len(detailed)
     assert json.loads(render_plan(report, "json", verbosity="concise")) == json.loads(
         render_plan(report, "json", verbosity="detailed")
@@ -242,6 +244,8 @@ def test_plan_verbosity_changes_human_detail_only() -> None:
 def test_model_advice_can_make_action_more_conservative_without_changing_order() -> None:
     source = _advisory_report()
     source["advisory"]["mode"] = "reviewed"  # type: ignore[index]
+    source["advisory"]["provider"] = "codex_cli"  # type: ignore[index]
+    source["capabilities"]["model_calls"] = True  # type: ignore[index]
     source["advisory"]["decisions"] = [  # type: ignore[index]
         {
             "kind": "pull_request",
@@ -254,10 +258,27 @@ def test_model_advice_can_make_action_more_conservative_without_changing_order()
     ]
 
     report = plan_from_advisory(source)  # type: ignore[arg-type]
+    rendered = render_plan(report, "text")
     steps = report["repositories"][0]["recommended_order"]
 
     assert steps[0]["identity"]["number"] == 42
     assert steps[0]["action"] == "hold"
+    assert "accepted optional Codex CLI advice (reviewed mode)" in rendered
+
+
+def test_plan_provenance_does_not_treat_failed_provider_call_as_advice() -> None:
+    source = _advisory_report()
+    source["advisory"]["mode"] = "economy"  # type: ignore[index]
+    source["advisory"]["provider"] = "codex_cli"  # type: ignore[index]
+    source["advisory"]["errors"] = [  # type: ignore[index]
+        {"stage": "triage", "batch": 1, "message": "provider failed"}
+    ]
+    source["capabilities"]["model_calls"] = True  # type: ignore[index]
+
+    rendered = render_plan(plan_from_advisory(source), "text")  # type: ignore[arg-type]
+
+    assert "analysis failed and no model advice was accepted" in rendered
+    assert "informed by" not in rendered
 
 
 def test_plan_outputs_are_concise_for_humans_and_complete_for_agents() -> None:

@@ -4,6 +4,8 @@
 
 Human text and Markdown support `concise`, `standard`, and `detailed` verbosity. JSON is identical regardless of the selected human verbosity. Presentation depth never changes evidence collection, provider calls, deterministic policy, or mutation authority.
 
+When both text stdout and stderr are attached to an interactive terminal, long live-read commands may show transient progress on stderr so they do not appear stalled. Progress is suppressed for JSON, Markdown, redirected output, pipes, and non-interactive agent execution. Final reports remain on stdout.
+
 JSON is the automation contract. Its top-level fields are:
 
 - `schema_version`: output schema version, currently `1`;
@@ -57,6 +59,8 @@ The text output is intentionally concise. JSON retains the complete inspection, 
 - the complete source advisory/inspection report for agent and audit consumers.
 
 Human text and Markdown emphasize current state and the ordered next steps. JSON retains the complete graph. `validate_then_merge` is a future-facing recommendation, not authorization: every report and step has `mutation_authorized: false`, every step has `reinspection_required: true`, and Phase 4 contains no execution path.
+
+Human planning output identifies whether the plan used deterministic policy alone or was informed by configured optional model advice. The deterministic planner owns ordering and action constraints in both cases.
 
 Conflict records identify overlapping changed paths or shared alert impact between PR steps. They mean that handling either step can stale the other and trigger reinspection; they do not claim that Git has detected a textual merge conflict.
 

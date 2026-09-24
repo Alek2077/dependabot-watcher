@@ -24,6 +24,7 @@ def render_text(report: dict[str, Any], verbosity: str = "standard") -> str:
         "Dependabot Watcher inspection",
         f"Generated: {report['generated_at']}",
         f"Status: {report['status']}",
+        "Evidence source: deterministic GitHub inspection (no model used)",
         (
             f"Repositories: {summary['repository_count']} | "
             f"Open PRs: {summary['open_pull_request_count']} | "
@@ -31,6 +32,8 @@ def render_text(report: dict[str, Any], verbosity: str = "standard") -> str:
             f"Attention required: {summary['attention_required_count']}"
         ),
     ]
+    if verbosity == "concise":
+        lines.append("More detail: dependabot-watcher inspect --verbosity standard")
     for repository in report["repositories"]:
         repo_summary = repository["summary"]
         lines.extend(
@@ -40,7 +43,8 @@ def render_text(report: dict[str, Any], verbosity: str = "standard") -> str:
                 (
                     f"  PRs: {repo_summary['open_pull_request_count']} | "
                     f"Alerts: {repo_summary['open_alert_count']} | "
-                    f"Unresolved alerts: {repo_summary['unresolved_alert_count']}"
+                    "Alerts without direct open-PR coverage: "
+                    f"{repo_summary['unresolved_alert_count']}"
                 ),
             ]
         )
@@ -104,6 +108,7 @@ def render_markdown(report: dict[str, Any], verbosity: str = "standard") -> str:
         "",
         f"Generated: `{report['generated_at']}`  ",
         f"Status: **{report['status']}**",
+        "Evidence source: deterministic GitHub inspection (no model used).",
         "",
         "| Repositories | Open PRs | Open alerts | Attention required | Errors | Truncations |",
         "|---:|---:|---:|---:|---:|---:|",
@@ -113,6 +118,13 @@ def render_markdown(report: dict[str, Any], verbosity: str = "standard") -> str:
             f"{summary['error_count']} | {summary['truncation_count']} |"
         ),
     ]
+    if verbosity == "concise":
+        lines.extend(
+            [
+                "",
+                "Use `dependabot-watcher inspect --verbosity standard` for item-level details.",
+            ]
+        )
     for repository in report["repositories"]:
         lines.extend(
             [
@@ -390,6 +402,37 @@ def _plan_record_label(record: object) -> str:
     )
 
 
+def _plan_source_label(report: dict[str, Any]) -> str:
+    source = report.get("source") or {}
+    advisory = source.get("advisory") or {}
+    mode = str(advisory.get("mode") or "off")
+    provider_key = str(advisory.get("provider") or "")
+    provider = {"codex_cli": "Codex CLI"}.get(
+        provider_key, provider_key.replace("_", " ")
+    )
+    model_calls = bool((source.get("capabilities") or {}).get("model_calls"))
+    decisions = advisory.get("decisions") or []
+    errors = advisory.get("errors") or []
+    if mode == "off" or not provider:
+        return "deterministic policy (no model used)"
+    if decisions:
+        label = (
+            f"deterministic policy informed by accepted optional {provider} advice "
+            f"({mode} mode)"
+        )
+        if errors:
+            return f"{label}; some provider analysis failed"
+        return label
+    if errors:
+        return (
+            f"deterministic policy only; {provider} analysis failed and no model advice "
+            "was accepted"
+        )
+    if model_calls:
+        return f"deterministic policy only; no accepted {provider} advice was available"
+    return f"deterministic policy; {provider} advice was configured but no model call was needed"
+
+
 def render_plan_text(report: dict[str, Any], verbosity: str = "concise") -> str:
     _validate_verbosity(verbosity)
     summary = report["summary"]
@@ -398,6 +441,7 @@ def render_plan_text(report: dict[str, Any], verbosity: str = "concise") -> str:
         f"Generated: {report['generated_at']}",
         f"Status: {report['status']}",
         f"Plan: {report['plan_id']}",
+        f"Decision source: {_plan_source_label(report)}",
         (
             f"Repositories: {summary['repository_count']} | "
             f"Recommended steps: {summary['recommended_step_count']} | "
@@ -415,7 +459,7 @@ def render_plan_text(report: dict[str, Any], verbosity: str = "concise") -> str:
                 (
                     f"  Current state: {state.get('open_pull_request_count', 0)} open PRs, "
                     f"{state.get('open_alert_count', 0)} open alerts, "
-                    f"{state.get('unresolved_alert_count', 0)} unresolved alerts"
+                    f"{state.get('unresolved_alert_count', 0)} without direct open-PR coverage"
                 ),
                 "  Recommended Order",
             ]
@@ -467,6 +511,7 @@ def render_plan_markdown(report: dict[str, Any], verbosity: str = "concise") -> 
         f"Generated: `{_escape_markdown(report['generated_at'])}`  ",
         f"Status: **{_escape_markdown(report['status'])}**  ",
         f"Plan: `{_escape_markdown(report['plan_id'])}`  ",
+        f"Decision source: {_escape_markdown(_plan_source_label(report))}  ",
         "Mutation authorized: **no**",
         "",
         (
@@ -491,7 +536,7 @@ def render_plan_markdown(report: dict[str, Any], verbosity: str = "concise") -> 
                 (
                     f"Current state: **{state.get('open_pull_request_count', 0)}** open PRs, "
                     f"**{state.get('open_alert_count', 0)}** open alerts, "
-                    f"**{state.get('unresolved_alert_count', 0)}** unresolved alerts."
+                    f"**{state.get('unresolved_alert_count', 0)}** without direct open-PR coverage."
                 ),
                 "",
                 "### Recommended Order",

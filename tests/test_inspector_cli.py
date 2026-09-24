@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,16 @@ from dependabot_watcher.github import CollectionResult
 from dependabot_watcher.inspector import inspect
 from dependabot_watcher.inspector import _manifest_relationship_path
 from dependabot_watcher.output import render, render_json, render_markdown, render_text
+
+
+class _TtyBuffer(StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+class _RedirectedBuffer(StringIO):
+    def isatty(self) -> bool:
+        return False
 
 
 class FakeClient:
@@ -268,12 +279,36 @@ def test_human_verbosity_changes_presentation_but_not_json_contract() -> None:
     detailed = render(report, "text", verbosity="detailed")
 
     assert "PR #42" not in concise
+    assert "deterministic GitHub inspection (no model used)" in concise
+    assert "inspect --verbosity standard" in concise
+    assert "Alerts without direct open-PR coverage" in concise
     assert "PR #42" in standard
     assert "checks=passing" in detailed
     assert len(concise) < len(standard) < len(detailed)
     assert json.loads(render(report, "json", verbosity="concise")) == json.loads(
         render(report, "json", verbosity="detailed")
     )
+
+
+def test_interactive_progress_is_transient_and_machine_output_stays_clean() -> None:
+    interactive = _TtyBuffer()
+    with cli._live_progress("Collecting evidence...", enabled=True, stream=interactive):
+        assert interactive.getvalue() == "Collecting evidence..."
+    assert interactive.getvalue().endswith("\r" + (" " * 22) + "\r")
+
+    redirected = StringIO()
+    with cli._live_progress("Collecting evidence...", enabled=False, stream=redirected):
+        pass
+    assert redirected.getvalue() == ""
+
+    assert cli._progress_enabled("text", stdout=_TtyBuffer(), stderr=_TtyBuffer())
+    assert not cli._progress_enabled(
+        "text", stdout=_RedirectedBuffer(), stderr=_TtyBuffer()
+    )
+    assert not cli._progress_enabled(
+        "text", stdout=_TtyBuffer(), stderr=_RedirectedBuffer()
+    )
+    assert not cli._progress_enabled("json", stdout=_TtyBuffer(), stderr=_TtyBuffer())
 
 
 def test_cli_uses_profile_verbosity_and_allows_explicit_override(

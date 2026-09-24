@@ -16,6 +16,24 @@ def _plain(value: object) -> str:
     return str(value or "").replace("\r", " ").replace("\n", " ")
 
 
+def _availability(value: object) -> str:
+    return {
+        "available": "available",
+        "unavailable": "unavailable",
+        "unknown": "unknown",
+    }.get(str(value), _plain(value))
+
+
+def _authentication(value: object) -> str:
+    return {
+        "available": "authenticated",
+        "unavailable": "not authenticated",
+        "unknown": "not confirmed",
+        "not_required": "not checked (advice is off)",
+        "skipped": "skipped",
+    }.get(str(value), _plain(value))
+
+
 def _doctor_text(report: dict[str, Any]) -> str:
     configuration = report["configuration"]
     runtime = report["runtime"]
@@ -27,13 +45,13 @@ def _doctor_text(report: dict[str, Any]) -> str:
         f"Runtime: {runtime['platform']} | Python {runtime['python']}",
         (
             "GitHub CLI: "
-            f"{tools['github_cli']['availability']} / auth "
-            f"{tools['github_cli']['authentication']}"
+            f"{_availability(tools['github_cli']['availability'])} / "
+            f"{_authentication(tools['github_cli']['authentication'])}"
         ),
         (
             "Codex CLI: "
-            f"{tools['codex_cli']['availability']} / auth "
-            f"{tools['codex_cli']['authentication']}"
+            f"{_availability(tools['codex_cli']['availability'])} / "
+            f"{_authentication(tools['codex_cli']['authentication'])}"
         ),
     ]
     if configuration.get("error"):
@@ -85,8 +103,9 @@ def _doctor_markdown(report: dict[str, Any]) -> str:
     for label, key in (("GitHub CLI", "github_cli"), ("Codex CLI", "codex_cli")):
         tool = tools[key]
         lines.append(
-            f"| {label} | {_escape(tool['availability'])} | "
-            f"{_escape(tool['authentication'])} | {_escape(tool.get('version') or 'unknown')} |"
+            f"| {label} | {_escape(_availability(tool['availability']))} | "
+            f"{_escape(_authentication(tool['authentication']))} | "
+            f"{_escape(tool.get('version') or 'unknown')} |"
         )
     lines.extend(["", "## Repositories", ""])
     if report["repositories"]:
@@ -122,17 +141,27 @@ def _doctor_markdown(report: dict[str, Any]) -> str:
 
 
 def _setup_text(report: dict[str, Any]) -> str:
+    configuration_suffix = (
+        " (loaded automatically by later commands)"
+        if report.get("configuration_auto_loaded")
+        else ""
+    )
+    verification_mode = (
+        "offline; GitHub access was not verified"
+        if report["verification"]["mode"] == "offline"
+        else "read-only GitHub access verified"
+    )
     lines = [
         "Dependabot Watcher setup",
         f"Status: {report['status']}",
-        f"Configuration: {report['configuration_path']}",
+        f"Configuration: {report['configuration_path']}{configuration_suffix}",
         f"Profile: {report['profile_source']}",
         f"Repositories: {len(report['repositories'])}",
         f"Advisory mode: {report['advisory']['mode']}",
         (
-            f"Verification: {report['verification']['mode']} | GitHub auth "
-            f"{report['verification']['github_authentication']} | provider auth "
-            f"{report['verification']['provider_authentication']}"
+            f"Verification: {verification_mode} | GitHub "
+            f"{_authentication(report['verification']['github_authentication'])} | provider "
+            f"{_authentication(report['verification']['provider_authentication'])}"
         ),
         "Mutation authorized: no",
         "Next:",
@@ -142,17 +171,27 @@ def _setup_text(report: dict[str, Any]) -> str:
 
 
 def _setup_markdown(report: dict[str, Any]) -> str:
+    configuration_suffix = (
+        " (loaded automatically by later commands)"
+        if report.get("configuration_auto_loaded")
+        else ""
+    )
+    verification_mode = (
+        "offline; GitHub access was not verified"
+        if report["verification"]["mode"] == "offline"
+        else "read-only GitHub access verified"
+    )
     lines = [
         "# Dependabot Watcher setup",
         "",
         f"Status: **{_escape(report['status'])}**  ",
-        f"Configuration: `{_escape(report['configuration_path'])}`  ",
+        f"Configuration: `{_escape(report['configuration_path'])}`{configuration_suffix}  ",
         f"Profile: `{_escape(report['profile_source'])}`  ",
         f"Advisory mode: `{_escape(report['advisory']['mode'])}`  ",
         (
-            f"Verification: `{_escape(report['verification']['mode'])}`; GitHub auth "
-            f"`{_escape(report['verification']['github_authentication'])}`; provider auth "
-            f"`{_escape(report['verification']['provider_authentication'])}`  "
+            f"Verification: {_escape(verification_mode)}; GitHub "
+            f"{_escape(_authentication(report['verification']['github_authentication']))}; provider "
+            f"{_escape(_authentication(report['verification']['provider_authentication']))}  "
         ),
         "Mutation authorized: **no**",
         "",
