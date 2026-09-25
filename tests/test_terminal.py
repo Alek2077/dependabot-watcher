@@ -209,6 +209,36 @@ def test_progress_modes_keep_static_output_and_clear_animated_output() -> None:
     assert animated_stream.getvalue().endswith("\r\x1b[2K")
 
 
+def test_animated_progress_adds_elapsed_reassurance_for_long_operations() -> None:
+    clock_calls = 0
+
+    def clock() -> float:
+        nonlocal clock_calls
+        clock_calls += 1
+        return 0.0 if clock_calls == 1 else 31.0
+
+    animated_stream = _TtyBuffer()
+    animated = TerminalPresentation(
+        interactive=True,
+        decorate=True,
+        color=False,
+        unicode_symbols=True,
+        progress=ProgressMode.ANIMATED,
+    )
+
+    with live_progress(
+        "Collecting evidence...",
+        presentation=animated,
+        stream=animated_stream,
+        interval_seconds=1.0,
+        elapsed_after_seconds=10.0,
+        clock=clock,
+    ):
+        assert "Still working: Collecting evidence (31s elapsed)" in animated_stream.getvalue()
+
+    assert animated_stream.getvalue().endswith("\r\x1b[2K")
+
+
 def test_ascii_terminal_uses_ascii_symbols_and_spinner() -> None:
     stdout = _AsciiTtyBuffer()
     stderr = _AsciiTtyBuffer()

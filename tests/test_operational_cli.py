@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,11 @@ import pytest
 from dependabot_watcher import cli
 from dependabot_watcher.config import ConfigError, load_config
 from dependabot_watcher.operational_output import render_operational
+
+
+class _TtyBuffer(StringIO):
+    def isatty(self) -> bool:
+        return True
 
 
 def test_cli_offline_setup_creates_safe_profile_without_external_calls(
@@ -434,3 +440,48 @@ def test_cli_setup_defaults_to_human_text_and_existing_path_fails_cleanly(
     second = capsys.readouterr()
     assert second.out == ""
     assert "will not overwrite" in second.err
+
+
+def test_setup_and_doctor_show_interactive_progress_without_affecting_reports(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    stdout = _TtyBuffer()
+    stderr = _TtyBuffer()
+    monkeypatch.setattr(cli.sys, "stdout", stdout)
+    monkeypatch.setattr(cli.sys, "stderr", stderr)
+    config_path = tmp_path / "config.toml"
+
+    assert (
+        cli.main(
+            [
+                "setup",
+                "--config",
+                str(config_path),
+                "--repo",
+                "example-org/example-app",
+                "--offline",
+            ]
+        )
+        == cli.ExitCode.SUCCESS
+    )
+    assert "Creating the local operational profile" in stderr.getvalue()
+    assert "Dependabot Watcher setup" in stdout.getvalue()
+
+    stdout.seek(0)
+    stdout.truncate(0)
+    stderr.seek(0)
+    stderr.truncate(0)
+    assert (
+        cli.main(
+            [
+                "doctor",
+                "--config",
+                str(config_path),
+                "--offline",
+            ]
+        )
+        == cli.ExitCode.PARTIAL_INSPECTION
+    )
+    assert "Checking the local environment" in stderr.getvalue()
+    assert "Dependabot Watcher doctor" in stdout.getvalue()

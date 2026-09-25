@@ -238,8 +238,15 @@ def test_plan_verbosity_changes_human_detail_only() -> None:
     concise = render_plan(report, "text", verbosity="concise")
     detailed = render_plan(report, "text", verbosity="detailed")
 
-    assert "Validation:" not in concise
-    assert "Validation:" in detailed
+    standard = render_plan(report, "text", verbosity="standard")
+    assert "Execution safety:" in concise
+    assert "Validation:" not in detailed
+    assert (
+        "Replan dependencies: PR #43, PR #44 overlap on shared dependency paths: "
+        "requirements.txt"
+        in standard
+    )
+    assert "step_" not in standard
     assert "Freshness:" in detailed
     assert "Decision source: deterministic policy (no model used)" in concise
     assert "without direct open-PR coverage" in concise

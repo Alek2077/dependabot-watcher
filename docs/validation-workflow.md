@@ -24,13 +24,14 @@ The post-Gitflow fresh-clone exercise is agent-owned validation, not optional fo
 
 ## Validation sequence
 
-1. Run the deterministic suite, static analysis, compilation, packaging, and documentation checks appropriate to the changed surface.
-2. Build the current artifact, then install that artifact through the documented path in a clean environment. Confirm the executable and version resolve from the installed environment rather than the development checkout. Installing `.` directly from the active checkout is a development smoke, not sufficient installed-artifact evidence for a material phase.
-3. Exercise `--help`, `setup`, `doctor`, `inspect`, and `plan` when the change could affect the end-to-end path. Keep setup and all later commands bound to the isolated temporary configuration. Exercise `advise` only with an explicitly approved provider configuration and usage boundary. For execution changes, save JSON plan output and exercise the no-token live preflight; do not supply an approval token or enable real mutation without separate authorization for the exact repository, PR, and head SHA.
-4. Repeat the specific changed workflow using representative success, partial-evidence, and failure inputs where practical.
-5. Verify structured output separately. JSON must remain parseable and complete, stdout must contain only the selected report, and transient progress or diagnostics must not contaminate pipes or machine consumers.
-6. When onboarding or agent usability changed, repeat the task in a fresh minimally briefed agent session using only public repository documentation. Require the agent to explain its plan and safety boundary before installation or mutation.
-7. Record material findings, fixes, accepted limitations, commands, and cleanup. Remove the temporary profile as well as the checkout and tool environment. Keep private details in private evidence surfaces; publish only sanitized, reproducible validation evidence.
+1. Before handing a founder or independent agent a fresh-install test, verify the exact old checkout, installed tool, configuration, and test-state locations that could contaminate it. Remove only disposable prior-test state whose ownership and purpose are established; otherwise isolate the new run under fresh tool, configuration, state, and checkout paths. State which boundary was verified so the tester does not have to rediscover it.
+2. Run the deterministic suite, static analysis, compilation, packaging, and documentation checks appropriate to the changed surface.
+3. Build the current artifact, then install that artifact through the documented path in a clean environment. Confirm the executable and version resolve from the installed environment rather than the development checkout. Installing `.` directly from the active checkout is a development smoke, not sufficient installed-artifact evidence for a material phase.
+4. Exercise `--help`, `setup`, `doctor`, `inspect`, and `plan` when the change could affect the end-to-end path. For multi-repository behavior, use more than one approved live read-only target when available rather than treating deterministic multi-repository fixtures as complete installed-path proof. Keep setup and all later commands bound to the isolated temporary configuration. Exercise `advise` only with an explicitly approved provider configuration and usage boundary. For execution changes, save JSON plan output and exercise the no-token live preflight; do not supply an approval token or enable real mutation without separate authorization for the exact repository, PR, and head SHA.
+5. Repeat the specific changed workflow using representative success, partial-evidence, and failure inputs where practical.
+6. Verify structured output separately. JSON must remain parseable and complete, stdout must contain only the selected report, and transient progress or diagnostics must not contaminate pipes or machine consumers.
+7. When onboarding or agent usability changed, repeat the task in a fresh minimally briefed agent session using only public repository documentation. Require the agent to explain its plan and safety boundary before installation or mutation.
+8. Record material findings, fixes, accepted limitations, commands, and cleanup. Remove the temporary profile as well as the checkout and tool environment. Keep private details in private evidence surfaces; publish only sanitized, reproducible validation evidence.
 
 For an explicitly approved mutation exercise, capture the before state, saved plan identity, preflight binding, exact approved head, configured merge/check policy, audit events, GitHub result, after-state reinspection, idempotent retry behavior, and recovery outcome. Stop after one bounded action. A general implementation or test request never substitutes for this exact mutation approval.
 
@@ -93,20 +94,34 @@ Repeat agent-mediated onboarding at milestone boundaries rather than after every
 - After Phase 6, or after another material installation/setup/authorization change, run a private authenticated checkpoint. Label it accurately: existing read-only GitHub credentials and global harness context mean it tests documentation comprehension and agent-mediated setup, not anonymous public adoption.
 - During Phase 10, repeat from an isolated directory or environment with no development checkout or project-specific harness context. Immediately after the repository becomes publicly readable—and before announcing or promoting a release—repeat anonymously without existing GitHub authorization. Verify clone, install, setup explanation, safe validation, reset, and uninstall from the public surface users actually receive.
 
+Do not repeat the full multi-agent checkpoint for presentation-only corrections. After the completed Phase 6 checkpoint, the next deliberate private checkpoint should follow material Phase 8 agent-integration work or Phase 9 scheduled-operation work, whichever first changes onboarding, authority, or recurring operation enough to justify it.
+
 For each checkpoint, give the same self-contained prompt independently to one fresh capable Codex session, one fresh Gemini/Antigravity session, and either OpenCode or Hermes as a different harness. Do not show agents one another's answers. Keep the first pass read-only and require each agent to explain current capability, automation limits, mutation authority, model/cost behavior, GitHub authorization, installation, validation, and unclear documentation before it changes anything.
 
 The main implementation agent compares the responses; the founder need only provide or point to the outputs. Compare factual agreement, safety interpretation, installation sequence, and recurring friction. Choose only one agent to perform the actual installation so parallel installers do not contaminate the environment. If all three materially agree, stop. If one differs, determine whether the cause is ambiguous documentation, harness contamination, or weak agent performance before changing the product. Do not expand into a large model leaderboard unless a concrete disagreement requires more evidence.
 
-Use this common first-pass prompt, changing only the repository URL when necessary:
+Use this common first-pass prompt, changing only the repository URL and the private-access paragraph when necessary:
 
 > Treat REPOSITORY_URL as a third-party repository I am considering adopting. I have repositories with Dependabot pull requests and security alerts and want to reduce the manual maintenance work.
 >
+> The repository is currently private. You are authorized to use the GitHub CLI authentication already available in this environment solely for read-only access to this repository and to create one isolated clean clone. Do not use an existing development checkout, change authentication, inspect unrelated repositories, or make any remote changes. Report the exact commit SHA reviewed and leave the clone unchanged.
+>
 > Do not rely on prior knowledge about this project or its development history. Review only the repository documentation and implementation as needed.
 >
-> Tell me: (1) What does it do today? (2) Can it currently automate my Dependabot maintenance? (3) What can and cannot it change? (4) Does it require an AI model, incur model costs, or require GitHub authorization? (5) What important limitations or safety boundaries should I understand? (6) How would you install and validate it safely from a fresh environment?
+> Tell me:
 >
-> Flag anything unclear, contradictory, unsafe, misleading, or unnecessarily difficult in the onboarding documentation. Do not invent problems merely to find criticism. Do not install anything, create configuration, authenticate, or make local or remote changes until I approve your proposed steps.
+> 1. What does it do today?
+> 2. Can it currently automate my Dependabot maintenance?
+> 3. What can and cannot it change?
+> 4. Does it require an AI model, incur model costs, or require GitHub authorization?
+> 5. What approval requirements, limitations, and safety boundaries should I understand?
+> 6. How would you install and validate it safely from a fresh environment?
+> 7. What would I need to do before allowing it to perform one real Dependabot action?
+>
+> Flag anything unclear, contradictory, unsafe, misleading, or unnecessarily difficult in its onboarding or documented workflow. Do not invent problems merely to find criticism.
+>
+> This is a read-only assessment. Do not install the package, create configuration, invoke a model through the product, execute a plan, authenticate or reauthenticate anything, or make local changes beyond the isolated clean clone. Do not perform any GitHub mutation. First provide your assessment and proposed installation/validation steps for my approval.
 
-For a private authenticated checkpoint, if the agent correctly refuses anonymous access, authorize only the minimum continuation: existing GitHub CLI authentication for read-only access to this repository and one isolated clean clone. Prohibit use of the development checkout, authentication changes, package installation, setup, configuration writes, unrelated repository inspection, and remote mutation until the proposal is reviewed. Record this as private authenticated evidence, not anonymous public adoption. Do not include this clarification in the Phase 10 anonymous checkpoint.
+For a public or genuinely anonymous checkpoint, remove the private-access paragraph rather than authorizing existing credentials. Record private authenticated evidence separately from anonymous public adoption evidence.
 
 When recording a response, preserve the model/provider, reasoning setting when known, agent harness, commit reviewed, inherited instruction context that may have influenced the result, whether authentication or a clone was authorized, and whether any changes occurred. This provenance helps distinguish a documentation defect from harness-assisted understanding without turning the exercise into a model leaderboard.

@@ -4,7 +4,7 @@
 
 Human text and Markdown support `concise`, `standard`, and `detailed` verbosity. JSON is identical regardless of the selected human verbosity. Presentation depth never changes evidence collection, provider calls, deterministic policy, or mutation authority.
 
-When both text stdout and stderr are attached to an interactive terminal, long live-read commands show a restrained animated spinner on stderr so they do not appear stalled. Final reports remain on stdout and may use color, symbols, and a light status hierarchy. `NO_COLOR` removes ANSI color without removing semantic hierarchy. `--plain`, `TERM=dumb`, and `CI` use stable line-oriented progress with no animation or styling. JSON, Markdown, redirected output, pipes, and non-interactive agent execution suppress progress and decoration entirely.
+When both text stdout and stderr are attached to an interactive terminal, live setup, diagnostics, inspection, advice, planning, and execution revalidation show a restrained animated spinner on stderr so they do not appear stalled. Long operations add elapsed-time reassurance on the same transient line. Final reports remain on stdout and may use color, symbols, and a light status hierarchy. `NO_COLOR` removes ANSI color without removing semantic hierarchy. `--plain`, `TERM=dumb`, and `CI` use stable line-oriented progress with no animation or styling. JSON, Markdown, redirected output, pipes, and non-interactive agent execution suppress progress and decoration entirely.
 
 Terminal capabilities affect presentation only. Unsupported Unicode falls back to ASCII markers and spinner frames. Human renderers flatten line breaks and remove terminal control sequences from repository/provider-controlled values; versioned JSON retains the original structured evidence. Progress never appears on stdout, and presentation cannot change collection, advice, planning, or authorization.
 
@@ -64,7 +64,9 @@ Human text and Markdown emphasize current state and the ordered next steps. JSON
 
 Human planning output identifies whether the plan used deterministic policy alone or was informed by configured optional model advice. The deterministic planner owns ordering and action constraints in both cases.
 
-Conflict records identify overlapping changed paths or shared alert impact between PR steps. They mean that handling either step can stale the other and trigger reinspection; they do not claim that Git has detected a textual merge conflict.
+Concise inspection is a bounded highlights view rather than an implied complete item list. It shows all items for queues of five or fewer; larger queues show approximately twenty percent with a floor of five and ceiling of ten, prioritizing attention-required PRs and uncovered alerts. The heading and omitted count identify that selection explicitly. Standard inspection shows the complete human item list, detailed inspection adds technical evidence, and JSON remains complete at every level.
+
+Planning never removes ordered steps for concision. Standard planning renders overlapping changed paths or shared alert impact as human-readable replanning relationships; the internal step identities remain in JSON. These relationships mean that handling either step can stale the other and trigger reinspection; they do not claim that Git has detected a textual merge conflict. Universal execution gates are summarized once in human output rather than repeated beneath every step. The structured plan retains every individual validation-gate record, and the separately enabled executor enforces the applicable gates from freshly collected evidence rather than trusting a user or model to follow prose.
 
 `expected_alert_impact` contains only direct or likely alert relationships. `related_alerts` retains the complete relationship evidence, including indirect and unverified associations, so structured consumers do not have to interpret mere relatedness as predicted remediation.
 

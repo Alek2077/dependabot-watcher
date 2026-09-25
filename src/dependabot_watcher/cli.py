@@ -357,7 +357,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         if args.command == "doctor":
-            report = doctor(args.config, offline=args.offline)
+            doctor_message = (
+                "Checking the local environment..."
+                if args.offline
+                else "Checking environment and repository readiness..."
+            )
+            with live_progress(
+                doctor_message,
+                presentation=presentation,
+                stream=sys.stderr,
+            ):
+                report = doctor(args.config, offline=args.offline)
             _write_report(render_operational(report, args.output_format), presentation)
             return (
                 ExitCode.SUCCESS
@@ -365,25 +375,40 @@ def main(argv: list[str] | None = None) -> int:
                 else ExitCode.PARTIAL_INSPECTION
             )
         if args.command == "setup":
-            report = setup(
-                args.config,
-                SetupRequest(
-                    repositories=tuple(args.repositories),
-                    branches=_branch_overrides(args.branch),
-                    merge_methods=_merge_method_overrides(args.merge_method),
-                    required_checks=_required_check_overrides(args.required_check),
-                    report_verbosity=args.verbosity,
-                    advisory_mode=args.advisory_mode,
-                    triage_model=args.triage_model,
-                    triage_reasoning=args.triage_reasoning,
-                    review_model=args.review_model,
-                    review_reasoning=args.review_reasoning,
-                    acknowledge_model_use=args.acknowledge_model_use,
-                    autonomy=args.autonomy,
-                    acknowledge_mutation=args.acknowledge_mutation,
-                    offline=args.offline,
-                ),
+            repository_count = len(args.repositories)
+            repository_word = "repository" if repository_count == 1 else "repositories"
+            setup_message = (
+                "Creating the local operational profile..."
+                if args.offline
+                else (
+                    f"Verifying GitHub access for {repository_count} {repository_word} "
+                    "and creating the profile..."
+                )
             )
+            with live_progress(
+                setup_message,
+                presentation=presentation,
+                stream=sys.stderr,
+            ):
+                report = setup(
+                    args.config,
+                    SetupRequest(
+                        repositories=tuple(args.repositories),
+                        branches=_branch_overrides(args.branch),
+                        merge_methods=_merge_method_overrides(args.merge_method),
+                        required_checks=_required_check_overrides(args.required_check),
+                        report_verbosity=args.verbosity,
+                        advisory_mode=args.advisory_mode,
+                        triage_model=args.triage_model,
+                        triage_reasoning=args.triage_reasoning,
+                        review_model=args.review_model,
+                        review_reasoning=args.review_reasoning,
+                        acknowledge_model_use=args.acknowledge_model_use,
+                        autonomy=args.autonomy,
+                        acknowledge_mutation=args.acknowledge_mutation,
+                        offline=args.offline,
+                    ),
+                )
             _write_report(render_operational(report, args.output_format), presentation)
             return ExitCode.SUCCESS
         if args.command == "execute":
@@ -412,10 +437,20 @@ def main(argv: list[str] | None = None) -> int:
         config = _select_repositories(load_config(args.config), args.repositories)
         client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
         verbosity = args.verbosity or config.operation.report_verbosity
+        repository_count = len(config.repositories)
+        repository_word = "repository" if repository_count == 1 else "repositories"
         progress_messages = {
-            "inspect": "Collecting live GitHub evidence...",
-            "advise": "Collecting evidence and preparing optional advice...",
-            "plan": "Collecting evidence and building the maintenance plan...",
+            "inspect": (
+                f"Collecting live GitHub evidence for {repository_count} {repository_word}..."
+            ),
+            "advise": (
+                f"Collecting evidence for {repository_count} {repository_word} and "
+                "preparing optional advice..."
+            ),
+            "plan": (
+                f"Collecting evidence for {repository_count} {repository_word} and "
+                "building the maintenance plan..."
+            ),
         }
         with live_progress(
             progress_messages[args.command],

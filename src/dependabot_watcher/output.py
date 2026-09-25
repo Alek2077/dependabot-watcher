@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+import math
+from typing import Any, Callable
 
 from .terminal import sanitize_human_value
 
@@ -29,6 +30,33 @@ def _display(value: object, fallback: str = "") -> str:
 
 def _count_phrase(count: object, singular: str, plural: str | None = None) -> str:
     return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+
+def _concise_limit(count: int) -> int:
+    if count <= 5:
+        return count
+    return min(10, max(5, math.ceil(count * 0.2)))
+
+
+def _concise_highlights(
+    items: list[dict[str, Any]],
+    *,
+    priority_key: Callable[[dict[str, Any]], bool],
+) -> list[dict[str, Any]]:
+    limit = _concise_limit(len(items))
+    prioritized = sorted(
+        enumerate(items),
+        key=lambda item: (not priority_key(item[1]), item[0]),
+    )
+    return [item for _, item in prioritized[:limit]]
+
+
+def _selection_label(label: str, shown: int, total: int) -> str:
+    if total == 0:
+        return f"{label}: none"
+    if shown == total:
+        return f"{label}: all {total} shown"
+    return f"{label} highlights: {shown} of {total} shown; attention items first"
 
 
 def _inspection_next(report: dict[str, Any]) -> str:
@@ -77,16 +105,26 @@ def render_text(report: dict[str, Any], verbosity: str = "standard") -> str:
             ]
         )
         if verbosity == "concise":
-            for pull_request in repository["pull_requests"][:3]:
+            pull_requests = _concise_highlights(
+                repository["pull_requests"],
+                priority_key=lambda item: item.get("classification") != "baseline_candidate",
+            )
+            lines.append(
+                "  "
+                + _selection_label(
+                    "Pull requests", len(pull_requests), len(repository["pull_requests"])
+                )
+            )
+            for pull_request in pull_requests:
                 identity = _identity(pull_request)
                 lines.append(
                     f"  PR #{identity.get('number', '?')}: "
                     f"{sanitize_human_value(identity.get('title') or 'Untitled')} "
                     f"[{_human_state(pull_request.get('classification'))}]"
                 )
-            if len(repository["pull_requests"]) > 3:
+            if len(repository["pull_requests"]) > len(pull_requests):
                 lines.append(
-                    f"  + {len(repository['pull_requests']) - 3} more open PRs; "
+                    f"  + {len(repository['pull_requests']) - len(pull_requests)} more open PRs; "
                     "use --verbosity standard"
                 )
             uncovered_alerts = [
@@ -94,16 +132,28 @@ def render_text(report: dict[str, Any], verbosity: str = "standard") -> str:
                 for alert in repository["alerts"]
                 if alert.get("classification") != "likely_covered_by_open_pr"
             ]
-            for alert in uncovered_alerts[:3]:
+            alert_highlights = _concise_highlights(
+                uncovered_alerts,
+                priority_key=lambda item: True,
+            )
+            lines.append(
+                "  "
+                + _selection_label(
+                    "Alerts without direct open-PR coverage",
+                    len(alert_highlights),
+                    len(uncovered_alerts),
+                )
+            )
+            for alert in alert_highlights:
                 lines.append(
                     f"  Alert #{alert.get('number', '?')}: "
                     f"{sanitize_human_value(alert.get('dependency_name') or 'unknown package')} "
                     f"({sanitize_human_value(alert.get('severity') or 'unknown severity')}, "
                     f"{_human_state(alert.get('classification'))})"
                 )
-            if len(uncovered_alerts) > 3:
+            if len(uncovered_alerts) > len(alert_highlights):
                 lines.append(
-                    f"  + {len(uncovered_alerts) - 3} more alerts without direct "
+                    f"  + {len(uncovered_alerts) - len(alert_highlights)} more alerts without direct "
                     "open-PR coverage; use --verbosity standard"
                 )
             for truncation in repository["truncations"]:
@@ -230,7 +280,16 @@ def render_markdown(report: dict[str, Any], verbosity: str = "standard") -> str:
                     "",
                 ]
             )
-            pull_requests = repository["pull_requests"][:3]
+            pull_requests = _concise_highlights(
+                repository["pull_requests"],
+                priority_key=lambda item: item.get("classification") != "baseline_candidate",
+            )
+            lines.append(
+                _selection_label(
+                    "Pull requests", len(pull_requests), len(repository["pull_requests"])
+                )
+            )
+            lines.append("")
             if pull_requests:
                 for pull_request in pull_requests:
                     identity = _identity(pull_request)
@@ -239,9 +298,9 @@ def render_markdown(report: dict[str, Any], verbosity: str = "standard") -> str:
                         f"{_escape_markdown(identity.get('title') or 'Untitled')} "
                         f"(`{_escape_markdown(_human_state(pull_request.get('classification')))}`)"
                     )
-                if len(repository["pull_requests"]) > 3:
+                if len(repository["pull_requests"]) > len(pull_requests):
                     lines.append(
-                        f"- {len(repository['pull_requests']) - 3} more open PRs; "
+                        f"- {len(repository['pull_requests']) - len(pull_requests)} more open PRs; "
                         "use `--verbosity standard`."
                     )
             else:
@@ -253,17 +312,31 @@ def render_markdown(report: dict[str, Any], verbosity: str = "standard") -> str:
                 if alert.get("classification") != "likely_covered_by_open_pr"
             ]
             lines.extend(["", "### Alerts without direct open-PR coverage", ""])
-            if uncovered_alerts:
-                for alert in uncovered_alerts[:3]:
+            alert_highlights = _concise_highlights(
+                uncovered_alerts,
+                priority_key=lambda item: True,
+            )
+            lines.extend(
+                [
+                    _selection_label(
+                        "Alerts without direct open-PR coverage",
+                        len(alert_highlights),
+                        len(uncovered_alerts),
+                    ),
+                    "",
+                ]
+            )
+            if alert_highlights:
+                for alert in alert_highlights:
                     lines.append(
                         f"- Alert #{_escape_markdown(alert.get('number', '?'))}: "
                         f"{_escape_markdown(alert.get('dependency_name') or 'Unknown')} "
                         f"({_escape_markdown(alert.get('severity') or 'Unknown')}, "
                         f"{_escape_markdown(_human_state(alert.get('classification')))})"
                     )
-                if len(uncovered_alerts) > 3:
+                if len(uncovered_alerts) > len(alert_highlights):
                     lines.append(
-                        f"- {len(uncovered_alerts) - 3} more uncovered alerts; "
+                        f"- {len(uncovered_alerts) - len(alert_highlights)} more uncovered alerts; "
                         "use `--verbosity standard`."
                     )
             else:
@@ -541,6 +614,61 @@ def _plan_record_label(record: object) -> str:
     )
 
 
+def _plan_step_short_label(step: dict[str, Any] | None) -> str:
+    if not step:
+        return "another plan step"
+    identity = step.get("identity") or {}
+    if step.get("kind") == "pull_request":
+        return f"PR #{identity.get('number', '?')}"
+    return f"alert #{identity.get('number', '?')}"
+
+
+def _plan_conflicts_label(
+    records: list[dict[str, Any]],
+    steps_by_id: dict[str, dict[str, Any]],
+) -> str:
+    targets: list[str] = []
+    shared_paths: set[str] = set()
+    shared_alerts: set[int] = set()
+    relationship_types: set[str] = set()
+    for record in records:
+        other_id = record.get("step_id") or record.get("conflicting_step_id")
+        targets.append(_plan_step_short_label(steps_by_id.get(str(other_id))))
+        shared_paths.update(_display(path) for path in record.get("shared_paths") or [])
+        shared_alerts.update(
+            number
+            for number in record.get("shared_alerts") or []
+            if isinstance(number, int)
+        )
+        relationship_type = _human_state(record.get("type"))
+        if relationship_type != "unknown":
+            relationship_types.add(relationship_type)
+
+    reasons: list[str] = []
+    if shared_paths:
+        sorted_paths = sorted(shared_paths)
+        shown_paths = ", ".join(sorted_paths[:3])
+        remainder = len(sorted_paths) - min(len(sorted_paths), 3)
+        if remainder:
+            shown_paths += f" (+{remainder} more)"
+        reasons.append(f"shared dependency paths: {shown_paths}")
+    if shared_alerts:
+        reasons.append(
+            "shared expected alerts: "
+            + ", ".join(f"#{number}" for number in sorted(shared_alerts)[:5])
+        )
+    relationship = (
+        "; ".join(reasons)
+        or ", ".join(sorted(relationship_types))
+        or "related plan evidence"
+    )
+    verb = "overlaps" if len(targets) == 1 else "overlap"
+    return (
+        f"{', '.join(targets)} {verb} on {relationship}. "
+        "Handling any one requires a fresh plan."
+    )
+
+
 def _plan_source_label(report: dict[str, Any]) -> str:
     source = report.get("source") or {}
     advisory = source.get("advisory") or {}
@@ -587,6 +715,10 @@ def render_plan_text(report: dict[str, Any], verbosity: str = "concise") -> str:
             f"Partial repositories: {summary['partial_repository_count']}"
         ),
         "Mutation authorized: no",
+        (
+            "Execution safety: a separately enabled execute call recollects live state and "
+            "enforces the exact PR head, current alert evidence, and configured required checks."
+        ),
     ]
     for repository in report["repositories"]:
         state = repository.get("state") or {}
@@ -606,6 +738,11 @@ def render_plan_text(report: dict[str, Any], verbosity: str = "concise") -> str:
             ]
         )
         steps = repository.get("recommended_order") or []
+        steps_by_id = {
+            str(step.get("step_id")): step
+            for step in steps
+            if step.get("step_id")
+        }
         if not steps:
             lines.append("    No actionable Dependabot items were found.")
         for step in steps:
@@ -627,10 +764,12 @@ def render_plan_text(report: dict[str, Any], verbosity: str = "concise") -> str:
             if verbosity in {"standard", "detailed"}:
                 for prerequisite in step.get("prerequisites") or []:
                     lines.append(f"       Prerequisite: {_plan_record_label(prerequisite)}")
-                for conflict in step.get("conflicts") or []:
-                    lines.append(f"       Conflict: {_plan_record_label(conflict)}")
-                for gate in step.get("validation_gates") or []:
-                    lines.append(f"       Validation: {_plan_record_label(gate)}")
+                conflicts = step.get("conflicts") or []
+                if conflicts:
+                    lines.append(
+                        "       Replan dependencies: "
+                        f"{_plan_conflicts_label(conflicts, steps_by_id)}"
+                    )
             if verbosity == "detailed":
                 freshness = step.get("freshness") or {}
                 lines.append(
@@ -665,6 +804,10 @@ def render_plan_markdown(report: dict[str, Any], verbosity: str = "concise") -> 
         f"Plan: `{_escape_markdown(report['plan_id'])}`  ",
         f"Decision source: {_escape_markdown(_plan_source_label(report))}  ",
         "Mutation authorized: **no**",
+        (
+            "Execution safety: a separately enabled `execute` call recollects live state and "
+            "enforces the exact PR head, current alert evidence, and configured required checks."
+        ),
         "",
         (
             f"Repositories: **{summary['repository_count']}** · "
@@ -697,6 +840,11 @@ def render_plan_markdown(report: dict[str, Any], verbosity: str = "concise") -> 
             ]
         )
         steps = repository.get("recommended_order") or []
+        steps_by_id = {
+            str(step.get("step_id")): step
+            for step in steps
+            if step.get("step_id")
+        }
         if not steps:
             lines.append("No actionable Dependabot items were found.")
         for step in steps:
@@ -719,13 +867,11 @@ def render_plan_markdown(report: dict[str, Any], verbosity: str = "concise") -> 
                     lines.append(
                         f"   - Prerequisite: {_escape_markdown(_plan_record_label(prerequisite))}"
                     )
-                for conflict in step.get("conflicts") or []:
+                conflicts = step.get("conflicts") or []
+                if conflicts:
                     lines.append(
-                        f"   - Conflict: {_escape_markdown(_plan_record_label(conflict))}"
-                    )
-                for gate in step.get("validation_gates") or []:
-                    lines.append(
-                        f"   - Validation: {_escape_markdown(_plan_record_label(gate))}"
+                        "   - Replan dependencies: "
+                        f"{_escape_markdown(_plan_conflicts_label(conflicts, steps_by_id))}"
                     )
             if verbosity == "detailed":
                 freshness = step.get("freshness") or {}

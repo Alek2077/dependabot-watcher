@@ -6,7 +6,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from threading import Event, Lock, Thread
-from typing import Iterator, Mapping, TextIO
+from time import monotonic
+from typing import Callable, Iterator, Mapping, TextIO
 
 
 class ProgressMode(str, Enum):
@@ -226,11 +227,16 @@ class _Spinner:
         stream: TextIO,
         presentation: TerminalPresentation,
         interval_seconds: float,
+        elapsed_after_seconds: float,
+        clock: Callable[[], float],
     ) -> None:
         self._message = message
         self._stream = stream
         self._presentation = presentation
         self._interval_seconds = interval_seconds
+        self._elapsed_after_seconds = elapsed_after_seconds
+        self._clock = clock
+        self._started_at = clock()
         self._stop = Event()
         self._lock = Lock()
         self._thread: Thread | None = None
@@ -252,11 +258,23 @@ class _Spinner:
         except (OSError, UnicodeError, ValueError):
             self._failed = True
 
+    def _progress_message(self) -> str:
+        elapsed = max(0, int(self._clock() - self._started_at))
+        if elapsed < self._elapsed_after_seconds:
+            return self._message
+        minutes, seconds = divmod(elapsed, 60)
+        elapsed_label = f"{minutes}m {seconds:02d}s" if minutes else f"{seconds}s"
+        if elapsed >= 30:
+            return f"Still working: {self._message.rstrip('.')} ({elapsed_label} elapsed)"
+        return f"{self._message} {elapsed_label} elapsed"
+
     def _draw(self) -> None:
         frame = self._frames[self._index % len(self._frames)]
         frame = _paint(frame, _CYAN, enabled=self._presentation.color)
+        message = self._progress_message()
+        self._rendered_width = max(self._rendered_width, len(message) + 2)
         with self._lock:
-            self._write(f"\r{frame} {self._message}")
+            self._write(f"\r{frame} {message}")
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval_seconds):
@@ -288,6 +306,8 @@ def live_progress(
     presentation: TerminalPresentation,
     stream: TextIO,
     interval_seconds: float = 0.08,
+    elapsed_after_seconds: float = 10.0,
+    clock: Callable[[], float] = monotonic,
 ) -> Iterator[None]:
     """Show interactive progress without touching machine or redirected output."""
 
@@ -308,6 +328,8 @@ def live_progress(
         stream=stream,
         presentation=presentation,
         interval_seconds=interval_seconds,
+        elapsed_after_seconds=elapsed_after_seconds,
+        clock=clock,
     )
     spinner.start()
     try:
