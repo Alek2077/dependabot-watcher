@@ -65,12 +65,33 @@ For each selected tool, inspect the first README screen, prerequisites, installa
 
 Capture sanitized screenshots when visual hierarchy, animation, terminal behavior, or first-run flow is material. Produce a concise comparison that records what each tool does well, where Dependabot Watcher creates more friction, and which patterns should be adopted, adapted, deferred, or rejected with reasons. The goal is current usability evidence and a professional, modern experience—not imitation, decorative churn, or a sprawling competitive survey.
 
+### Phase 8 agent-surface compatibility matrix
+
+Validate agent integrations as thin operators over the installed CLI rather than as separate implementations of product policy. Start by testing repository documentation and a concise agent runbook without a skill. Prototype a project-owned skill/plugin only when it has a plausible discovery, consistency, or safety benefit, then compare the same tasks with and without it. If the package does not materially improve the result, do not publish it. If created, it may package instructions, workflows, and supported connection metadata, but it must not duplicate candidate classification, planning, authorization, or recovery logic that belongs in the product. Use the reviewed external landscape in [agent-integration-strategy.md](agent-integration-strategy.md) as comparison evidence; reuse only conventions whose provenance, license, authority, maintenance, and safety are acceptable.
+
+Record three independent support levels for every evaluated surface:
+
+- **operator:** can install or locate the CLI, explain its effects, run the approved workflow, and interpret structured results;
+- **packaged integration:** when one is justified and published, can discover and correctly apply the project-owned skill/plugin; and
+- **advisory provider:** can be invoked by the watcher itself through a tested provider adapter.
+
+For the first support matrix:
+
+- fully exercise Codex CLI as operator and advisory provider;
+- fully exercise Codex in the ChatGPT desktop app as an operator using the portable integration, then smoke-test the Codex IDE extension for materially different configuration, permission, path, or command behavior;
+- fully exercise Claude Code CLI and Claude Desktop as operators using portable instructions or a compatible plugin, then smoke-test the Claude Code IDE extension for materially different behavior; and
+- list GitHub Copilot, OpenCode, Antigravity, and Hermes as unverified, experimental, or community-compatible until an explicit validation pass supports a stronger claim.
+
+Do not require the founder to install every desktop app or editor extension. Agent-owned isolated validation is the default. Request founder testing when an available local surface is a primary supported path or when permissions, visual behavior, authentication, or operating-system integration cannot be evaluated credibly another way. Record the exact client, version, operating system, installation source, inherited instructions, permissions, and whether the test exercised only operator behavior or also a provider adapter.
+
+Test at least: fresh discovery, installation proposal, setup explanation, model/privacy/cost disclosure, read-only operation, plan interpretation, approval-bound execution explanation, non-interactive output, interruption/failure behavior, and cleanup. A model or client being able to run shell commands is necessary but not sufficient for a first-class claim; it must preserve the product's scope, evidence, and authority boundaries without relying on private development history.
+
 ## Multi-agent onboarding checkpoints
 
 Repeat agent-mediated onboarding at milestone boundaries rather than after every change:
 
 - After Phase 6, or after another material installation/setup/authorization change, run a private authenticated checkpoint. Label it accurately: existing read-only GitHub credentials and global harness context mean it tests documentation comprehension and agent-mediated setup, not anonymous public adoption.
-- During Phase 8, repeat from an isolated directory or environment with no development checkout or project-specific harness context. Immediately after the repository becomes publicly readable—and before announcing or promoting a release—repeat anonymously without existing GitHub authorization. Verify clone, install, setup explanation, safe validation, reset, and uninstall from the public surface users actually receive.
+- During Phase 10, repeat from an isolated directory or environment with no development checkout or project-specific harness context. Immediately after the repository becomes publicly readable—and before announcing or promoting a release—repeat anonymously without existing GitHub authorization. Verify clone, install, setup explanation, safe validation, reset, and uninstall from the public surface users actually receive.
 
 For each checkpoint, give the same self-contained prompt independently to one fresh capable Codex session, one fresh Gemini/Antigravity session, and either OpenCode or Hermes as a different harness. Do not show agents one another's answers. Keep the first pass read-only and require each agent to explain current capability, automation limits, mutation authority, model/cost behavior, GitHub authorization, installation, validation, and unclear documentation before it changes anything.
 
@@ -86,6 +107,6 @@ Use this common first-pass prompt, changing only the repository URL when necessa
 >
 > Flag anything unclear, contradictory, unsafe, misleading, or unnecessarily difficult in the onboarding documentation. Do not invent problems merely to find criticism. Do not install anything, create configuration, authenticate, or make local or remote changes until I approve your proposed steps.
 
-For a private authenticated checkpoint, if the agent correctly refuses anonymous access, authorize only the minimum continuation: existing GitHub CLI authentication for read-only access to this repository and one isolated clean clone. Prohibit use of the development checkout, authentication changes, package installation, setup, configuration writes, unrelated repository inspection, and remote mutation until the proposal is reviewed. Record this as private authenticated evidence, not anonymous public adoption. Do not include this clarification in the Phase 8 anonymous checkpoint.
+For a private authenticated checkpoint, if the agent correctly refuses anonymous access, authorize only the minimum continuation: existing GitHub CLI authentication for read-only access to this repository and one isolated clean clone. Prohibit use of the development checkout, authentication changes, package installation, setup, configuration writes, unrelated repository inspection, and remote mutation until the proposal is reviewed. Record this as private authenticated evidence, not anonymous public adoption. Do not include this clarification in the Phase 10 anonymous checkpoint.
 
 When recording a response, preserve the model/provider, reasoning setting when known, agent harness, commit reviewed, inherited instruction context that may have influenced the result, whether authentication or a clone was authorized, and whether any changes occurred. This provenance helps distinguish a documentation defect from harness-assisted understanding without turning the exercise into a model leaderboard.
