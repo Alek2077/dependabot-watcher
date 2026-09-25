@@ -51,3 +51,20 @@ Independent OpenAI Codex and Google Gemini fix checks inspected the final correc
 - The live target was a private Python repository; broader ecosystem and repository-policy coverage remains bounded by the documented support depth.
 - Alert state may lag immediately after a dependency PR merges while GitHub updates dependency data.
 - A later public release still requires the license, supported Python floor, release packaging, least-privilege authentication guidance, functioning CI, security/privacy/history review, and anonymous public onboarding gates in the roadmap.
+
+## Phase 7 operational UX and run-once reliability — 2026-09-25
+
+The Phase 7 terminal and lifecycle work was validated on Ubuntu 22.04 under WSL2 without changing GitHub:
+
+- a bounded current comparison of GitHub CLI, uv, Ruff, and Codex CLI informed the auth/config/reset guidance, stdout/stderr boundary, progress controls, and decision not to add a full-screen TUI;
+- a dependency-free presentation layer added an interactive stderr spinner, restrained status hierarchy, `--plain`, `NO_COLOR`, `TERM=dumb`, `CI`, and Unicode-to-ASCII behavior while keeping machine and redirected output undecorated;
+- human renderers remove terminal control sequences and injected line breaks from external values, preserve the original versioned JSON evidence, and safely replace characters unsupported by a strict output encoding;
+- concise text and Markdown inspection now expose bounded PR/alert detail, incomplete-evidence counts, and the next useful command;
+- authentication, source-versus-target access, update, rollback, profile replacement, uninstall, and audit-retention guidance was exercised against the installed product boundary; and
+- the final deterministic suite passed 277 tests; Pyright reported zero diagnostics; compileall and repository diff checks passed.
+
+A wheel built from the current tree included the new terminal module and was installed under isolated tool, configuration, and state roots. Installed `--version`, `--help`, read-only setup, live doctor, inspect, plan, JSON parsing through `jq`, concise Markdown, static plain output, and an interactive PTY run all completed. Reports recorded zero model calls and zero GitHub mutations. The final plain plan correctly reported the remaining queue and retained the explicit non-authorization message.
+
+An independent OpenAI Codex GPT-5.6 Luna Max review found five medium issues: non-actionable concise Markdown, one unsanitized detailed freshness path, strict-ASCII output failure, incorrect false-like `NO_COLOR` handling, and contradictory stdout documentation. All were reproduced and fixed; the same reviewer then reported no remaining medium/high finding and independently reproduced the 277-test suite. A second-provider review was explicitly waived for this phase.
+
+This record proves the installed WSL2 Ubuntu run-once experience. It does not claim ordinary non-WSL hosted Ubuntu success: GitHub Actions remains unable to start because of the known external account-level billing/authorization restriction, and functioning hosted CI remains a publication gate.

@@ -23,6 +23,15 @@ Prerequisites:
 
 GitHub authorization is required because Dependabot security alerts and private repository evidence are not anonymous data. The current adapter uses `gh` for credential handling and bounded read-only collection; only explicitly approved `execute` can call the exact-head PR merge endpoint. No IDE is required, and the watcher does not inspect or reuse a VS Code login. The credential held by `gh` may have broader permissions than the watcher uses; a tested least-privilege credential profile is a gate for public release.
 
+Check the active GitHub CLI account before cloning:
+
+```bash
+gh auth status
+gh auth login # only if no suitable account is authenticated
+```
+
+Cloning Dependabot Watcher proves access to this source repository only. Each configured target repository and its Dependabot-alert API are separate access surfaces; `setup`, `doctor`, and a complete `inspect` verify them progressively.
+
 Clone the private repository and enter its directory:
 
 ```bash
@@ -79,7 +88,10 @@ dependabot-watcher inspect --verbosity standard          # Item-level PR and ale
 dependabot-watcher inspect --repo OWNER/REPOSITORY       # One configured repository
 dependabot-watcher inspect --config /path/to/config.toml # A non-default profile
 dependabot-watcher plan --verbosity detailed             # More human-facing detail
+dependabot-watcher plan --plain                          # No animation, color, or terminal styling
 ```
+
+Interactive text runs use a restrained spinner on stderr and add status hierarchy to the final stdout report. `--plain`, `TERM=dumb`, or `CI` selects stable line-oriented progress without animation or styling. `NO_COLOR` keeps the hierarchy and animation but removes ANSI color. JSON, Markdown, pipes, redirected output, and non-interactive agent runs never receive animation or terminal styling.
 
 Optional advice is a separate, explicit operation:
 
@@ -196,7 +208,7 @@ Every plan is bound to the collected base SHA, PR head SHA, PR update time, aler
 - no model is invoked by `inspect` or by advisory mode `off`;
 - no report, cache, state, or log is persisted;
 - no notification is sent; and
-- all output goes to stdout, while CLI errors go to stderr.
+- final reports go to stdout; interactive progress and CLI errors go to stderr.
 
 Collection limits are explicit. If a repository exceeds one, the report says which surface was truncated and exits as partial rather than silently claiming completeness.
 
@@ -216,6 +228,28 @@ Collection limits are explicit. If a repository exceeds one, the report says whi
 | `70` | Unexpected internal failure |
 
 The JSON output is versioned with `schema_version: 1`. See [the architecture](docs/architecture.md), [setup guide](docs/setup.md), [advisory contract](docs/advisory-contract.md), [planning contract](docs/planning-contract.md), [execution contract](docs/execution-contract.md), [output contract](docs/output-contract.md), [configuration reference](docs/configuration.md), and [roadmap](docs/roadmap.md).
+
+## Update, reset, uninstall, or roll back
+
+This private pre-release is installed from source. To update deliberately, fetch or clone the intended revision, review and verify its commit SHA, then reinstall from that checkout:
+
+```bash
+uv tool install --force .
+# or: pipx install --force .
+```
+
+To roll back, check out a previously reviewed commit or release before running the same forced reinstall. Do not treat a moving branch as a reproducible version.
+
+`doctor` prints the configuration path it actually loaded. Because `setup` refuses to overwrite it, reset safely by moving that file to a backup, running `setup` again, and deleting the backup only after the replacement works. `DEPENDABOT_WATCHER_CONFIG` can keep experimental profiles separate.
+
+Uninstall the executable with the installer that created it:
+
+```bash
+uv tool uninstall dependabot-watcher
+# or: pipx uninstall dependabot-watcher
+```
+
+Uninstalling does not delete the configuration or execution audit history and never reverses a GitHub merge. Remove those local files only after locating them with `doctor`, deciding whether the audit record must be retained, and confirming the exact paths. Repository recovery after a bad merge remains an explicit repository workflow; see the execution output and audit guidance before taking another action.
 
 ## Platform status
 

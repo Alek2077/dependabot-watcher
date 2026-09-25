@@ -3,17 +3,19 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .terminal import sanitize_human_value
+
 
 def _json(report: dict[str, Any]) -> str:
     return json.dumps(report, indent=2, sort_keys=True) + "\n"
 
 
 def _escape(value: object) -> str:
-    return str(value or "").replace("|", "\\|").replace("\n", " ")
+    return sanitize_human_value(value).replace("|", "\\|")
 
 
 def _plain(value: object) -> str:
-    return str(value or "").replace("\r", " ").replace("\n", " ")
+    return sanitize_human_value(value)
 
 
 def _availability(value: object) -> str:
@@ -40,9 +42,10 @@ def _doctor_text(report: dict[str, Any]) -> str:
     tools = report["tools"]
     lines = [
         "Dependabot Watcher doctor",
-        f"Status: {report['status']}",
-        f"Configuration: {configuration['status']} ({configuration['path']})",
-        f"Runtime: {runtime['platform']} | Python {runtime['python']}",
+        f"Status: {_plain(report['status'])}",
+        f"Configuration: {_plain(configuration['status'])} "
+        f"({_plain(configuration['path'])})",
+        f"Runtime: {_plain(runtime['platform'])} | Python {_plain(runtime['python'])}",
         (
             "Execution: "
             + (
@@ -57,34 +60,34 @@ def _doctor_text(report: dict[str, Any]) -> str:
             f"{_authentication(tools['github_cli']['authentication'])}"
         ),
         (
-            "Codex CLI: "
+            "Codex CLI (optional advice): "
             f"{_availability(tools['codex_cli']['availability'])} / "
             f"{_authentication(tools['codex_cli']['authentication'])}"
         ),
     ]
     if report.get("state", {}).get("path"):
-        lines.append(f"Audit state: {report['state']['path']}")
+        lines.append(f"Audit state: {_plain(report['state']['path'])}")
     if configuration.get("error"):
         lines.append(f"Configuration error: {_plain(configuration['error'])}")
     for repository in report["repositories"]:
         ecosystems = ", ".join(repository["ecosystems"]) or "not detected"
         lines.append(
-            f"{repository['repository']}: access {repository['access']} | "
-            f"alerts {repository['dependabot_alert_access']} | "
-            f"configured branch {repository['configured_branch']} "
-            f"({repository['configured_branch_access']}) | "
-            f"remote default {repository['observed_default_branch'] or 'unknown'} | "
-            f"ecosystems {ecosystems}"
+            f"{_plain(repository['repository'])}: access {_plain(repository['access'])} | "
+            f"alerts {_plain(repository['dependabot_alert_access'])} | "
+            f"configured branch {_plain(repository['configured_branch'])} "
+            f"({_plain(repository['configured_branch_access'])}) | "
+            f"remote default {_plain(repository['observed_default_branch'] or 'unknown')} | "
+            f"ecosystems {_plain(ecosystems)}"
         )
     if report["findings"]:
         lines.append("Findings:")
         for finding in report["findings"]:
             lines.append(
-                f"  - {finding['severity'].upper()} [{finding['code']}]: "
-                f"{finding['message']}"
+                f"  - {_plain(finding['severity']).upper()} "
+                f"[{_plain(finding['code'])}]: {_plain(finding['message'])}"
             )
             if finding.get("next_step"):
-                lines.append(f"    Next: {finding['next_step']}")
+                lines.append(f"    Next: {_plain(finding['next_step'])}")
     else:
         lines.append("Findings: none")
     lines.append("Mutation authorized: no")
@@ -118,7 +121,10 @@ def _doctor_markdown(report: dict[str, Any]) -> str:
                 f"Configuration error: `{_escape(configuration['error'])}`",
             ]
         )
-    for label, key in (("GitHub CLI", "github_cli"), ("Codex CLI", "codex_cli")):
+    for label, key in (
+        ("GitHub CLI", "github_cli"),
+        ("Codex CLI (optional advice)", "codex_cli"),
+    ):
         tool = tools[key]
         lines.append(
             f"| {label} | {_escape(_availability(tool['availability']))} | "
@@ -172,12 +178,12 @@ def _setup_text(report: dict[str, Any]) -> str:
     )
     lines = [
         "Dependabot Watcher setup",
-        f"Status: {report['status']}",
-        f"Configuration: {report['configuration_path']}{configuration_suffix}",
-        f"Profile: {report['profile_source']}",
+        f"Status: {_plain(report['status'])}",
+        f"Configuration: {_plain(report['configuration_path'])}{configuration_suffix}",
+        f"Profile: {_plain(report['profile_source'])}",
         f"Repositories: {len(report['repositories'])}",
-        f"Advisory mode: {report['advisory']['mode']}",
-        f"Autonomy: {report['operation']['autonomy']}",
+        f"Advisory mode: {_plain(report['advisory']['mode'])}",
+        f"Autonomy: {_plain(report['operation']['autonomy'])}",
         (
             f"Verification: {verification_mode} | GitHub "
             f"{_authentication(report['verification']['github_authentication'])} | provider "
@@ -186,7 +192,7 @@ def _setup_text(report: dict[str, Any]) -> str:
         "Mutation authorized: no",
         "Next:",
     ]
-    lines.extend(f"  - {command}" for command in report["next_commands"])
+    lines.extend(f"  - {_plain(command)}" for command in report["next_commands"])
     return "\n".join(lines) + "\n"
 
 

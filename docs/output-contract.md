@@ -4,7 +4,9 @@
 
 Human text and Markdown support `concise`, `standard`, and `detailed` verbosity. JSON is identical regardless of the selected human verbosity. Presentation depth never changes evidence collection, provider calls, deterministic policy, or mutation authority.
 
-When both text stdout and stderr are attached to an interactive terminal, long live-read commands may show transient progress on stderr so they do not appear stalled. Progress is suppressed for JSON, Markdown, redirected output, pipes, and non-interactive agent execution. Final reports remain on stdout.
+When both text stdout and stderr are attached to an interactive terminal, long live-read commands show a restrained animated spinner on stderr so they do not appear stalled. Final reports remain on stdout and may use color, symbols, and a light status hierarchy. `NO_COLOR` removes ANSI color without removing semantic hierarchy. `--plain`, `TERM=dumb`, and `CI` use stable line-oriented progress with no animation or styling. JSON, Markdown, redirected output, pipes, and non-interactive agent execution suppress progress and decoration entirely.
+
+Terminal capabilities affect presentation only. Unsupported Unicode falls back to ASCII markers and spinner frames. Human renderers flatten line breaks and remove terminal control sequences from repository/provider-controlled values; versioned JSON retains the original structured evidence. Progress never appears on stdout, and presentation cannot change collection, advice, planning, or authorization.
 
 JSON is the automation contract. Its top-level fields are:
 

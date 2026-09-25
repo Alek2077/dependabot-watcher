@@ -8,6 +8,8 @@ GitHub authorization is unavoidable for private repositories and Dependabot secu
 
 GitHub CLI does not require an IDE. Its browser login, credential store, and supported token environment variables are independent from VS Code or another editor. The watcher deliberately does not inspect, extract, or reuse editor-managed credentials; those credentials are scoped to another application and are not a stable public integration contract.
 
+Before installation, use `gh auth status` to confirm the active account and `gh auth login` only when authentication is absent or unsuitable. Access to the Watcher source repository, access to each configured target repository, and permission to read Dependabot alerts are distinct. A successful `gh repo clone` proves only the first; setup verifies repository/branch access, doctor probes alert readiness, and a complete inspection remains the operational proof that the required read surfaces work.
+
 The default product path issues read-only GitHub requests. The sole mutating edge is the explicitly enabled exact-head PR merge in `execute`; a user's existing `gh` credential may carry broader authority than either path needs. Before public release, document and validate least-privilege credential profiles for the selected repositories, required read surfaces, and the optional merge capability. Future GitHub adapters may support a directly supplied fine-grained token, OAuth/device flow, or a GitHub App when their added complexity is justified. These adapters can remove the hard GitHub CLI dependency, but not the underlying authorization requirement.
 
 ## Recommended setup
@@ -95,3 +97,11 @@ last_verified_at = "2026-09-22T12:00:00Z"
 ```
 
 Credentials, tokens, cookies, raw auth responses, environment-file contents, and private model output are forbidden profile content. Future feedback may propose profile changes, but it may not silently expand repository scope, spending, mutation authority, or policy.
+
+## Profile lifecycle and removal
+
+`doctor` reports the configuration path it resolved and, when execution is enabled, the audit-state location. Setup deliberately has no destructive overwrite flag. To replace a profile, move the existing file to a private backup, create and validate the replacement, then remove the backup only when it is no longer needed. `DEPENDABOT_WATCHER_CONFIG` is the safer choice for parallel experiments or a separate execution profile.
+
+Uninstall the executable with `uv tool uninstall dependabot-watcher` or `pipx uninstall dependabot-watcher`, matching the installer originally used. Uninstalling leaves configuration and execution audit evidence in place and has no GitHub effect. Delete local configuration or state only after confirming the exact paths and any retention requirement; deleting an audit log is not a recovery mechanism and does not undo a merge.
+
+Source-based updates and rollbacks should use an explicitly reviewed commit or release. Reinstall that checkout with `uv tool install --force .` or `pipx install --force .`, then rerun `doctor`, `inspect`, and `plan` before enabling execution. Until versioned distribution exists, a moving branch is not a reproducible installation target.

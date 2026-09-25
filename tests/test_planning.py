@@ -249,6 +249,25 @@ def test_plan_verbosity_changes_human_detail_only() -> None:
     )
 
 
+def test_detailed_plan_sanitizes_freshness_for_humans_but_preserves_json() -> None:
+    report = plan_from_advisory(_advisory_report())  # type: ignore[arg-type]
+    hostile_sha = "head\x1b]0;owned\x07\r\nforged"
+    report["repositories"][0]["recommended_order"][0]["freshness"][
+        "head_sha"
+    ] = hostile_sha
+
+    detailed = render_plan(report, "text", verbosity="detailed")
+    payload = json.loads(render_plan(report, "json", verbosity="detailed"))
+
+    assert "head=head forged" in detailed
+    assert "\x1b" not in detailed
+    assert "owned" not in detailed
+    assert (
+        payload["repositories"][0]["recommended_order"][0]["freshness"]["head_sha"]
+        == hostile_sha
+    )
+
+
 def test_model_advice_can_make_action_more_conservative_without_changing_order() -> None:
     source = _advisory_report()
     source["advisory"]["mode"] = "reviewed"  # type: ignore[index]

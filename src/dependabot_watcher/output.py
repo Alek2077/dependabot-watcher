@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .terminal import sanitize_human_value
+
 
 def render_json(report: dict[str, Any]) -> str:
     return json.dumps(report, indent=2, sort_keys=True) + "\n"
@@ -17,6 +19,29 @@ def _validate_verbosity(verbosity: str) -> None:
         raise ValueError(f"Unsupported verbosity: {verbosity}.")
 
 
+def _human_state(value: object) -> str:
+    return sanitize_human_value(value or "unknown").replace("_", " ")
+
+
+def _display(value: object, fallback: str = "") -> str:
+    return sanitize_human_value(value or fallback)
+
+
+def _count_phrase(count: object, singular: str, plural: str | None = None) -> str:
+    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+
+def _inspection_next(report: dict[str, Any]) -> str:
+    summary = report["summary"]
+    if report["status"] == "partial":
+        return "resolve the reported collection gaps, then inspect again."
+    if summary["attention_required_count"]:
+        return "review the attention-required items, or run dependabot-watcher plan."
+    if summary["open_pull_request_count"] or summary["open_alert_count"]:
+        return "run dependabot-watcher plan for an ordered action list."
+    return "no open Dependabot work was found."
+
+
 def render_text(report: dict[str, Any], verbosity: str = "standard") -> str:
     _validate_verbosity(verbosity)
     summary = report["summary"]
@@ -29,7 +54,9 @@ def render_text(report: dict[str, Any], verbosity: str = "standard") -> str:
             f"Repositories: {summary['repository_count']} | "
             f"Open PRs: {summary['open_pull_request_count']} | "
             f"Open alerts: {summary['open_alert_count']} | "
-            f"Attention required: {summary['attention_required_count']}"
+            f"Attention required: {summary['attention_required_count']} | "
+            f"Errors: {summary['error_count']} | "
+            f"Truncations: {summary['truncation_count']}"
         ),
     ]
     if verbosity == "concise":
@@ -39,7 +66,8 @@ def render_text(report: dict[str, Any], verbosity: str = "standard") -> str:
         lines.extend(
             [
                 "",
-                f"{repository['repository']} (expected base: {repository['expected_base']})",
+                f"{sanitize_human_value(repository['repository'])} "
+                f"(expected base: {sanitize_human_value(repository['expected_base'])})",
                 (
                     f"  PRs: {repo_summary['open_pull_request_count']} | "
                     f"Alerts: {repo_summary['open_alert_count']} | "
@@ -49,55 +77,106 @@ def render_text(report: dict[str, Any], verbosity: str = "standard") -> str:
             ]
         )
         if verbosity == "concise":
+            for pull_request in repository["pull_requests"][:3]:
+                identity = _identity(pull_request)
+                lines.append(
+                    f"  PR #{identity.get('number', '?')}: "
+                    f"{sanitize_human_value(identity.get('title') or 'Untitled')} "
+                    f"[{_human_state(pull_request.get('classification'))}]"
+                )
+            if len(repository["pull_requests"]) > 3:
+                lines.append(
+                    f"  + {len(repository['pull_requests']) - 3} more open PRs; "
+                    "use --verbosity standard"
+                )
+            uncovered_alerts = [
+                alert
+                for alert in repository["alerts"]
+                if alert.get("classification") != "likely_covered_by_open_pr"
+            ]
+            for alert in uncovered_alerts[:3]:
+                lines.append(
+                    f"  Alert #{alert.get('number', '?')}: "
+                    f"{sanitize_human_value(alert.get('dependency_name') or 'unknown package')} "
+                    f"({sanitize_human_value(alert.get('severity') or 'unknown severity')}, "
+                    f"{_human_state(alert.get('classification'))})"
+                )
+            if len(uncovered_alerts) > 3:
+                lines.append(
+                    f"  + {len(uncovered_alerts) - 3} more alerts without direct "
+                    "open-PR coverage; use --verbosity standard"
+                )
             for truncation in repository["truncations"]:
                 lines.append(
-                    f"  TRUNCATED: {truncation['surface']} at {truncation['limit']} items"
+                    f"  TRUNCATED: {sanitize_human_value(truncation['surface'])} "
+                    f"at {truncation['limit']} items"
                 )
             for error in repository["errors"]:
-                lines.append(f"  ERROR [{error['surface']}]: {error['message']}")
+                lines.append(
+                    f"  ERROR [{sanitize_human_value(error['surface'])}]: "
+                    f"{sanitize_human_value(error['message'])}"
+                )
             continue
         if not repository["pull_requests"]:
             lines.append("  Pull requests: none")
         for pull_request in repository["pull_requests"]:
             identity = _identity(pull_request)
             lines.append(
-                f"  PR #{identity.get('number', '?')}: {identity.get('title') or 'Untitled'} "
-                f"[{pull_request.get('classification', 'unknown')}]"
+                f"  PR #{identity.get('number', '?')}: "
+                f"{sanitize_human_value(identity.get('title') or 'Untitled')} "
+                f"[{_human_state(pull_request.get('classification'))}]"
             )
             for reason in pull_request.get("reasons", []):
-                lines.append(f"    - {reason}")
+                lines.append(f"    - {sanitize_human_value(reason)}")
             if verbosity == "detailed":
                 lines.append(
                     f"    checks={pull_request.get('checks', 'unknown')} | "
                     f"paths={(pull_request.get('path_assessment') or {}).get('classification', 'unknown')} | "
-                    f"url={identity.get('url') or 'unavailable'}"
+                    f"url={sanitize_human_value(identity.get('url') or 'unavailable')}"
                 )
         for alert in repository["alerts"]:
             lines.append(
-                f"  Alert #{alert.get('number', '?')}: {alert.get('dependency_name') or 'unknown package'} "
-                f"({alert.get('severity') or 'unknown severity'}, {alert.get('classification')})"
+                f"  Alert #{alert.get('number', '?')}: "
+                f"{sanitize_human_value(alert.get('dependency_name') or 'unknown package')} "
+                f"({sanitize_human_value(alert.get('severity') or 'unknown severity')}, "
+                f"{_human_state(alert.get('classification'))})"
             )
             if verbosity == "detailed":
-                lines.append(f"    url={alert.get('url') or alert.get('html_url') or 'unavailable'}")
+                lines.append(
+                    "    url="
+                    + sanitize_human_value(
+                        alert.get("url") or alert.get("html_url") or "unavailable"
+                    )
+                )
         if repository["recent_sensitive_merges"]:
             lines.append("  Recent sensitive non-Dependabot merges:")
             for merge in repository["recent_sensitive_merges"]:
                 matched_paths = ", ".join(
-                    item["path"] for item in merge.get("matched_files", [])
+                    sanitize_human_value(item["path"])
+                    for item in merge.get("matched_files", [])
                 )
                 lines.append(
-                    f"    - PR #{merge.get('number', '?')}: {merge.get('title') or 'Untitled'} "
+                    f"    - PR #{merge.get('number', '?')}: "
+                    f"{sanitize_human_value(merge.get('title') or 'Untitled')} "
                     f"[{matched_paths or 'sensitive path'}]"
                 )
         for truncation in repository["truncations"]:
-            lines.append(f"  TRUNCATED: {truncation['surface']} at {truncation['limit']} items")
+            lines.append(
+                f"  TRUNCATED: {sanitize_human_value(truncation['surface'])} "
+                f"at {truncation['limit']} items"
+            )
         for error in repository["errors"]:
-            lines.append(f"  ERROR [{error['surface']}]: {error['message']}")
+            lines.append(
+                f"  ERROR [{sanitize_human_value(error['surface'])}]: "
+                f"{sanitize_human_value(error['message'])}"
+            )
+    lines.append("")
+    lines.append(f"Next: {_inspection_next(report)}")
     return "\n".join(lines) + "\n"
 
 
 def _escape_markdown(value: object) -> str:
-    return str(value or "").replace("|", "\\|").replace("\n", " ")
+    return sanitize_human_value(value).replace("|", "\\|")
 
 
 def render_markdown(report: dict[str, Any], verbosity: str = "standard") -> str:
@@ -138,6 +217,57 @@ def render_markdown(report: dict[str, Any], verbosity: str = "standard") -> str:
             ]
         )
         if verbosity == "concise":
+            repo_summary = repository["summary"]
+            lines.extend(
+                [
+                    (
+                        "Current state: "
+                        f"**{_count_phrase(repo_summary['open_pull_request_count'], 'open PR')}**, "
+                        f"**{_count_phrase(repo_summary['open_alert_count'], 'open alert')}**, "
+                        f"**{repo_summary['unresolved_alert_count']}** without direct "
+                        "open-PR coverage."
+                    ),
+                    "",
+                ]
+            )
+            pull_requests = repository["pull_requests"][:3]
+            if pull_requests:
+                for pull_request in pull_requests:
+                    identity = _identity(pull_request)
+                    lines.append(
+                        f"- PR #{_escape_markdown(identity.get('number', '?'))}: "
+                        f"{_escape_markdown(identity.get('title') or 'Untitled')} "
+                        f"(`{_escape_markdown(_human_state(pull_request.get('classification')))}`)"
+                    )
+                if len(repository["pull_requests"]) > 3:
+                    lines.append(
+                        f"- {len(repository['pull_requests']) - 3} more open PRs; "
+                        "use `--verbosity standard`."
+                    )
+            else:
+                lines.append("None.")
+
+            uncovered_alerts = [
+                alert
+                for alert in repository["alerts"]
+                if alert.get("classification") != "likely_covered_by_open_pr"
+            ]
+            lines.extend(["", "### Alerts without direct open-PR coverage", ""])
+            if uncovered_alerts:
+                for alert in uncovered_alerts[:3]:
+                    lines.append(
+                        f"- Alert #{_escape_markdown(alert.get('number', '?'))}: "
+                        f"{_escape_markdown(alert.get('dependency_name') or 'Unknown')} "
+                        f"({_escape_markdown(alert.get('severity') or 'Unknown')}, "
+                        f"{_escape_markdown(_human_state(alert.get('classification')))})"
+                    )
+                if len(uncovered_alerts) > 3:
+                    lines.append(
+                        f"- {len(uncovered_alerts) - 3} more uncovered alerts; "
+                        "use `--verbosity standard`."
+                    )
+            else:
+                lines.append("None.")
             if repository["truncations"] or repository["errors"]:
                 lines.extend(["", "### Collection notes", ""])
                 for truncation in repository["truncations"]:
@@ -227,6 +357,7 @@ def render_markdown(report: dict[str, Any], verbosity: str = "standard") -> str:
                     f"- **Error ({_escape_markdown(error['surface'])}):** "
                     f"{_escape_markdown(error['message'])}"
                 )
+    lines.extend(["", f"**Next:** {_escape_markdown(_inspection_next(report))}"])
     return "\n".join(lines) + "\n"
 
 
@@ -248,7 +379,8 @@ def render_advisory_text(report: dict[str, Any], verbosity: str = "standard") ->
         f"Generated: {report['generated_at']}",
         f"Status: {report['status']}",
         "Mutation authorized: no (advice only)",
-        f"Mode: {advisory['mode']} | Provider: {advisory['provider'] or 'none'}",
+        f"Mode: {_display(advisory['mode'])} | "
+        f"Provider: {_display(advisory['provider'], 'none')}",
         (
             f"Repositories: {inspection_summary['repository_count']} | "
             f"Open PRs: {inspection_summary['open_pull_request_count']} | "
@@ -270,26 +402,30 @@ def render_advisory_text(report: dict[str, Any], verbosity: str = "standard") ->
         effective = item["effective_advice"]
         reviewed = " reviewed" if item.get("review") else ""
         lines.append(
-            f"{identity.get('repository')} {label} #{number}: "
-            f"{effective['recommended_action']} "
-            f"[{effective['risk_level']} risk, {effective['confidence']} confidence{reviewed}]"
+            f"{_display(identity.get('repository'))} {label} #{number}: "
+            f"{_display(effective['recommended_action'])} "
+            f"[{_display(effective['risk_level'])} risk, "
+            f"{_display(effective['confidence'])} confidence{reviewed}]"
         )
         if verbosity != "concise":
-            lines.append(f"  {effective['summary']}")
+            lines.append(f"  {_display(effective['summary'])}")
         if verbosity == "detailed":
-            lines.append(f"  Rationale: {effective['rationale']}")
+            lines.append(f"  Rationale: {_display(effective['rationale'])}")
             for evidence in effective.get("evidence") or []:
-                lines.append(f"  Evidence: {evidence}")
+                lines.append(f"  Evidence: {_display(evidence)}")
             for question in effective.get("unresolved_questions") or []:
-                lines.append(f"  Unresolved: {question}")
+                lines.append(f"  Unresolved: {_display(question)}")
     if advisory["errors"]:
         lines.append("Advisory errors:")
         for error in advisory["errors"]:
-            lines.append(f"  - {error['stage']} batch {error['batch']}: {error['message']}")
+            lines.append(
+                f"  - {_display(error['stage'])} batch {error['batch']}: "
+                f"{_display(error['message'])}"
+            )
     if advisory["deferred"]:
         reasons: dict[str, int] = {}
         for item in advisory["deferred"]:
-            reason = str(item.get("reason") or "unknown")
+            reason = _display(item.get("reason"), "unknown")
             reasons[reason] = reasons.get(reason, 0) + 1
         lines.append(
             "Deferred: " + ", ".join(f"{reason}={count}" for reason, count in sorted(reasons.items()))
@@ -382,17 +518,20 @@ def render_advisory(
 def _plan_step_label(step: dict[str, Any]) -> str:
     identity = step.get("identity") or {}
     if step.get("kind") == "pull_request":
-        return f"PR #{identity.get('number', '?')}: {identity.get('title') or 'Untitled'}"
+        return (
+            f"PR #{identity.get('number', '?')}: "
+            f"{_display(identity.get('title'), 'Untitled')}"
+        )
     return (
         f"Alert #{identity.get('number', '?')}: "
-        f"{identity.get('dependency_name') or 'unknown dependency'}"
+        f"{_display(identity.get('dependency_name'), 'unknown dependency')}"
     )
 
 
 def _plan_record_label(record: object) -> str:
     if not isinstance(record, dict):
-        return str(record)
-    return str(
+        return _display(record)
+    return _display(
         record.get("description")
         or record.get("name")
         or record.get("step_id")
@@ -405,8 +544,8 @@ def _plan_record_label(record: object) -> str:
 def _plan_source_label(report: dict[str, Any]) -> str:
     source = report.get("source") or {}
     advisory = source.get("advisory") or {}
-    mode = str(advisory.get("mode") or "off")
-    provider_key = str(advisory.get("provider") or "")
+    mode = _display(advisory.get("mode"), "off")
+    provider_key = _display(advisory.get("provider"))
     provider = {"codex_cli": "Codex CLI"}.get(
         provider_key, provider_key.replace("_", " ")
     )
@@ -454,11 +593,13 @@ def render_plan_text(report: dict[str, Any], verbosity: str = "concise") -> str:
         lines.extend(
             [
                 "",
-                f"{repository['repository']} (base: {repository['expected_base']} "
-                f"@ {(repository.get('evidence_snapshot') or {}).get('base_sha') or 'unknown'})",
+                f"{_display(repository['repository'])} "
+                f"(base: {_display(repository['expected_base'])} @ "
+                f"{_display((repository.get('evidence_snapshot') or {}).get('base_sha'), 'unknown')})",
                 (
-                    f"  Current state: {state.get('open_pull_request_count', 0)} open PRs, "
-                    f"{state.get('open_alert_count', 0)} open alerts, "
+                    "  Current state: "
+                    f"{_count_phrase(state.get('open_pull_request_count', 0), 'open PR')}, "
+                    f"{_count_phrase(state.get('open_alert_count', 0), 'open alert')}, "
                     f"{state.get('unresolved_alert_count', 0)} without direct open-PR coverage"
                 ),
                 "  Recommended Order",
@@ -472,16 +613,17 @@ def render_plan_text(report: dict[str, Any], verbosity: str = "concise") -> str:
                 f"    {step['order']}. {_plan_step_label(step)} "
                 f"[{step['action'].replace('_', ' ')}]"
             )
-            lines.append(f"       Why now: {step['priority_reason']}")
+            lines.append(f"       Why now: {_display(step['priority_reason'])}")
             impacts = step.get("expected_alert_impact") or []
             if impacts:
                 impact_text = ", ".join(
-                    f"alert #{item.get('alert_number')} ({item.get('coverage_evidence')})"
+                    f"alert #{item.get('alert_number')} "
+                    f"({_display(item.get('coverage_evidence'))})"
                     for item in impacts
                 )
                 lines.append(f"       Expected alert impact: {impact_text}")
             for blocker in (step.get("blockers") or [])[:3]:
-                lines.append(f"       Blocker: {blocker}")
+                lines.append(f"       Blocker: {_display(blocker)}")
             if verbosity in {"standard", "detailed"}:
                 for prerequisite in step.get("prerequisites") or []:
                     lines.append(f"       Prerequisite: {_plan_record_label(prerequisite)}")
@@ -492,13 +634,23 @@ def render_plan_text(report: dict[str, Any], verbosity: str = "concise") -> str:
             if verbosity == "detailed":
                 freshness = step.get("freshness") or {}
                 lines.append(
-                    f"       Freshness: base={freshness.get('base_sha') or 'unknown'} | "
-                    f"head={freshness.get('head_sha') or 'not applicable'}"
+                    f"       Freshness: "
+                    f"base={_display(freshness.get('base_sha'), 'unknown')} | "
+                    f"head={_display(freshness.get('head_sha'), 'not applicable')}"
                 )
             lines.append("       Then: re-inspect repository state before continuing.")
         unresolved = repository.get("unresolved_evidence") or {}
         if unresolved.get("errors") or unresolved.get("truncations"):
             lines.append("  Evidence is partial; resolve collection gaps before execution.")
+    lines.append("")
+    if report["status"] == "partial":
+        lines.append("Next: resolve partial evidence and generate a fresh plan.")
+    elif summary["recommended_step_count"]:
+        lines.append(
+            "Next: validate the first recommended step; this plan does not authorize mutation."
+        )
+    else:
+        lines.append("Next: no actionable Dependabot items were found.")
     return "\n".join(lines) + "\n"
 
 
@@ -534,8 +686,9 @@ def render_plan_markdown(report: dict[str, Any], verbosity: str = "concise") -> 
                 ),
                 "",
                 (
-                    f"Current state: **{state.get('open_pull_request_count', 0)}** open PRs, "
-                    f"**{state.get('open_alert_count', 0)}** open alerts, "
+                    "Current state: "
+                    f"**{_count_phrase(state.get('open_pull_request_count', 0), 'open PR')}**, "
+                    f"**{_count_phrase(state.get('open_alert_count', 0), 'open alert')}**, "
                     f"**{state.get('unresolved_alert_count', 0)}** without direct open-PR coverage."
                 ),
                 "",
@@ -616,13 +769,13 @@ def render_execution(report: dict[str, Any], output_format: str) -> str:
         heading,
         f"Status: {report.get('status')}",
         (
-            f"Target: {binding.get('repository')} PR #{binding.get('pull_request')} "
-            f"@ {binding.get('head_sha')}"
+            f"Target: {_display(binding.get('repository'))} "
+            f"PR #{binding.get('pull_request')} @ {_display(binding.get('head_sha'))}"
         ),
-        f"Update: {decision.get('title') or 'unknown'}",
-        f"Base: {binding.get('expected_base')}",
-        f"Merge method: {binding.get('merge_method')}",
-        f"Classification: {decision.get('classification') or 'unknown'}",
+        f"Update: {_display(decision.get('title'), 'unknown')}",
+        f"Base: {_display(binding.get('expected_base'))}",
+        f"Merge method: {_display(binding.get('merge_method'))}",
+        f"Classification: {_display(decision.get('classification'), 'unknown')}",
         "Decision source: deterministic policy (no model used)",
         f"Action: {report.get('action_id')}",
         f"Mutation performed: {'yes' if report.get('mutation_performed') else 'no'}",
@@ -630,12 +783,13 @@ def render_execution(report: dict[str, Any], output_format: str) -> str:
     required_checks = decision.get("required_checks") or []
     if required_checks:
         checks = ", ".join(
-            f"{item.get('name')} ({item.get('state')})" for item in required_checks
+            f"{_display(item.get('name'))} ({_display(item.get('state'))})"
+            for item in required_checks
         )
         lines.append(f"Required checks: {checks}")
     result = report.get("result") or {}
     if result:
-        result_text = str(result.get("message") or report.get("status"))
+        result_text = _display(result.get("message") or report.get("status"))
         if result.get("merge_commit_sha"):
             result_text += f" @ {result['merge_commit_sha']}"
         lines.append(f"Result: {result_text}")
@@ -645,25 +799,25 @@ def render_execution(report: dict[str, Any], output_format: str) -> str:
         if post_action.get("status") != "unavailable":
             lines.append(
                 "Remaining: "
-                f"{post_action.get('open_pull_requests')} open PRs | "
-                f"{post_action.get('open_alerts')} open alerts | "
+                f"{_count_phrase(post_action.get('open_pull_requests'), 'open PR')} | "
+                f"{_count_phrase(post_action.get('open_alerts'), 'open alert')} | "
                 f"{post_action.get('alerts_without_direct_open_pr_coverage')} "
                 "without direct open-PR coverage | "
                 f"{post_action.get('attention_required')} attention required | "
-                f"{post_action.get('recommended_steps')} recommended steps"
+                f"{_count_phrase(post_action.get('recommended_steps'), 'recommended step')}"
             )
         if post_action.get("reason"):
-            lines.append(f"Post-action note: {post_action['reason']}")
+            lines.append(f"Post-action note: {_display(post_action['reason'])}")
         if post_action.get("next"):
-            lines.append(f"Next: {post_action['next']}")
+            lines.append(f"Next: {_display(post_action['next'])}")
     if report.get("approval_token"):
         lines.append(f"Approval confirmation token: {report['approval_token']}")
     if report.get("next"):
-        lines.append(f"Next: {report['next']}")
+        lines.append(f"Next: {_display(report['next'])}")
     if report.get("audit_path"):
-        lines.append(f"Audit: {report['audit_path']}")
+        lines.append(f"Audit: {_display(report['audit_path'])}")
     for item in report.get("recovery") or []:
-        lines.append(f"Next: {item}")
+        lines.append(f"Next: {_display(item)}")
     if output_format == "text":
         return "\n".join(lines) + "\n"
     markdown = [f"# {heading}", ""]
