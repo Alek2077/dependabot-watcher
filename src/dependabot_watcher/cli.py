@@ -18,6 +18,15 @@ from .operational_output import render_operational
 from .output import render, render_advisory, render_execution, render_plan
 from .planning import PlanningError, plan
 from .setup import SetupError, SetupRequest, setup
+from .terminal import (
+    ProgressMode,
+    TerminalPresentation,
+    decorate_text_report,
+    detect_terminal_presentation,
+    format_cli_error,
+    live_progress,
+    text_for_stream,
+)
 
 
 class ExitCode(IntEnum):
@@ -43,23 +52,36 @@ def _live_progress(
     if not enabled:
         yield
         return
-    stream.write(message)
-    stream.flush()
-    try:
+    presentation = TerminalPresentation(
+        interactive=True,
+        decorate=False,
+        color=False,
+        unicode_symbols=False,
+        progress=ProgressMode.STATIC,
+    )
+    with live_progress(message, presentation=presentation, stream=stream):
         yield
-    finally:
-        stream.write("\r" + (" " * len(message)) + "\r")
-        stream.flush()
 
 
 def _progress_enabled(output_format: str, *, stdout: TextIO, stderr: TextIO) -> bool:
     """Return whether transient progress is safe for this output boundary."""
 
-    return (
-        output_format == "text"
-        and bool(getattr(stdout, "isatty", lambda: False)())
-        and bool(getattr(stderr, "isatty", lambda: False)())
+    presentation = detect_terminal_presentation(
+        output_format,
+        stdout=stdout,
+        stderr=stderr,
     )
+    return presentation.progress is not ProgressMode.HIDDEN
+
+
+def _write_report(report: str, presentation: TerminalPresentation) -> None:
+    rendered = decorate_text_report(report, presentation)
+    sys.stdout.write(text_for_stream(rendered, sys.stdout))
+
+
+def _write_error(category: str, message: object, presentation: TerminalPresentation) -> None:
+    rendered = format_cli_error(category, message, presentation) + "\n"
+    sys.stderr.write(text_for_stream(rendered, sys.stderr))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,6 +115,19 @@ def build_parser() -> argparse.ArgumentParser:
         "execute",
         help="Preflight or perform one exact approval-gated plan action.",
     )
+    for command_parser in (
+        inspect_parser,
+        advise_parser,
+        plan_parser,
+        doctor_parser,
+        setup_parser,
+        execute_parser,
+    ):
+        command_parser.add_argument(
+            "--plain",
+            action="store_true",
+            help="Disable animation and terminal styling for accessible human output.",
+        )
     for command_parser in (inspect_parser, advise_parser, plan_parser):
         command_parser.add_argument(
             "--config",
@@ -314,10 +349,16 @@ def _required_check_overrides(values: list[str]) -> dict[str, tuple[str, ...]]:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    presentation = detect_terminal_presentation(
+        args.output_format,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        plain=args.plain,
+    )
     try:
         if args.command == "doctor":
             report = doctor(args.config, offline=args.offline)
-            sys.stdout.write(render_operational(report, args.output_format))
+            _write_report(render_operational(report, args.output_format), presentation)
             return (
                 ExitCode.SUCCESS
                 if report["status"] == "ready"
@@ -343,19 +384,15 @@ def main(argv: list[str] | None = None) -> int:
                     offline=args.offline,
                 ),
             )
-            sys.stdout.write(render_operational(report, args.output_format))
+            _write_report(render_operational(report, args.output_format), presentation)
             return ExitCode.SUCCESS
         if args.command == "execute":
             config = load_config(args.config)
             client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
             saved_plan = load_plan(args.plan_file)
-            with _live_progress(
+            with live_progress(
                 "Rechecking the exact plan action against live GitHub state...",
-                enabled=_progress_enabled(
-                    args.output_format,
-                    stdout=sys.stdout,
-                    stderr=sys.stderr,
-                ),
+                presentation=presentation,
                 stream=sys.stderr,
             ):
                 if args.approval_token:
@@ -370,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
                     report = preflight_execution(
                         config, client, saved_plan, args.step_id
                     )
-            sys.stdout.write(render_execution(report, args.output_format))
+            _write_report(render_execution(report, args.output_format), presentation)
             return ExitCode.SUCCESS
         config = _select_repositories(load_config(args.config), args.repositories)
         client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
@@ -380,14 +417,9 @@ def main(argv: list[str] | None = None) -> int:
             "advise": "Collecting evidence and preparing optional advice...",
             "plan": "Collecting evidence and building the maintenance plan...",
         }
-        progress_enabled = _progress_enabled(
-            args.output_format,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-        )
-        with _live_progress(
+        with live_progress(
             progress_messages[args.command],
-            enabled=progress_enabled,
+            presentation=presentation,
             stream=sys.stderr,
         ):
             if args.command == "inspect":
@@ -402,28 +434,28 @@ def main(argv: list[str] | None = None) -> int:
             else:  # pragma: no cover - protected by argparse
                 parser.error("A command is required.")
     except ConfigError as exc:
-        print(f"Configuration error: {exc}", file=sys.stderr)
+        _write_error("Configuration", exc, presentation)
         return ExitCode.CONFIGURATION_ERROR
     except GitHubError as exc:
-        print(f"GitHub error: {exc}", file=sys.stderr)
+        _write_error("GitHub", exc, presentation)
         return ExitCode.GITHUB_ERROR
     except AdvisoryError as exc:
-        print(f"Advisory error: {exc}", file=sys.stderr)
+        _write_error("Advisory", exc, presentation)
         return ExitCode.ADVISORY_ERROR
     except PlanningError as exc:
-        print(f"Planning error: {exc}", file=sys.stderr)
+        _write_error("Planning", exc, presentation)
         return ExitCode.PLANNING_ERROR
     except SetupError as exc:
-        print(f"Setup error: {exc}", file=sys.stderr)
+        _write_error("Setup", exc, presentation)
         return ExitCode.CONFIGURATION_ERROR
     except ExecutionError as exc:
-        print(f"Execution error: {exc}", file=sys.stderr)
+        _write_error("Execution", exc, presentation)
         return ExitCode.EXECUTION_ERROR
     except Exception as exc:  # defensive CLI boundary
-        print(f"Unexpected error: {exc}", file=sys.stderr)
+        _write_error("Unexpected", exc, presentation)
         return ExitCode.INTERNAL_ERROR
 
-    sys.stdout.write(rendered)
+    _write_report(rendered, presentation)
     if report["status"] == "partial":
         return ExitCode.PARTIAL_INSPECTION
     return ExitCode.SUCCESS

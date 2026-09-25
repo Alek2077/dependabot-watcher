@@ -709,8 +709,8 @@ def test_merged_human_output_reports_decision_result_and_remaining_state(
     assert "Result: merged" in text
     assert "Post-action reinspection: complete" in text
     assert (
-        "Remaining: 1 open PRs | 2 open alerts | 0 without direct open-PR coverage | "
-        "0 attention required | 1 recommended steps" in text
+        "Remaining: 1 open PR | 2 open alerts | 0 without direct open-PR coverage | "
+        "0 attention required | 1 recommended step" in text
     )
 
 

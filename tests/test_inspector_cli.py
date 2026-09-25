@@ -271,17 +271,43 @@ def test_all_output_formats_include_core_evidence() -> None:
     assert ".github/workflows/release.yml" in render_markdown(report)
 
 
+def test_human_output_sanitizes_external_terminal_controls_but_json_preserves_data() -> None:
+    report = inspect(config(), FakeClient())
+    hostile_title = "\x1b]0;owned\x07Bump example-lib\r\nforged\x1b[31m"
+    report["repositories"][0]["pull_requests"][0]["candidate_identity"][
+        "title"
+    ] = hostile_title
+
+    text_output = render_text(report)
+    markdown_output = render_markdown(report)
+    json_output = render_json(report)
+
+    for human_output in (text_output, markdown_output):
+        assert "Bump example-lib forged" in human_output
+        assert "\x1b" not in human_output
+        assert "owned" not in human_output
+    parsed = json.loads(json_output)
+    assert (
+        parsed["repositories"][0]["pull_requests"][0]["candidate_identity"]["title"]
+        == hostile_title
+    )
+
+
 def test_human_verbosity_changes_presentation_but_not_json_contract() -> None:
     report = inspect(config(), FakeClient(sensitive_history=True))
 
     concise = render(report, "text", verbosity="concise")
+    concise_markdown = render(report, "markdown", verbosity="concise")
     standard = render(report, "text", verbosity="standard")
     detailed = render(report, "text", verbosity="detailed")
 
-    assert "PR #42" not in concise
+    assert "PR #42" in concise
     assert "deterministic GitHub inspection (no model used)" in concise
     assert "inspect --verbosity standard" in concise
     assert "Alerts without direct open-PR coverage" in concise
+    assert "Next: run dependabot-watcher plan" in concise
+    assert "PR #42" in concise_markdown
+    assert "**Next:** run dependabot-watcher plan" in concise_markdown
     assert "PR #42" in standard
     assert "checks=passing" in detailed
     assert len(concise) < len(standard) < len(detailed)
@@ -290,11 +316,11 @@ def test_human_verbosity_changes_presentation_but_not_json_contract() -> None:
     )
 
 
-def test_interactive_progress_is_transient_and_machine_output_stays_clean() -> None:
+def test_line_oriented_progress_and_machine_output_stays_clean() -> None:
     interactive = _TtyBuffer()
     with cli._live_progress("Collecting evidence...", enabled=True, stream=interactive):
-        assert interactive.getvalue() == "Collecting evidence..."
-    assert interactive.getvalue().endswith("\r" + (" " * 22) + "\r")
+        assert interactive.getvalue() == "Collecting evidence...\n"
+    assert interactive.getvalue() == "Collecting evidence...\n"
 
     redirected = StringIO()
     with cli._live_progress("Collecting evidence...", enabled=False, stream=redirected):
@@ -328,7 +354,9 @@ def test_cli_uses_profile_verbosity_and_allows_explicit_override(
     monkeypatch.setattr(cli, "GhCliClient", lambda **kwargs: FakeClient())
 
     assert cli.main(["inspect", "--config", str(config_path)]) == cli.ExitCode.SUCCESS
-    assert "PR #42" not in capsys.readouterr().out
+    concise = capsys.readouterr().out
+    assert "PR #42" in concise
+    assert "checks=passing" not in concise
 
     assert (
         cli.main(
@@ -342,7 +370,9 @@ def test_cli_uses_profile_verbosity_and_allows_explicit_override(
         )
         == cli.ExitCode.SUCCESS
     )
-    assert "PR #42" in capsys.readouterr().out
+    detailed = capsys.readouterr().out
+    assert "PR #42" in detailed
+    assert "checks=passing" in detailed
 
 
 def test_cli_json_success_uses_stdout_only(
