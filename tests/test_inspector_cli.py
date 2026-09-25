@@ -316,6 +316,32 @@ def test_human_verbosity_changes_presentation_but_not_json_contract() -> None:
     )
 
 
+def test_concise_inspection_shows_small_queues_and_prioritizes_attention() -> None:
+    report = inspect(config(), FakeClient())
+    repository = report["repositories"][0]
+    original = repository["pull_requests"][0]
+    repository["pull_requests"] = []
+    for number in range(1, 11):
+        pull_request = json.loads(json.dumps(original))
+        pull_request["candidate_identity"]["number"] = number
+        pull_request["candidate_identity"]["title"] = f"PR {number}"
+        pull_request["classification"] = (
+            "attention_required" if number in {9, 10} else "baseline_candidate"
+        )
+        repository["pull_requests"].append(pull_request)
+
+    concise = render(report, "text", verbosity="concise")
+    assert "Pull requests highlights: 5 of 10 shown; attention items first" in concise
+    assert "PR #9" in concise
+    assert "PR #10" in concise
+    assert "+ 5 more open PRs" in concise
+
+    repository["pull_requests"] = repository["pull_requests"][:5]
+    small = render(report, "text", verbosity="concise")
+    assert "Pull requests: all 5 shown" in small
+    assert "+ 1 more open PR" not in small
+
+
 def test_line_oriented_progress_and_machine_output_stays_clean() -> None:
     interactive = _TtyBuffer()
     with cli._live_progress("Collecting evidence...", enabled=True, stream=interactive):

@@ -91,7 +91,7 @@ dependabot-watcher plan --verbosity detailed             # More human-facing det
 dependabot-watcher plan --plain                          # No animation, color, or terminal styling
 ```
 
-Interactive text runs use a restrained spinner on stderr and add status hierarchy to the final stdout report. `--plain`, `TERM=dumb`, or `CI` selects stable line-oriented progress without animation or styling. `NO_COLOR` keeps the hierarchy and animation but removes ANSI color. JSON, Markdown, pipes, redirected output, and non-interactive agent runs never receive animation or terminal styling.
+Interactive text runs use a restrained spinner on stderr for live setup, diagnostics, inspection, advice, planning, and execution revalidation, then add status hierarchy to the final stdout report. Long operations add elapsed-time reassurance on the same transient line. `--plain`, `TERM=dumb`, or `CI` selects stable line-oriented progress without animation or styling. `NO_COLOR` keeps the hierarchy and animation but removes ANSI color. JSON, Markdown, pipes, redirected output, and non-interactive agent runs never receive animation or terminal styling.
 
 Optional advice is a separate, explicit operation:
 
@@ -162,7 +162,7 @@ This first execution surface is intentionally not automatic. It accepts only an 
 
 The default config path is `$XDG_CONFIG_HOME/dependabot-watcher/config.toml` or `~/.config/dependabot-watcher/config.toml`. On native Windows it resolves under `%APPDATA%`. `DEPENDABOT_WATCHER_CONFIG` can override it.
 
-Human text and Markdown support `concise`, `standard`, and `detailed` verbosity. The profile default can be overridden per command with `--verbosity`; JSON remains complete at every level, and verbosity never changes collection, model workload, policy, or authority.
+Human text and Markdown support `concise`, `standard`, and `detailed` verbosity. Concise inspection shows every item in queues of five or fewer; larger queues use adaptive highlights, always prioritizing attention-required PRs and uncovered alerts and stating how many items are omitted. Standard inspection shows the complete human queue, while detailed inspection adds technical evidence such as checks, path classifications, and URLs. Planning always shows every ordered step; standard adds human-readable overlap/replanning relationships, and detailed adds freshness identities. Every plan explains that a separately enabled `execute` call—not a model or the prose report—recollects and enforces the live execution gates. The profile default can be overridden per command with `--verbosity`; JSON remains complete at every level, and verbosity never changes collection, model workload, policy, or authority.
 
 ## What inspection covers
 
