@@ -1,0 +1,27 @@
+{
+  "name": "dependabot-watcher",
+  "version": "0.1.0",
+  "description": "Guide agents operating a separately installed Dependabot Watcher CLI; does not install the CLI or authenticate GitHub.",
+  "author": {
+    "name": "Alek2077",
+    "url": "https://github.com/Alek2077"
+  },
+  "homepage": "https://github.com/Alek2077/dependabot-watcher",
+  "repository": "https://github.com/Alek2077/dependabot-watcher",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Dependabot Watcher",
+    "shortDescription": "Guide the separately installed Watcher CLI safely.",
+    "longDescription": "Operate a separately installed Dependabot Watcher CLI without moving product policy, GitHub authentication, or mutation authority into the agent package.",
+    "developerName": "Alek2077",
+    "category": "Productivity",
+    "capabilities": [],
+    "websiteURL": "https://github.com/Alek2077/dependabot-watcher",
+    "brandColor": "#0B5E7D",
+    "composerIcon": "./skills/dependabot-watcher/assets/dependabot-watcher.svg",
+    "logo": "./skills/dependabot-watcher/assets/dependabot-watcher.svg",
+    "defaultPrompt": [
+      "Use Dependabot Watcher to inspect my dependency-maintenance queue safely."
+    ]
+  }
+}

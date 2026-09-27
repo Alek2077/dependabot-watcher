@@ -1,0 +1,8 @@
+interface:
+  display_name: "Dependabot Watcher"
+  short_description: "Operate an installed Watcher CLI safely"
+  icon_small: "./assets/dependabot-watcher.svg"
+  icon_large: "./assets/dependabot-watcher.svg"
+  default_prompt: "Use $dependabot-watcher to inspect and plan my Dependabot maintenance queue."
+policy:
+  allow_implicit_invocation: true

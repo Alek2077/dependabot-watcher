@@ -65,7 +65,7 @@ Choose the command that matches the result you want:
 
 | Command | Practical result |
 |---|---|
-| `dependabot-watcher doctor` | Checks whether the installation, GitHub access, configuration, and configured repositories are ready. |
+| `dependabot-watcher doctor` | Checks whether the installation, GitHub access, configuration, and every repository in the loaded profile are ready. |
 | `dependabot-watcher inspect` | Returns current Dependabot PR, alert, check, and repository facts without using a model. |
 | `dependabot-watcher advise` | Adds optional per-PR or per-alert model recommendations when advice is explicitly configured. |
 | `dependabot-watcher plan` | Produces an ordered action list for the complete queue, using optional advice if configured; it does not execute the actions. |
@@ -78,6 +78,38 @@ dependabot-watcher doctor
 dependabot-watcher inspect
 dependabot-watcher plan
 ```
+
+## Agent operation
+
+Dependabot Watcher is designed to remain usable directly while also giving
+agents a stable CLI and versioned JSON contract. The
+[agent operator guide](docs/agent-operator-guide.md) defines the portable
+workflow and authority boundaries. The
+[agent support matrix](docs/agent-support-matrix.md) distinguishes an agent
+being able to operate the CLI, availability of a packaged skill/plugin, and the
+watcher's own optional advisory-provider support.
+
+The repository also contains a Phase 8 skills-only plugin prototype with
+OpenAI and Claude Code compatibility manifests. It adds no MCP server, hooks,
+scheduler, credentials, or mutation code; it teaches a supported agent to
+invoke the same installed CLI. The prototype is for local validation and is not
+yet published to a public plugin directory. Source-checkout installation and
+current client evidence are documented in the
+[agent operator guide](docs/agent-operator-guide.md#optional-agent-package).
+
+### Why use Watcher with an agent?
+
+A capable agent can investigate a dependency update directly. Watcher supplies repeatable operational machinery that an ad hoc conversation usually has to reconstruct:
+
+- one normalized evidence surface across repositories;
+- PR-alert correlation and explicit incomplete-evidence states;
+- stable human and machine-readable contracts;
+- deterministic safety and repository-policy gates;
+- exact repository, PR, base, and head binding;
+- one-action execution followed by reinspection and replanning; and
+- auditable execution, reconciliation, and recovery evidence.
+
+The agent supplies judgment; Watcher supplies dependable evidence and authority boundaries. Scheduling, revision deduplication, sparse notifications, and deeper tool-capable investigation remain roadmap capabilities rather than current claims.
 
 Common output and scope options:
 
@@ -100,7 +132,7 @@ dependabot-watcher advise
 dependabot-watcher advise --format json
 ```
 
-Advice defaults to `off`. Enabling `economy` or `reviewed` requires explicit provider configuration; see the [configuration reference](docs/configuration.md).
+Advice defaults to `off` (no AI). `economy` enables bounded AI triage, while `reviewed` adds a second AI review for selected candidates. Enabling either AI mode requires explicit provider configuration; see the [configuration reference](docs/configuration.md).
 
 When advice is enabled, selected repository, PR, alert, dependency, changed-path, check, and deterministic-assessment evidence is sent to the configured provider. Candidate and call limits bound workload; they are not financial spending caps. Cost or subscription usage depends on the provider authentication configured outside the watcher.
 
@@ -139,13 +171,15 @@ Use a prior read-only `inspect --verbosity standard` or `plan --format json` run
 Save a complete machine-readable plan, then run a non-mutating execution preflight for one displayed step ID:
 
 ```bash
-(umask 077 && dependabot-watcher plan --format json > watcher-plan.json)
+(umask 077 && dependabot-watcher plan \
+  --repo OWNER/REPOSITORY \
+  --format json > watcher-plan.json)
 dependabot-watcher execute --plan-file watcher-plan.json --step-id STEP_ID
 ```
 
 The saved plan contains private repository evidence. Keep it in a user-private location, do not publish it, and remove it when no longer needed.
 
-If the exact action is eligible, preflight prints an approval confirmation token bound to the saved repository plan, step, repository, PR number, base, head SHA, and merge method. Supplying that token is the separate mutation authorization:
+If the exact action is eligible, preflight prints an approval confirmation token bound to the saved repository plan, step, repository, PR number, base, head SHA, and merge method. The token confirms the displayed binding; possession of it is not independent authorization. After the operator explicitly authorizes that exact current action, supply the matching token:
 
 ```bash
 dependabot-watcher execute \
@@ -186,11 +220,11 @@ Generic inspection and planning are not Python-specific: they operate on Dependa
 
 ## Optional advisory modes
 
-- `off`: deterministic evidence only and zero model calls;
-- `economy`: bounded triage of deterministically prioritized candidates;
-- `reviewed`: bounded triage plus a stronger second pass for ambiguous or higher-risk candidates.
+- `off`: deterministic evidence only and zero AI/model calls;
+- `economy`: bounded AI triage of deterministically prioritized candidates;
+- `reviewed`: bounded AI triage plus a stronger second AI pass for ambiguous or higher-risk candidates.
 
-The provider boundary is generic, but only the first-party Codex CLI adapter is currently implemented and tested. It runs non-interactively with an ephemeral session, read-only sandbox, isolated temporary work directory, schema-constrained output, ignored Codex user configuration and exec-policy rules, a sanitized process environment, and explicit timeout/model settings. Web search, shell tools, apps/connectors, dependency-install tools, and subagents are disabled. Codex platform safety still applies, while the watcher's own prompt, schema, and deterministic validator define the portable advisory contract.
+The provider boundary is generic, but only the first-party Codex CLI adapter is currently implemented. Its command, schema, parsing, timeout, failure, economy, and reviewed paths have deterministic coverage; a real installed-path Watcher-initiated Codex call remains a recorded validation gate before scheduled model-assisted operation or public-release support claims. The adapter runs non-interactively with an ephemeral session, read-only sandbox, isolated temporary work directory, schema-constrained output, ignored Codex user configuration and exec-policy rules, a sanitized process environment, and explicit timeout/model settings. Web search, shell tools, apps/connectors, dependency-install tools, and subagents are disabled. Codex platform safety still applies, while the watcher's own prompt, schema, and deterministic validator define the portable advisory contract.
 
 Model output is treated as untrusted advice. The watcher binds it back to opaque collector-issued candidate IDs, rejects missing/unknown/duplicate results, and retains collector-owned repository, PR, alert, base, and head identity. Provider failure is reported without erasing deterministic inspection evidence.
 
@@ -212,7 +246,7 @@ Every plan is bound to the collected base SHA, PR head SHA, PR update time, aler
 
 Collection limits are explicit. If a repository exceeds one, the report says which surface was truncated and exits as partial rather than silently claiming completeness.
 
-`doctor` is also non-mutating and never makes a model call. It reports executable versions and authentication readiness without retaining raw command output, verifies the configured branch, reads only configured repositories, and never opens provider credential files. `setup` persists one explicitly requested non-secret configuration file. Approved execution is the only GitHub mutation and the only other persistent path: it appends sanitized start/outcome events to a user-private local audit log.
+`doctor` is also non-mutating and never makes a model call. It checks every repository in the loaded profile, reports executable versions and authentication readiness without retaining raw command output, verifies each configured branch, reads only configured repositories, and never opens provider credential files. Use a repository-scoped `inspect --repo OWNER/REPOSITORY` when only that repository is in scope; it checks collected evidence but does not replace the whole-profile readiness preflight. `setup` persists one explicitly requested non-secret configuration file. Approved execution is the only GitHub mutation and the only other persistent path: it appends sanitized start/outcome events to a user-private local audit log.
 
 ## Output and exit codes
 

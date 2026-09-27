@@ -123,3 +123,25 @@ Modes control workload rather than universal model names. Provider/model/reasoni
 ## Future boundaries
 
 Additional providers, schedulers, notifications, broader mutation types, automatic execution, high-coverage analysis, and wider autonomy/observability belong to later phases. They must consume the same trusted identity and deterministic evidence without weakening fail-closed behavior.
+
+### Future agent-runtime seam
+
+Do not couple deeper AI behavior directly to the synchronous Codex subprocess. Preserve `AdvisoryProvider` as the bounded evidence-review contract while adding future investigation through versioned jobs and artifacts:
+
+```text
+scheduler/reconciler -> normalized evidence job -> bounded worker pool
+                                                   |        |
+                                                   v        v
+                                            investigators validators
+                                                   \        /
+                                                    synthesis
+                                                        |
+                                                        v
+                                              policy/action boundary
+```
+
+Jobs should carry stable repository/PR/head/evidence identities, requested capability and assurance profiles, provider/model provenance, budgets, deadlines, and cancellation state. Independent repository investigation may run concurrently, but mutation and post-action replanning remain serialized per repository. This seam should permit a future local queue, background workers, remote execution, or multiple providers without forcing the run-once CLI, evidence schema, or exact-action execution boundary to depend on one orchestration library.
+
+Long investigations need a private resumable work journal outside the installed package and target repositories. Store schema-versioned plans, evidence references, completed steps, decisions, unresolved questions, and provider/cost provenance under the permission-restricted Watcher state boundary, keyed by stable job and revision identity. Give investigators a bounded scratch workspace when writing intermediate notes materially improves resumability; do not let them edit the installed Watcher package, target repository, plugin, `SKILL.md`, or policy merely to preserve context. Raw credentials, secret-file contents, unrestricted provider transcripts, and unrelated user data never belong in the journal.
+
+Learning should be controlled rather than silent self-modification. Repeated operator corrections or validated repository facts may produce proposed repository-profile, policy, prompt, or skill changes with provenance and evidence. Material scope, spend, capability, mutation, and instruction changes require explicit confirmation, deterministic validation where applicable, and a versioned product update. Disposable worker notes are not durable policy merely because a model wrote them.
