@@ -1,0 +1,18 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "dependabot-watcher",
+  "version": "0.1.0",
+  "description": "Guide agents operating a separately installed Dependabot Watcher CLI; does not install the CLI or authenticate GitHub.",
+  "author": {
+    "name": "Alek2077",
+    "url": "https://github.com/Alek2077"
+  },
+  "homepage": "https://github.com/Alek2077/dependabot-watcher",
+  "repository": "https://github.com/Alek2077/dependabot-watcher",
+  "keywords": [
+    "dependabot",
+    "github",
+    "dependency-maintenance",
+    "security-alerts"
+  ]
+}

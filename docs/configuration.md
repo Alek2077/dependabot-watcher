@@ -92,9 +92,9 @@ Model advice is opt-in. A configuration without `[advisory]`, or with `mode = "o
 
 Supported modes are:
 
-- `off`: deterministic inspection only;
-- `economy`: bounded triage of prioritized unresolved alerts and pull requests;
-- `reviewed`: the same triage followed by a bounded reviewer pass for candidates with deterministic attention signals or uncertain/higher-risk triage.
+- `off`: deterministic inspection only, with no AI/model call;
+- `economy`: bounded AI triage of prioritized unresolved alerts and pull requests;
+- `reviewed`: the same AI triage followed by a bounded second AI reviewer pass for candidates with deterministic attention signals or uncertain/higher-risk triage.
 
 The current implementation ships one adapter, `codex_cli`. Provider-specific model defaults are not prescribed yet, so configure the Codex model deliberately when enabling advice:
 
@@ -125,6 +125,8 @@ max_review_calls = 1
 ```
 
 Candidate priority is deterministic: unresolved critical/high alerts precede attention-required pull requests, other unresolved alerts, baseline candidates, and low-severity alerts. A provider cannot expand its own queue or budget.
+
+The current budget is global to the selected multi-repository run, not a per-repository allowance. Inspection and planning still cover the complete collected queue, but candidates beyond the advisory budget are recorded as deferred and receive no model decision. Current approval-gated execution does not require every deterministic baseline candidate to have model advice.
 
 Codex authentication stays with the user's Codex installation. Do not put API keys, ChatGPT credentials, or auth files in this TOML file. The adapter ignores the Codex user `config.toml` while retaining Codex authentication. It also ignores user/project exec-policy `.rules`, runs from an isolated temporary directory, disables web search, shell execution, unified execution, apps/connectors, dependency-install tools, and subagents, and gives any model-launched command surface an empty inherited environment. This prevents personal hooks, MCP servers, notifications, telemetry exporters, unrelated project instructions, local files, or shell secrets from becoming implicit advisory behavior.
 

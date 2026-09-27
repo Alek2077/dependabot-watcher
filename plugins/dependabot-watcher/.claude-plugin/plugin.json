@@ -1,0 +1,9 @@
+{
+  "name": "dependabot-watcher",
+  "description": "Guide agents operating a separately installed Dependabot Watcher CLI; does not install the CLI or authenticate GitHub.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Alek2077",
+    "url": "https://github.com/Alek2077"
+  }
+}

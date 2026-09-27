@@ -1,0 +1,14 @@
+{
+  "name": "dependabot-watcher-local",
+  "description": "Local development marketplace for the Dependabot Watcher operator plugin.",
+  "owner": {
+    "name": "Alek2077"
+  },
+  "plugins": [
+    {
+      "name": "dependabot-watcher",
+      "source": "./plugins/dependabot-watcher",
+      "description": "Guide an agent operating a separately installed Dependabot Watcher CLI."
+    }
+  ]
+}

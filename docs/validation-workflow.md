@@ -4,6 +4,8 @@ Use this workflow proportionately after a material feature, onboarding change, p
 
 The objective is to exercise the product as a user or supervising agent receives it, detect friction that source-level tests cannot reveal, and preserve evidence without exposing credentials or private repository data.
 
+Real-world acceptance tests must use the documented product workflow and the agent client's ordinary permission flow. When a run encounters friction, preserve that result and investigate it before changing the environment or coaching the agent. Do not pre-enable broad permissions, supply development-only workarounds, or otherwise bypass the behavior being evaluated to obtain a passing run. A narrowly authorized diagnostic retry is useful evidence, but record the assistance and do not count it as unassisted onboarding success. After correcting the product or guidance, use a fresh session to verify the normal path.
+
 Agents should run the applicable deterministic, installed-path, and review checks before Gitflow by default. Founder hands-on testing is optional for ordinary changes rather than a mandatory release tax. Request or recommend a founder checkpoint when the change materially affects first-use onboarding, authorization, mutation, autonomy policy, destructive/recovery behavior, or public-release experience, and whenever the founder wants direct product feedback before Gitflow.
 
 For a material capability that does not yet exist on remote `main`, use two distinct stages rather than treating one as a substitute for the other:

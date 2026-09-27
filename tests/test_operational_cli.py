@@ -17,6 +17,14 @@ class _TtyBuffer(StringIO):
         return True
 
 
+def test_cli_help_explains_doctor_profile_scope() -> None:
+    help_text = " ".join(cli.build_parser().format_help().split())
+    assert (
+        "Run a read-only preflight for the environment and every configured repository."
+        in help_text
+    )
+
+
 def test_cli_offline_setup_creates_safe_profile_without_external_calls(
     tmp_path: Path,
     monkeypatch,

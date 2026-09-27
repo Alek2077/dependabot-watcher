@@ -105,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor_parser = commands.add_parser(
         "doctor",
-        help="Run a read-only environment and repository preflight.",
+        help="Run a read-only preflight for the environment and every configured repository.",
     )
     setup_parser = commands.add_parser(
         "setup",

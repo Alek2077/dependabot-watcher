@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img" aria-labelledby="title description">
+  <title id="title">Dependabot Watcher</title>
+  <desc id="description">A shield with a radar sweep and confirmation mark.</desc>
+  <defs>
+    <linearGradient id="background" x1="68" y1="52" x2="336" y2="352" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B2645"/>
+      <stop offset="1" stop-color="#071525"/>
+    </linearGradient>
+    <linearGradient id="signal" x1="118" y1="108" x2="300" y2="298" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22C55E"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="400" rx="92" fill="url(#background)"/>
+  <path d="M200 70 310 112v82c0 72-43 118-110 142-67-24-110-70-110-142v-82L200 70Z" fill="#0D3557" stroke="#80E9F5" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M128 206a72 72 0 0 1 72-72" fill="none" stroke="#35CFE0" stroke-width="15" stroke-linecap="round"/>
+  <path d="M128 164a114 114 0 0 1 114-72" fill="none" stroke="#35CFE0" stroke-width="15" stroke-linecap="round" opacity=".58"/>
+  <circle cx="200" cy="206" r="19" fill="#67E8F9"/>
+  <path d="m165 250 27 27 57-68" fill="none" stroke="url(#signal)" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
