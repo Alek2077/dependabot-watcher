@@ -63,10 +63,17 @@ The command writes bounded private reconciliation state but performs no GitHub m
 Preview the exact same-user native registration before creating it:
 
 ```bash
+dependabot-watcher schedule inventory
 dependabot-watcher schedule preview --interval-minutes 1440
 dependabot-watcher schedule install --interval-minutes 1440
 dependabot-watcher schedule status --interval-minutes 1440
 ```
+
+Inventory is read-only and independent of any one profile. It validates the
+native ownership marker, current-user authority, embedded command, and
+configuration-derived job ID before returning a recovery command. A similarly
+named candidate that fails those checks is reported as untrusted rather than
+treated as removal authority.
 
 On WSL, use `--platform wsl --distro EXACT-DISTRIBUTION` when automatic detection is unavailable or when the registration must bind a specific distribution. The task binds the exact Watcher console executable used for installation, the originating Linux user, and trusted Windows System32 WSL/PowerShell helpers; preview displays that actual host-wrapper command. `--notify desktop` is optional. The host can start WSL without an open terminal, but no local schedule runs while the computer is powered off; Watcher records one overdue catch-up after the host returns instead of replaying every missed interval.
 
@@ -134,6 +141,6 @@ Credentials, tokens, cookies, raw auth responses, environment-file contents, and
 
 `doctor` reports the configuration path it resolved and, when execution is enabled, the audit-state location. Setup deliberately has no destructive overwrite flag. To replace a profile, move the existing file to a private backup, create and validate the replacement, then remove the backup only when it is no longer needed. `DEPENDABOT_WATCHER_CONFIG` is the safer choice for parallel experiments or a separate execution profile.
 
-Remove every Watcher-owned schedule before uninstalling the executable, using the same configuration, state, platform, cadence, notification, and WSL distribution arguments used at installation. Watcher does not yet inventory registrations across forgotten or moved profiles. Preserve those arguments; if they are lost, inspect the native scheduler and verify Watcher's ownership marker, exact command, and current-user authority before manual removal rather than trusting a task name alone. Then uninstall with `uv tool uninstall dependabot-watcher` or `pipx uninstall dependabot-watcher`, matching the installer originally used. Uninstalling leaves configuration, run history, plans, and execution audit evidence in place and has no GitHub effect. Delete local configuration or state only after confirming the exact paths and any retention requirement; deleting an audit log is not a recovery mechanism and does not undo a merge.
+Run `dependabot-watcher schedule inventory` before uninstalling the executable in every host context where scheduling was used. Native Windows PowerShell and WSL select separate scheduler contexts and must each be checked when both were configured. Remove each verified registration with its listed `recovery_command`, then repeat inventory in every applicable context and confirm that no verified registrations remain. A name-matching candidate that inventory reports as untrusted requires manual investigation and must not be removed by name alone. Then uninstall with `uv tool uninstall dependabot-watcher` or `pipx uninstall dependabot-watcher`, matching the installer originally used. Uninstalling leaves configuration, run history, plans, and execution audit evidence in place and has no GitHub effect. Delete local configuration or state only after confirming the exact paths and any retention requirement; deleting an audit log is not a recovery mechanism and does not undo a merge.
 
-Source-based updates and rollbacks should use an explicitly reviewed commit or release. Reinstall that checkout with `uv tool install --force .` or `pipx install --force .`, then rerun `doctor`, `inspect`, and `plan` before enabling execution. Until versioned distribution exists, a moving branch is not a reproducible installation target.
+Prefer exact published versions for updates and rollbacks. Source-based recovery should use an explicitly reviewed tag or commit, never a moving branch; reinstall that checkout with `uv tool install --force .` or `pipx install --force .`, then rerun `doctor`, `inspect`, and `plan` before enabling execution.

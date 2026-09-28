@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import importlib
 import os
 import re
 import stat
-import sys
+import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -15,9 +14,6 @@ from .runtime_state import (
     validate_private_file,
     validate_user_owned_directory,
 )
-
-tomllib = importlib.import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
-
 
 SCHEMA_VERSION = 1
 _MAX_CONFIG_BYTES = 5_000_000

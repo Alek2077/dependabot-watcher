@@ -1,26 +1,42 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dependabot-watcher"
-version = "0.3.0.dev0"
+dynamic = ["version"]
 description = "Local-first inspection and triage for Dependabot activity across repositories."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Alex Micic" },
+]
+keywords = [
+  "dependabot",
+  "dependency-management",
+  "github",
+  "security",
+]
 dependencies = [
   "PyYAML>=6.0",
-  "tomli>=2.0; python_version < '3.11'",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Alek2077/dependabot-watcher"
+Documentation = "https://github.com/Alek2077/dependabot-watcher#readme"
+Issues = "https://github.com/Alek2077/dependabot-watcher/issues"
+Repository = "https://github.com/Alek2077/dependabot-watcher"
 
 [project.optional-dependencies]
 dev = [
@@ -38,11 +54,14 @@ where = ["src"]
 [tool.setuptools.package-data]
 dependabot_watcher = ["prompts/*.md", "prompts/*.json"]
 
+[tool.setuptools.dynamic]
+version = { attr = "dependabot_watcher.__version__" }
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
 
 [tool.pyright]
 include = ["src", "tests"]
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 typeCheckingMode = "standard"

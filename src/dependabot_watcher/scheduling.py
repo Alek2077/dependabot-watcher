@@ -20,6 +20,12 @@ SUPPORTED_PLATFORMS = frozenset({"auto", "wsl", "windows", "systemd", "launchd"}
 SCHEDULE_ACTIONS = frozenset({"preview", "install", "status", "disable", "remove"})
 
 
+def _current_wsl_user() -> str:
+    import pwd
+
+    return pwd.getpwuid(os.getuid()).pw_name
+
+
 def detect_schedule_platform(requested: str = "auto") -> str:
     if requested not in SUPPORTED_PLATFORMS:
         raise ScheduleError(f"Unsupported scheduling platform: {requested}.")
@@ -48,12 +54,27 @@ def scheduler_adapter(
     runner: CommandRunner | None = None,
 ) -> SchedulerAdapter:
     if platform in {"wsl", "windows"}:
-        return WindowsTaskSchedulerAdapter(runner=runner)
+        return WindowsTaskSchedulerAdapter(
+            runner=runner,
+            inventory_platform=platform,
+            expected_wsl_user=_current_wsl_user() if platform == "wsl" else None,
+        )
     if platform == "systemd":
         return SystemdUserAdapter(runner=runner)
     if platform == "launchd":
         return LaunchdAdapter(runner=runner)
     raise ScheduleError(f"Unsupported scheduling platform: {platform}.")
+
+
+def inventory_schedules(
+    *,
+    requested_platform: str = "auto",
+    runner: CommandRunner | None = None,
+) -> dict[str, Any]:
+    """Discover current-user Watcher schedules without loading a profile or writing state."""
+
+    platform = detect_schedule_platform(requested_platform)
+    return scheduler_adapter(platform, runner=runner).inventory()
 
 
 def manage_schedule(
@@ -72,12 +93,10 @@ def manage_schedule(
         raise ScheduleError(f"Unsupported schedule action: {action}.")
     platform = detect_schedule_platform(requested_platform)
     if platform == "wsl":
-        import pwd
-
         distro = distro or os.getenv("WSL_DISTRO_NAME")
         if not distro:
             raise ScheduleError("WSL scheduling requires --distro or WSL_DISTRO_NAME.")
-        linux_user = pwd.getpwuid(os.getuid()).pw_name
+        linux_user = _current_wsl_user()
     elif distro is not None:
         raise ScheduleError("--distro is valid only for the WSL scheduler adapter.")
     else:
