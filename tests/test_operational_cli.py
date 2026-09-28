@@ -235,6 +235,52 @@ def test_cli_schedule_preview_routes_without_local_scheduler_mutation(
     assert Path(str(observed["executable"])).is_absolute()
 
 
+def test_cli_schedule_inventory_bypasses_profile_and_executable_resolution(
+    monkeypatch,
+    capsys,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("Inventory must not load a profile or resolve its executable")
+
+    def inventory(**kwargs):
+        observed.update(kwargs)
+        return {
+            "schema_version": 1,
+            "mode": "schedule",
+            "action": "inventory",
+            "status": "complete",
+            "changed": False,
+            "mutation_authorized": False,
+            "capabilities": {
+                "model_calls": False,
+                "persistent_local_writes": False,
+                "github_mutations": False,
+                "notifications": False,
+            },
+            "platform": "systemd",
+            "registration_count": 0,
+            "registrations": [],
+            "untrusted_candidates": [],
+            "next": "No recovery action is needed.",
+        }
+
+    monkeypatch.setattr(cli, "load_config", unexpected)
+    monkeypatch.setattr(cli, "_current_console_executable", unexpected)
+    monkeypatch.setattr(cli, "inventory_schedules", inventory)
+
+    exit_code = cli.main(
+        ["schedule", "inventory", "--platform", "systemd", "--format", "json"]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.ExitCode.SUCCESS
+    assert json.loads(captured.out)["action"] == "inventory"
+    assert observed == {"requested_platform": "systemd"}
+    assert captured.err == ""
+
+
 def test_cli_schedule_binds_the_invoked_console_script(
     tmp_path: Path,
     monkeypatch,

@@ -266,21 +266,23 @@ def test_load_plan_requires_complete_non_authorizing_json(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "error_pattern"),
     [
-        b"\xff\xfe\x00",
-        (b"[" * 2_000) + (b"]" * 2_000),
-        b'{"value":' + (b"9" * 5_000) + b"}",
+        (b"\xff\xfe\x00", "Could not read"),
+        ((b"[" * 2_000) + (b"]" * 2_000), "valid JSON|JSON object"),
+        (b'{"value":' + (b"9" * 5_000) + b"}", "valid JSON"),
     ],
     ids=("non_utf8", "deep_json", "oversized_integer"),
 )
 def test_load_plan_normalizes_pathological_json_errors(
-    tmp_path: Path, payload: bytes
+    tmp_path: Path,
+    payload: bytes,
+    error_pattern: str,
 ) -> None:
     path = tmp_path / "plan.json"
     path.write_bytes(payload)
 
-    with pytest.raises(ExecutionError, match="valid JSON|Could not read"):
+    with pytest.raises(ExecutionError, match=error_pattern):
         load_plan(path)
 
 

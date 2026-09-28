@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build release artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install validation and packaging tools
+        run: python -m pip install -e '.[dev]' build twine
+      - name: Validate release commit
+        run: |
+          pytest
+          pyright src/dependabot_watcher tests
+      - name: Build distributions once
+        run: python -m build
+      - name: Check metadata and tag version
+        run: |
+          python -m twine check --strict dist/*
+          python -m venv release-wheel-smoke
+          python -m venv release-sdist-smoke
+          release-wheel-smoke/bin/python -m pip install dist/*.whl
+          release-sdist-smoke/bin/python -m pip install dist/*.tar.gz
+          expected="${GITHUB_REF_NAME#v}"
+          wheel_actual="$(release-wheel-smoke/bin/dependabot-watcher --version | awk '{print $2}')"
+          sdist_actual="$(release-sdist-smoke/bin/dependabot-watcher --version | awk '{print $2}')"
+          test "$wheel_actual" = "$expected"
+          test "$sdist_actual" = "$expected"
+          release-wheel-smoke/bin/dependabot-watcher --help >/dev/null
+          release-sdist-smoke/bin/dependabot-watcher --help >/dev/null
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "dist/*"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/dependabot-watcher/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-distributions
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+
+  publish-github:
+    name: Publish GitHub release
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-distributions
+          path: dist
+      - name: Create release with verified artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --repo "$GITHUB_REPOSITORY"
+          --verify-tag
+          --generate-notes
+          --title "Dependabot Watcher $GITHUB_REF_NAME"

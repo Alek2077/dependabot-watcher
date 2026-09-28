@@ -104,7 +104,7 @@ def _parse_jsonl(stdout: str) -> tuple[Mapping[str, Any], Mapping[str, int]]:
 def _prompt_for(request: AdvisoryRequest) -> str:
     prompt_name = "triage.md" if request.role == "triage" else "review.md"
     base_prompt = (
-        resources.files(package="dependabot_watcher")
+        resources.files("dependabot_watcher")
         .joinpath("prompts")
         .joinpath(prompt_name)
         .read_text(encoding="utf-8")
@@ -140,7 +140,7 @@ class CodexCliProvider:
             raise AdvisoryError("Codex CLI advisory stage does not match the request role.")
         stage_config = self._stage_config(stage)
         schema_resource = (
-            resources.files(package="dependabot_watcher")
+            resources.files("dependabot_watcher")
             .joinpath("prompts")
             .joinpath("advisory-response.schema.json")
         )

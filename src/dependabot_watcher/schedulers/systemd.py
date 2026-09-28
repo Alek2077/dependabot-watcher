@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import shutil
 import stat
 import tempfile
@@ -17,8 +19,11 @@ from .common import (
     ScheduleError,
     ScheduleSpec,
     SubprocessRunner,
+    inventory_registration,
+    inventory_report,
     require_success,
     schedule_report,
+    validate_schedule_job_id,
 )
 
 
@@ -97,6 +102,126 @@ class SystemdUserAdapter:
         return (
             self._unit_directory / f"{spec.job_id}.service",
             self._unit_directory / f"{spec.job_id}.timer",
+        )
+
+    def _manager_candidate_names(self) -> set[str]:
+        names: set[str] = set()
+        systemctl = self._systemctl()
+        for operation in ("list-units", "list-unit-files"):
+            result = self._runner.run(
+                [
+                    systemctl,
+                    "--user",
+                    operation,
+                    "--all",
+                    "--plain",
+                    "--no-legend",
+                    "--full",
+                    "dependabot-watcher-*.service",
+                    "dependabot-watcher-*.timer",
+                ]
+            )
+            require_success(result, f"systemd {operation} inventory")
+            for line in result.stdout.splitlines():
+                fields = line.split()
+                if not fields:
+                    continue
+                unit = fields[1] if fields[0] == "●" and len(fields) > 1 else fields[0]
+                match = re.fullmatch(
+                    r"(dependabot-watcher-[^.]+)\.(?:service|timer)", unit
+                )
+                if match is not None:
+                    names.add(match.group(1))
+        return names
+
+    def inventory(self) -> dict[str, Any]:
+        names = self._manager_candidate_names()
+        if os.path.lexists(self._unit_directory):
+            try:
+                validate_user_owned_directory(self._unit_directory)
+            except RuntimeStateError as exc:
+                raise ScheduleError("Systemd user unit directory cannot be trusted.") from exc
+            names.update(
+                path.name.rsplit(".", 1)[0]
+                for pattern in ("dependabot-watcher-*.service", "dependabot-watcher-*.timer")
+                for path in self._unit_directory.glob(pattern)
+            )
+        registrations: list[dict[str, Any]] = []
+        untrusted: list[str] = []
+        for name in sorted(names):
+            try:
+                job_id = validate_schedule_job_id(name)
+            except ScheduleError:
+                untrusted.append(name)
+                continue
+            try:
+                service_path = self._unit_directory / f"{job_id}.service"
+                timer_path = self._unit_directory / f"{job_id}.timer"
+                service = (
+                    _read_definition(service_path)
+                    if os.path.lexists(service_path)
+                    else None
+                )
+                timer = (
+                    _read_definition(timer_path)
+                    if os.path.lexists(timer_path)
+                    else None
+                )
+                marker = f"X-DependabotWatcherJobId={job_id}"
+                if service is None or marker not in service.splitlines():
+                    raise ScheduleError("missing or unowned service definition")
+                if timer is not None and marker not in timer.splitlines():
+                    raise ScheduleError("unowned timer definition")
+                exec_line = next(
+                    (
+                        line.removeprefix("ExecStart=")
+                        for line in service.splitlines()
+                        if line.startswith("ExecStart=")
+                    ),
+                    None,
+                )
+                if exec_line is None:
+                    raise ScheduleError("owned service has no Watcher command")
+                run_argv = tuple(value.replace("%%", "%") for value in shlex.split(exec_line))
+                native_interval: int | None = None
+                if timer is not None:
+                    interval_line = next(
+                        (
+                            line
+                            for line in timer.splitlines()
+                            if line.startswith("OnUnitActiveSec=")
+                        ),
+                        None,
+                    )
+                    if interval_line is None:
+                        raise ScheduleError("owned timer has no interval")
+                    match = re.fullmatch(r"OnUnitActiveSec=([0-9]+)m", interval_line)
+                    if match is None:
+                        raise ScheduleError("owned timer has an invalid interval")
+                    native_interval = int(match.group(1))
+                registrations.append(
+                    inventory_registration(
+                        platform="systemd",
+                        job_id=job_id,
+                        run_argv=run_argv,
+                        native_identity=(
+                            f"{job_id}.timer"
+                            if timer is not None
+                            else f"{job_id}.service"
+                        ),
+                        authority="current user",
+                        native_interval_minutes=native_interval,
+                        native_complete=timer is not None,
+                        enabled=None,
+                        active=None,
+                    )
+                )
+            except (ScheduleError, ValueError) as exc:
+                untrusted.append(f"{job_id} ({exc})")
+        return inventory_report(
+            platform="systemd",
+            registrations=registrations,
+            untrusted_candidates=untrusted,
         )
 
     def _definition(self, spec: ScheduleSpec) -> dict[str, Any]:

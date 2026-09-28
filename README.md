@@ -4,53 +4,59 @@
 
 Dependabot Watcher is a local-first, provider-neutral control plane for Dependabot activity. It focuses on open pull requests authored by Dependabot, connects them to security alerts and recent sensitive changes, and can provide raw inspection facts, optional model-assisted advice, or a deterministic order of actions for handling the queue.
 
-The project is currently a **private pre-release with one narrow approval-gated action**. Inspection, advice, and planning remain non-mutating. An explicitly enabled `execute` command can merge one exact, freshly revalidated Dependabot pull request only after a separate preflight produces an action-bound approval confirmation token.
+The current `0.3` release line has one narrow approval-gated action. Inspection, advice, and planning remain non-mutating. An explicitly enabled `execute` command can merge one exact, freshly revalidated Dependabot pull request only after a separate preflight produces an action-bound approval confirmation token.
 
 It does not close, comment, approve, label, rebase an open PR branch, create remediation changes, clone target repositories, or execute mutations unattended. It may use GitHub's `rebase` merge method when explicitly configured. The default setup remains model-off and read-only. Optional `run` and `schedule` commands can persist bounded private reconciliation state, register a same-user native schedule, and deliver sparse desktop notifications; none of those capabilities authorizes GitHub mutation.
 
 The intended product end state is safe automation of the Dependabot maintenance loop: inspect, plan, recheck, execute only policy-authorized actions, and report what changed or still needs attention. Future provider adapters may use an officially supported subscription-authenticated CLI or an API credential, depending on what each provider permits. Deterministic collection, candidate grouping, sufficient decision-relevant context, and escalation only when useful should keep ordinary runs efficient without assuming that every repository needs the strongest available model.
 
-## Install and set up this private pre-release
+## Install and set up
 
-The current release is installed from a local source checkout. A package-index installation is planned before public release; Homebrew, standalone installers, and release binaries remain later distribution options rather than current claims.
+Install the published package from PyPI with `uv` (recommended) or `pipx`.
+Homebrew, standalone installers, and release binaries remain later distribution
+options rather than current claims.
+
+Before the first PyPI release, or when evaluating an unreleased revision, install
+an explicitly reviewed public tag or commit from a source checkout:
+
+```bash
+git clone https://github.com/Alek2077/dependabot-watcher.git
+cd dependabot-watcher
+git checkout EXACT_TAG_OR_COMMIT
+uv tool install .
+```
+
+The moving `main` branch is prerelease source, not a reproducible release target.
 
 Prerequisites:
 
-- Python 3.10 or newer;
+- Python 3.11 or newer;
 - [`uv`](https://docs.astral.sh/uv/) (recommended) or [`pipx`](https://pipx.pypa.io/);
 - [GitHub CLI](https://cli.github.com/) installed and authenticated; and
 - access to every configured repository and its Dependabot alerts.
 
 GitHub authorization is required because Dependabot security alerts and private repository evidence are not anonymous data. The current adapter uses `gh` for credential handling and bounded read-only collection; only explicitly approved `execute` can call the exact-head PR merge endpoint. No IDE is required, and the watcher does not inspect or reuse a VS Code login. The credential held by `gh` may have broader permissions than the watcher uses; a tested least-privilege credential profile is a gate for public release.
 
-Check the active GitHub CLI account before cloning:
+Check the active GitHub CLI account before setup:
 
 ```bash
 gh auth status
 gh auth login # only if no suitable account is authenticated
 ```
 
-Cloning Dependabot Watcher proves access to this source repository only. Each configured target repository and its Dependabot-alert API are separate access surfaces; `setup`, `doctor`, and a complete `inspect` verify them progressively.
-
-Clone the private repository and enter its directory:
+Install the command with `uv`:
 
 ```bash
-gh repo clone Alek2077/dependabot-watcher
-cd dependabot-watcher
+uv tool install dependabot-watcher
 ```
 
-Install the command with `uv` (recommended):
+`uv` installs Watcher in an isolated user-level tool environment and exposes
+the `dependabot-watcher` command without modifying the system Python.
+
+Alternatively, install with `pipx`:
 
 ```bash
-uv tool install .
-```
-
-Here `.` means the Python project in the current `dependabot-watcher` directory. `uv` installs it in an isolated user-level tool environment and exposes the `dependabot-watcher` command without modifying the system Python.
-
-Alternatively, install the same checkout with `pipx`:
-
-```bash
-pipx install .
+pipx install dependabot-watcher
 ```
 
 The recommended setup verifies GitHub CLI authentication and read-only access, discovers the repository's default branch, then creates a non-secret, model-off, read-only profile. Replace `OWNER/REPOSITORY` with the GitHub repository you want to inspect:
@@ -71,7 +77,7 @@ Choose the command that matches the result you want:
 | `dependabot-watcher plan` | Produces an ordered action list for the complete queue, using optional advice if configured; it does not execute the actions. |
 | `dependabot-watcher execute` | Revalidates one saved plan step, then either prints its exact approval confirmation token or uses that token to merge only the bound PR head. |
 | `dependabot-watcher run` | Performs one durable, non-mutating inspect/advice/plan reconciliation for manual or scheduled use. |
-| `dependabot-watcher schedule` | Previews or manages one Watcher-owned native host schedule without granting mutation authority. |
+| `dependabot-watcher schedule` | Inventories, previews, or manages Watcher-owned native host schedules without granting mutation authority. |
 
 Run the preflight, then inspect the evidence or request the ordered action list:
 
@@ -85,9 +91,9 @@ dependabot-watcher plan
 
 Dependabot Watcher is designed to remain usable directly while also giving
 agents a stable CLI and versioned JSON contract. The
-[agent operator guide](docs/agent-operator-guide.md) defines the portable
+[agent operator guide](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/agent-operator-guide.md) defines the portable
 workflow and authority boundaries. The
-[agent support matrix](docs/agent-support-matrix.md) distinguishes an agent
+[agent support matrix](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/agent-support-matrix.md) distinguishes an agent
 being able to operate the CLI, availability of a packaged skill/plugin, and the
 watcher's own optional advisory-provider support.
 
@@ -97,7 +103,7 @@ scheduler, credentials, or mutation code; it teaches a supported agent to
 invoke the same installed CLI. The prototype is for local validation and is not
 yet published to a public plugin directory. Source-checkout installation and
 current client evidence are documented in the
-[agent operator guide](docs/agent-operator-guide.md#optional-agent-package).
+[agent operator guide](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/agent-operator-guide.md#optional-agent-package).
 
 ### Why use Watcher with an agent?
 
@@ -111,7 +117,7 @@ A capable agent can investigate a dependency update directly. Watcher supplies r
 - one-action execution followed by reinspection and replanning; and
 - auditable execution, reconciliation, and recovery evidence.
 
-The agent supplies judgment; Watcher supplies dependable evidence and authority boundaries. Revision deduplication, bounded run history, native scheduling adapters, and sparse desktop notifications are now available in the private pre-release. Deeper tool-capable investigation and unattended mutation remain roadmap capabilities rather than current claims.
+The agent supplies judgment; Watcher supplies dependable evidence and authority boundaries. Revision deduplication, bounded run history, native scheduling adapters, and sparse desktop notifications are available in the current release line. Deeper tool-capable investigation and unattended mutation remain roadmap capabilities rather than current claims.
 
 Common output and scope options:
 
@@ -134,7 +140,7 @@ dependabot-watcher advise
 dependabot-watcher advise --format json
 ```
 
-Advice defaults to `off` (no AI). `economy` enables bounded AI triage, while `reviewed` adds a second AI review for selected candidates. Enabling either AI mode requires explicit provider configuration; see the [configuration reference](docs/configuration.md).
+Advice defaults to `off` (no AI). `economy` enables bounded AI triage, while `reviewed` adds a second AI review for selected candidates. Enabling either AI mode requires explicit provider configuration; see the [configuration reference](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/configuration.md).
 
 When advice is enabled, selected repository, PR, alert, dependency, changed-path, check, and deterministic-assessment evidence is sent to the configured provider. Candidate and call limits bound workload; they are not financial spending caps. Cost or subscription usage depends on the provider authentication configured outside the watcher.
 
@@ -149,7 +155,7 @@ dependabot-watcher setup \
   --acknowledge-model-use
 ```
 
-Use `--offline` only when setup cannot verify GitHub access; the resulting profile remains visibly unverified. Use `--branch owner/repository=branch` for an intentional branch override. See the [setup and diagnostics guide](docs/setup.md).
+Use `--offline` only when setup cannot verify GitHub access; the resulting profile remains visibly unverified. Use `--branch owner/repository=branch` for an intentional branch override. See the [setup and diagnostics guide](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/setup.md).
 
 `plan` always collects fresh inspection evidence and uses the configured advisory mode. With the default `off` mode it makes zero model calls. Its concise output shows current repository state followed by an ordered action list for the Dependabot queue, expected alert impact, blockers, and the reinspection gate after every step. Plans never authorize mutation.
 
@@ -237,15 +243,23 @@ dependabot-watcher run
 dependabot-watcher run --quiet --notify desktop
 ```
 
-`schedule` manages a stable Watcher-owned registration through Windows Task Scheduler for WSL2 or native Windows, a systemd user timer on Linux, or a LaunchAgent on macOS. Preview is non-mutating; install/update, status, disable, and remove operate only on the derived Watcher identity and refuse an unrelated native job at that identity.
+`schedule` discovers and manages stable Watcher-owned registrations through Windows Task Scheduler for WSL2 or native Windows, a systemd user timer on Linux, or a LaunchAgent on macOS. Inventory and preview are non-mutating; install/update, status, disable, and remove operate only on verified Watcher identities and refuse unrelated native jobs.
 
 ```bash
+dependabot-watcher schedule inventory
 dependabot-watcher schedule preview --interval-minutes 1440
 dependabot-watcher schedule install --interval-minutes 1440
 dependabot-watcher schedule status --interval-minutes 1440
 dependabot-watcher schedule disable --interval-minutes 1440
 dependabot-watcher schedule remove --interval-minutes 1440
 ```
+
+`schedule inventory` does not load a profile or require its configuration file to
+still exist. It scans only the current user's native scheduler, validates the
+Watcher ownership marker, embedded command, current-user authority, and
+configuration-derived job ID, then prints an exact recovery command. A matching
+name without that evidence is reported as untrusted and is never removal
+authority.
 
 WSL2 scheduling uses Windows Task Scheduler to start the exact distribution, originating Linux user, and Watcher console executable, so an open WSL terminal is unnecessary. Preview shows the actual trusted System32 WSL wrapper and its arguments. If the computer is asleep or powered off, no local process can run; the next available invocation performs one current-state catch-up rather than replaying every missed interval. `--notify desktop` sends only a bounded action message and next command, not the full private queue. Model calls still follow the profile's explicit advisory mode, model, reasoning, and workload budget.
 
@@ -289,22 +303,29 @@ Collection limits are explicit. If a repository exceeds one, the report says whi
 | `10` | Desktop notification delivery failed; the persisted run report remains authoritative for the reconciliation outcome |
 | `70` | Unexpected internal failure |
 
-The JSON output is versioned with `schema_version: 1`. See [the architecture](docs/architecture.md), [setup guide](docs/setup.md), [advisory contract](docs/advisory-contract.md), [planning contract](docs/planning-contract.md), [execution contract](docs/execution-contract.md), [output contract](docs/output-contract.md), [configuration reference](docs/configuration.md), and [roadmap](docs/roadmap.md).
+The JSON output is versioned with `schema_version: 1`. See [the architecture](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/architecture.md), [setup guide](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/setup.md), [advisory contract](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/advisory-contract.md), [planning contract](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/planning-contract.md), [execution contract](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/execution-contract.md), [output contract](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/output-contract.md), [configuration reference](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/configuration.md), and [roadmap](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/roadmap.md).
 
 ## Update, reset, uninstall, or roll back
 
-This private pre-release is installed from source. To update deliberately, fetch or clone the intended revision, review and verify its commit SHA, then reinstall from that checkout:
+Upgrade to the latest published release with the installer that owns the tool:
 
 ```bash
-uv tool install --force .
-# or: pipx install --force .
+uv tool upgrade dependabot-watcher
+# or: pipx upgrade dependabot-watcher
 ```
 
-To roll back, check out a previously reviewed commit or release before running the same forced reinstall. Do not treat a moving branch as a reproducible version.
+To pin or roll back, install an exact published version:
+
+```bash
+uv tool install --force dependabot-watcher==0.3.0
+# or: pipx install --force dependabot-watcher==0.3.0
+```
+
+Published versions are reproducible installation targets; a moving source branch is not.
 
 `doctor` prints the configuration path it actually loaded. Because `setup` refuses to overwrite it, reset safely by moving that file to a backup, running `setup` again, and deleting the backup only after the replacement works. `DEPENDABOT_WATCHER_CONFIG` can keep experimental profiles separate.
 
-Before uninstalling, run `dependabot-watcher schedule remove` with the same configuration, state directory, platform, cadence, notification, and WSL distribution arguments used to install each Watcher-owned schedule, then verify `schedule status` reports it missing. Watcher does not yet provide a cross-profile schedule inventory: preserve those registration arguments. If a profile path or registration arguments were lost, inspect the native scheduler and verify Watcher's embedded ownership marker, exact command, and current-user authority before removal; do not remove a similarly named job by name alone. Uninstall the executable with the installer that created it:
+Before uninstalling, run `dependabot-watcher schedule inventory` in every host context where Watcher scheduling was used—for example, once in native Windows PowerShell and once in WSL when both were configured. Each invocation inspects only that context's selected native scheduler. Use each listed `recovery_command` to remove forgotten or moved profiles, or use `schedule remove` with the original arguments when they remain available. Repeat inventory in every applicable context and confirm that no verified registrations remain. Untrusted name-matching candidates require manual investigation and must never be removed by name alone. Then uninstall the executable with the installer that created it:
 
 ```bash
 uv tool uninstall dependabot-watcher
@@ -315,9 +336,18 @@ Uninstalling does not delete the configuration or execution audit history and ne
 
 ## Platform status
 
-The strongest installed-path evidence is WSL2, including real Windows Task Scheduler wake-up, live collection, scheduled Codex advice, notification delivery, idempotent update, disable, and removal. Native Windows now has real private-state, locking, scheduler-lifecycle, and scheduled failure-path evidence, but not live native GitHub collection or the remaining release exercises. Native Linux/systemd and macOS/launchd remain deterministic-only. No implemented adapter becomes a public support claim until its platform gate is complete. Ubuntu CI covers the supported Python versions once this repository can run hosted workflows.
+Python 3.11–3.14 is the supported runtime range. The core CLI is validated separately from native background scheduling because each operating system has a different scheduler lifecycle.
 
-The private pre-release currently retains Python 3.10 compatibility so it can be validated in the existing WSL environment. Before public release, the project must move its minimum to a still-supported Python version and align packaging metadata, classifiers, static analysis, CI, and installation validation with that floor.
+| Surface | `0.3` status |
+|---|---|
+| WSL2 CLI and Windows Task Scheduler operation | Supported after final release-candidate verification |
+| Native Windows CLI and Task Scheduler operation | Supported after final release-candidate verification |
+| Native Linux CLI | Release gate: hosted CI and installed-path verification |
+| Native Linux systemd user scheduling | Experimental pending real native-Linux acceptance |
+| macOS CLI | Release gate: hosted CI and installed-path verification |
+| macOS launchd scheduling | Experimental pending real macOS acceptance |
+
+Experimental scheduler adapters remain available for evaluation, but they are not yet support claims.
 
 The run-once reconciler remains scheduler-independent. GitHub Actions or another always-on remote runner, additional model providers, richer notification destinations, and unattended mutation remain later separately tested capabilities.
 
@@ -329,6 +359,12 @@ pytest
 ```
 
 Material features and onboarding changes should also pass the documented
-[installed-path validation workflow](docs/validation-workflow.md).
+[installed-path validation workflow](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/validation-workflow.md).
 
 This repository intentionally contains only synthetic examples and fixtures. Private repository identities, workstation paths, schedules, notification settings, and historical runtime artifacts belong outside the product source.
+
+## Support, security, and license
+
+Community support is available through [GitHub Issues](https://github.com/Alek2077/dependabot-watcher/issues) on a best-effort basis without a guaranteed response or resolution time. Report security vulnerabilities privately as described in [SECURITY.md](https://github.com/Alek2077/dependabot-watcher/blob/main/SECURITY.md). Contribution guidance is in [CONTRIBUTING.md](https://github.com/Alek2077/dependabot-watcher/blob/main/CONTRIBUTING.md).
+
+Copyright 2026 Alex Micic. Licensed under the [Apache License 2.0](https://github.com/Alek2077/dependabot-watcher/blob/main/LICENSE).

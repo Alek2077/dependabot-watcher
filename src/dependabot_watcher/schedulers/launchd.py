@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import shutil
 import stat
 import tempfile
@@ -22,8 +23,11 @@ from .common import (
     ScheduleError,
     ScheduleSpec,
     SubprocessRunner,
+    inventory_registration,
+    inventory_report,
     require_success,
     schedule_report,
+    validate_schedule_job_id,
 )
 
 
@@ -128,6 +132,83 @@ class LaunchdAdapter:
 
     def _registration_owned(self, spec: ScheduleSpec) -> bool:
         return self._registration(spec) is not None
+
+    def _manager_candidate_labels(self) -> set[str]:
+        result = self._runner.run(
+            [self._launchctl(), "print", f"gui/{self._user_id}"]
+        )
+        require_success(result, "launchd inventory")
+        return set(
+            re.findall(
+                r"\bcom\.dependabot-watcher\.[A-Za-z0-9._-]+\b",
+                result.stdout,
+            )
+        )
+
+    def inventory(self) -> dict[str, Any]:
+        labels = self._manager_candidate_labels()
+        if os.path.lexists(self._agent_directory):
+            try:
+                validate_user_owned_directory(self._agent_directory)
+            except RuntimeStateError as exc:
+                raise ScheduleError("LaunchAgents directory cannot be trusted.") from exc
+            labels.update(
+                path.name.removesuffix(".plist")
+                for path in self._agent_directory.glob("com.dependabot-watcher.*.plist")
+            )
+        registrations: list[dict[str, Any]] = []
+        untrusted: list[str] = []
+        for label in sorted(labels):
+            path = self._agent_directory / f"{label}.plist"
+            suffix = label.removeprefix("com.dependabot-watcher.")
+            candidate = label
+            try:
+                job_id = validate_schedule_job_id(f"dependabot-watcher-{suffix}")
+                if not os.path.lexists(path):
+                    raise ScheduleError("loaded manager job has no trusted definition")
+                stored = plistlib.loads(_read_plist(path))
+                if not isinstance(stored, dict):
+                    raise ScheduleError("definition has an invalid shape")
+                environment = stored.get("EnvironmentVariables")
+                marker = (
+                    environment.get("DEPENDABOT_WATCHER_JOB_ID")
+                    if isinstance(environment, dict)
+                    else None
+                )
+                if stored.get("Label") != label or marker != job_id:
+                    raise ScheduleError("definition has mismatched ownership markers")
+                arguments = stored.get("ProgramArguments")
+                if not isinstance(arguments, list) or not arguments or any(
+                    not isinstance(item, str) for item in arguments
+                ):
+                    raise ScheduleError("definition has an invalid Watcher command")
+                interval_seconds = stored.get("StartInterval")
+                if (
+                    isinstance(interval_seconds, bool)
+                    or not isinstance(interval_seconds, int)
+                    or interval_seconds <= 0
+                    or interval_seconds % 60 != 0
+                ):
+                    raise ScheduleError("definition has an invalid native interval")
+                registrations.append(
+                    inventory_registration(
+                        platform="launchd",
+                        job_id=job_id,
+                        run_argv=arguments,
+                        native_identity=label,
+                        authority="current GUI user",
+                        native_interval_minutes=interval_seconds // 60,
+                        enabled=None,
+                        active=None,
+                    )
+                )
+            except (OSError, plistlib.InvalidFileException, ScheduleError) as exc:
+                untrusted.append(f"{candidate} ({exc})")
+        return inventory_report(
+            platform="launchd",
+            registrations=registrations,
+            untrusted_candidates=untrusted,
+        )
 
     def _save_registration(self, spec: ScheduleSpec, *, disabled: bool) -> None:
         try:

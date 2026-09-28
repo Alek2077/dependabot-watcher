@@ -27,7 +27,7 @@ from .reconciliation import (
 from .reconciliation_output import render_reconciliation
 from .runtime_state import default_state_directory
 from .schedulers.common import ScheduleError
-from .scheduling import manage_schedule
+from .scheduling import inventory_schedules, manage_schedule
 from .scheduling_output import render_schedule
 from .setup import SetupError, SetupRequest, setup
 from .terminal import (
@@ -176,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     schedule_parser = commands.add_parser(
         "schedule",
-        help="Preview or manage one native host-scheduler registration.",
+        help="Inventory, preview, or manage native host-scheduler registrations.",
     )
     schedule_commands = schedule_parser.add_subparsers(
         dest="schedule_action",
@@ -191,9 +191,17 @@ def build_parser() -> argparse.ArgumentParser:
                 "status": "Read back native schedule state and report drift.",
                 "disable": "Disable the Watcher-owned schedule without removing it.",
                 "remove": "Remove only the Watcher-owned native schedule.",
+                "inventory": "Discover current-user Watcher schedules and recovery commands.",
             }[action],
         )
-        for action in ("preview", "install", "status", "disable", "remove")
+        for action in (
+            "inventory",
+            "preview",
+            "install",
+            "status",
+            "disable",
+            "remove",
+        )
     }
     for command_parser in (
         inspect_parser,
@@ -409,6 +417,21 @@ def build_parser() -> argparse.ArgumentParser:
             help="Disable animation and terminal styling for accessible human output.",
         )
         schedule_action_parser.add_argument(
+            "--platform",
+            choices=("auto", "wsl", "windows", "systemd", "launchd"),
+            default="auto",
+            help="Native scheduler adapter (default: detect current platform).",
+        )
+        schedule_action_parser.add_argument(
+            "--format",
+            choices=("text", "json", "markdown"),
+            default="text",
+            dest="output_format",
+        )
+    for action, schedule_action_parser in schedule_action_parsers.items():
+        if action == "inventory":
+            continue
+        schedule_action_parser.add_argument(
             "--config",
             type=Path,
             default=default_config_path(),
@@ -419,12 +442,6 @@ def build_parser() -> argparse.ArgumentParser:
             type=Path,
             default=default_state_directory(),
             help="Private reconciler state directory bound to this schedule.",
-        )
-        schedule_action_parser.add_argument(
-            "--platform",
-            choices=("auto", "wsl", "windows", "systemd", "launchd"),
-            default="auto",
-            help="Native scheduler adapter (default: detect current platform).",
         )
         schedule_action_parser.add_argument(
             "--interval-minutes",
@@ -441,12 +458,6 @@ def build_parser() -> argparse.ArgumentParser:
             choices=("off", "desktop"),
             default="off",
             help="Notification mode recorded in the scheduled run command.",
-        )
-        schedule_action_parser.add_argument(
-            "--format",
-            choices=("text", "json", "markdown"),
-            default="text",
-            dest="output_format",
         )
     return parser
 
@@ -670,6 +681,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.schedule_action in {"preview", "install"}:
                 load_config(args.config)
             schedule_progress = {
+                "inventory": "Discovering current-user Watcher schedules...",
                 "preview": "Preparing the native Watcher schedule preview...",
                 "install": "Installing the native Watcher schedule...",
                 "status": "Checking the native Watcher schedule...",
@@ -681,16 +693,19 @@ def main(argv: list[str] | None = None) -> int:
                 presentation=presentation,
                 stream=sys.stderr,
             ):
-                report = manage_schedule(
-                    args.schedule_action,
-                    config_path=args.config,
-                    state_directory=args.state_dir,
-                    interval_minutes=args.interval_minutes,
-                    notification_mode=args.notify,
-                    requested_platform=args.platform,
-                    distro=args.distro,
-                    executable=_current_console_executable(),
-                )
+                if args.schedule_action == "inventory":
+                    report = inventory_schedules(requested_platform=args.platform)
+                else:
+                    report = manage_schedule(
+                        args.schedule_action,
+                        config_path=args.config,
+                        state_directory=args.state_dir,
+                        interval_minutes=args.interval_minutes,
+                        notification_mode=args.notify,
+                        requested_platform=args.platform,
+                        distro=args.distro,
+                        executable=_current_console_executable(),
+                    )
             _write_report(render_schedule(report, args.output_format), presentation)
             return ExitCode.SUCCESS
         config = _select_repositories(load_config(args.config), args.repositories)

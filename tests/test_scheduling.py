@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Sequence
@@ -13,9 +14,17 @@ from dependabot_watcher.schedulers import launchd as launchd_module
 from dependabot_watcher.schedulers.common import CommandResult, ScheduleError, schedule_spec
 from dependabot_watcher.schedulers.launchd import LaunchdAdapter
 from dependabot_watcher.schedulers.systemd import SystemdUserAdapter
-from dependabot_watcher.schedulers.windows import WindowsTaskSchedulerAdapter
-from dependabot_watcher.scheduling import detect_schedule_platform, manage_schedule
+from dependabot_watcher.schedulers.windows import (
+    WindowsTaskSchedulerAdapter,
+    _split_windows_command_line,
+)
+from dependabot_watcher.scheduling import (
+    detect_schedule_platform,
+    inventory_schedules,
+    manage_schedule,
+)
 from dependabot_watcher.scheduling_output import render_schedule
+from dependabot_watcher import scheduling_output
 from dependabot_watcher.runtime_state import save_private_json
 
 
@@ -42,6 +51,14 @@ class _SuccessRunner:
             self.launchd_job_id = None
             return CommandResult(0, "", "")
         if "print" in command:
+            if command[-1] == "gui/501":
+                label = (
+                    ""
+                    if self.launchd_job_id is None
+                    else "com.dependabot-watcher."
+                    + self.launchd_job_id.removeprefix("dependabot-watcher-")
+                )
+                return CommandResult(0, label + "\n" if label else "", "")
             if self.launchd_job_id is None:
                 return CommandResult(113, "", "not found")
             return CommandResult(
@@ -98,6 +115,23 @@ class _WindowsRunner:
         if "-TaskPath" in script:
             assert "$payload.task_path" in script
             assert payload["task_path"] == "\\"
+        if "@{tasks=$tasks}" in script:
+            tasks: list[dict[str, Any]] = []
+            if self.xml is not None:
+                root = ET.fromstring(self.xml)
+                namespace = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+                uri = root.find("t:RegistrationInfo/t:URI", namespace)
+                assert uri is not None and uri.text is not None
+                tasks.append(
+                    {
+                        "name": uri.text.removeprefix("\\"),
+                        "task_path": self.task_path,
+                        "state": "Ready" if self.enabled else "Disabled",
+                        "enabled": self.enabled,
+                        "xml": self.xml,
+                    }
+                )
+            return CommandResult(0, json.dumps({"tasks": tasks}), "")
         if "Register-ScheduledTask" in script:
             self.xml = payload["xml"]
             self.enabled = True
@@ -282,6 +316,45 @@ class _SystemdInactiveEnabledRunner(_SuccessRunner):
         return result
 
 
+class _SystemdInventoryCandidateRunner:
+    def __init__(self, job_id: str) -> None:
+        self.job_id = job_id
+
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        input_text: str | None = None,
+        timeout_seconds: int = 60,
+    ) -> CommandResult:
+        if "list-units" in command:
+            return CommandResult(
+                0,
+                f"{self.job_id}.service loaded active running Watcher\n",
+                "",
+            )
+        if "list-unit-files" in command:
+            return CommandResult(0, "", "")
+        raise AssertionError(f"Unexpected command: {command}")
+
+
+class _WindowsInventoryFailureRunner(_WindowsRunner):
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        input_text: str | None = None,
+        timeout_seconds: int = 60,
+    ) -> CommandResult:
+        if "@{tasks=$tasks}" in command[-1]:
+            return CommandResult(1, "", "access denied")
+        return super().run(
+            command,
+            input_text=input_text,
+            timeout_seconds=timeout_seconds,
+        )
+
+
 def _spec(
     tmp_path: Path,
     *,
@@ -310,6 +383,7 @@ def _windows_adapter(
     runner: _WindowsRunner,
     *,
     windows_user: str = "DESKTOP\\alex",
+    inventory_platform: str | None = None,
 ) -> WindowsTaskSchedulerAdapter:
     powershell = tmp_path / "Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
     wsl = tmp_path / "Windows/System32/wsl.exe"
@@ -322,6 +396,8 @@ def _windows_adapter(
         windows_user=windows_user,
         powershell_path=powershell,
         wsl_path=wsl,
+        inventory_platform=inventory_platform,
+        expected_wsl_user="alex" if inventory_platform == "wsl" else None,
     )
 
 
@@ -347,6 +423,90 @@ def test_schedule_spec_is_stable_and_binds_exact_run_command(tmp_path: Path) -> 
 
     notified = _spec(tmp_path, platform="systemd", notification_mode="desktop")
     assert notified.run_argv[-2:] == ("--notify", "desktop")
+
+
+def test_systemd_inventory_recovers_owned_profile_without_loading_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _spec(tmp_path, platform="systemd")
+    monkeypatch.setattr(
+        "dependabot_watcher.schedulers.systemd.shutil.which",
+        lambda command: f"/usr/bin/{command}",
+    )
+    adapter = SystemdUserAdapter(
+        runner=_SuccessRunner(), unit_directory=tmp_path / "systemd"
+    )
+    definition = adapter.preview(spec)["definition"]
+    service_path = Path(definition["service_path"])
+    timer_path = Path(definition["timer_path"])
+    service_path.parent.mkdir(parents=True)
+    service_path.write_text(definition["service"], encoding="utf-8")
+    timer_path.write_text(definition["timer"], encoding="utf-8")
+    service_path.chmod(0o600)
+    timer_path.chmod(0o600)
+
+    report = adapter.inventory()
+
+    assert report["status"] == "complete"
+    assert report["registration_count"] == 1
+    registration = report["registrations"][0]
+    assert registration["job_id"] == spec.job_id
+    assert registration["config_path"] == str(spec.config_path)
+    assert registration["state_directory"] == str(spec.state_directory)
+    assert registration["native_complete"] is True
+    assert registration["drifted"] is False
+    assert registration["recovery_command"][:4] == [
+        "dependabot-watcher",
+        "schedule",
+        "remove",
+        "--platform",
+    ]
+
+
+def test_systemd_inventory_never_trusts_name_matching_alone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _spec(tmp_path, platform="systemd")
+    directory = tmp_path / "systemd"
+    directory.mkdir()
+    candidate = directory / f"{spec.job_id}.service"
+    candidate.write_text("[Service]\nExecStart=/bin/true\n", encoding="utf-8")
+    candidate.chmod(0o600)
+
+    monkeypatch.setattr(
+        "dependabot_watcher.schedulers.systemd.shutil.which",
+        lambda command: f"/usr/bin/{command}",
+    )
+    report = SystemdUserAdapter(
+        runner=_SuccessRunner(), unit_directory=directory
+    ).inventory()
+
+    assert report["status"] == "attention"
+    assert report["registrations"] == []
+    assert spec.job_id.removeprefix("dependabot-watcher-") in report[
+        "untrusted_candidates"
+    ][0]
+
+
+def test_systemd_inventory_reports_manager_only_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _spec(tmp_path, platform="systemd")
+    monkeypatch.setattr(
+        "dependabot_watcher.schedulers.systemd.shutil.which",
+        lambda command: f"/usr/bin/{command}",
+    )
+    report = SystemdUserAdapter(
+        runner=_SystemdInventoryCandidateRunner(spec.job_id),
+        unit_directory=tmp_path / "missing-systemd",
+    ).inventory()
+
+    assert report["status"] == "attention"
+    assert report["registrations"] == []
+    assert spec.job_id in report["untrusted_candidates"][0]
 
 
 def test_systemd_lifecycle_is_idempotent_and_reports_drift(
@@ -546,6 +706,61 @@ def test_launchd_lifecycle_reads_back_owned_definition(
     assert any("enable" in command for command in runner.commands)
     assert not Path(installed["definition"]["path"]).exists()
     assert not (spec.state_directory / "schedules" / f"launchd-{spec.job_id}.json").exists()
+
+
+def test_launchd_inventory_recovers_owned_profile_without_state_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _spec(tmp_path, platform="launchd")
+    monkeypatch.setattr(
+        "dependabot_watcher.schedulers.launchd.shutil.which",
+        lambda command: f"/bin/{command}",
+    )
+    adapter = LaunchdAdapter(
+        runner=_SuccessRunner(),
+        agent_directory=tmp_path / "LaunchAgents",
+        user_id=501,
+    )
+    definition = adapter.preview(spec)["definition"]
+    path = Path(definition["path"])
+    path.parent.mkdir(parents=True)
+    path.write_bytes(plistlib.dumps(definition["plist"]))
+    path.chmod(0o600)
+
+    report = adapter.inventory()
+
+    assert report["status"] == "complete"
+    assert report["registration_count"] == 1
+    registration = report["registrations"][0]
+    assert registration["job_id"] == spec.job_id
+    assert registration["native_identity"] == definition["label"]
+    assert registration["native_interval_minutes"] == 60
+    assert registration["recovery_command"][4:6] == ["launchd", "--config"]
+
+
+def test_launchd_inventory_reports_manager_only_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _spec(tmp_path, platform="launchd")
+    runner = _SuccessRunner()
+    runner.launchd_job_id = spec.job_id
+    monkeypatch.setattr(
+        "dependabot_watcher.schedulers.launchd.shutil.which",
+        lambda command: f"/bin/{command}",
+    )
+    report = LaunchdAdapter(
+        runner=runner,
+        agent_directory=tmp_path / "missing-LaunchAgents",
+        user_id=501,
+    ).inventory()
+
+    assert report["status"] == "attention"
+    assert report["registrations"] == []
+    assert spec.job_id.removeprefix("dependabot-watcher-") in report[
+        "untrusted_candidates"
+    ][0]
 
 
 def test_launchd_identical_install_does_not_reload_active_job(
@@ -978,6 +1193,157 @@ def test_windows_wsl_lifecycle_preserves_exact_distro_and_readback(tmp_path: Pat
     )
 
 
+def test_windows_command_line_parser_round_trips_generated_arguments() -> None:
+    arguments = [
+        "run",
+        "",
+        "plain",
+        "two words",
+        'embedded"quote',
+        "trailing\\",
+        'slashes\\\\before"quote',
+    ]
+
+    assert _split_windows_command_line(subprocess.list2cmdline(arguments)) == arguments
+
+
+@pytest.mark.parametrize(
+    ("platform", "distro"),
+    [("windows", None), ("wsl", "Ubuntu-24.04")],
+)
+def test_windows_inventory_recovers_owned_current_user_task(
+    tmp_path: Path,
+    platform: str,
+    distro: str | None,
+) -> None:
+    runner = _WindowsRunner()
+    adapter = _windows_adapter(
+        tmp_path,
+        runner,
+        inventory_platform=platform,
+    )
+    spec = _spec(tmp_path, platform=platform, distro=distro)
+    runner.xml = adapter.preview(spec)["definition"]["xml"]
+    runner.enabled = True
+
+    report = adapter.inventory()
+
+    assert report["status"] == "complete"
+    assert report["registration_count"] == 1
+    registration = report["registrations"][0]
+    assert registration["platform"] == platform
+    assert registration["job_id"] == spec.job_id
+    assert registration["enabled"] is True
+    assert registration["distro"] == distro
+    assert registration["recovery_command"][4:6] == [platform, "--config"]
+
+
+def test_windows_inventory_rejects_marker_owned_by_another_principal(
+    tmp_path: Path,
+) -> None:
+    runner = _WindowsRunner()
+    adapter = _windows_adapter(
+        tmp_path,
+        runner,
+        windows_user="S-1-5-21-current",
+        inventory_platform="windows",
+    )
+    spec = _spec(tmp_path, platform="windows")
+    runner.xml = adapter.preview(spec)["definition"]["xml"].replace(
+        "S-1-5-21-current",
+        "S-1-5-21-other",
+    )
+
+    report = adapter.inventory()
+
+    assert report["status"] == "attention"
+    assert report["registrations"] == []
+    assert spec.job_id in report["untrusted_candidates"][0]
+
+
+def test_windows_inventory_fails_closed_when_task_query_fails(tmp_path: Path) -> None:
+    adapter = _windows_adapter(tmp_path, _WindowsInventoryFailureRunner())
+
+    with pytest.raises(ScheduleError, match="PowerShell operation failed"):
+        adapter.inventory()
+
+
+def test_windows_inventory_rejects_unexpected_owned_command(tmp_path: Path) -> None:
+    runner = _WindowsRunner()
+    adapter = _windows_adapter(tmp_path, runner, inventory_platform="windows")
+    spec = _spec(tmp_path, platform="windows")
+    expected = str(spec.executable)
+    runner.xml = adapter.preview(spec)["definition"]["xml"].replace(
+        expected,
+        str(spec.executable.with_name("other-tool")),
+    )
+
+    report = adapter.inventory()
+
+    assert report["status"] == "attention"
+    assert report["registrations"] == []
+    assert "invalid executable" in report["untrusted_candidates"][0]
+
+
+def test_windows_inventory_rejects_missing_native_interval(tmp_path: Path) -> None:
+    runner = _WindowsRunner()
+    adapter = _windows_adapter(tmp_path, runner, inventory_platform="windows")
+    spec = _spec(tmp_path, platform="windows")
+    runner.xml = adapter.preview(spec)["definition"]["xml"].replace(
+        "<Interval>PT60M</Interval>",
+        "",
+    )
+
+    report = adapter.inventory()
+
+    assert report["status"] == "attention"
+    assert report["registrations"] == []
+    assert "interval is missing" in report["untrusted_candidates"][0]
+
+
+def test_windows_inventory_rejects_untrusted_wsl_wrapper(tmp_path: Path) -> None:
+    runner = _WindowsRunner()
+    adapter = _windows_adapter(tmp_path, runner, inventory_platform="wsl")
+    spec = _spec(tmp_path, platform="wsl", distro="Ubuntu-24.04")
+    expected = adapter.preview(spec)["definition"]["command"]
+    runner.xml = adapter.preview(spec)["definition"]["xml"].replace(
+        expected,
+        str(tmp_path / "Untrusted/wsl.exe"),
+    )
+
+    report = adapter.inventory()
+
+    assert report["status"] == "attention"
+    assert report["registrations"] == []
+    assert "untrusted wrapper" in report["untrusted_candidates"][0]
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        ("--user alex", "--user root"),
+        ("PATH=", "PATH=/tmp#"),
+    ],
+)
+def test_windows_inventory_rejects_altered_wsl_user_or_path(
+    tmp_path: Path,
+    original: str,
+    replacement: str,
+) -> None:
+    runner = _WindowsRunner()
+    adapter = _windows_adapter(tmp_path, runner, inventory_platform="wsl")
+    spec = _spec(tmp_path, platform="wsl", distro="Ubuntu-24.04")
+    xml = adapter.preview(spec)["definition"]["xml"]
+    assert original in xml
+    runner.xml = xml.replace(original, replacement, 1)
+
+    report = adapter.inventory()
+
+    assert report["status"] == "attention"
+    assert report["registrations"] == []
+    assert "untrusted user or PATH" in report["untrusted_candidates"][0]
+
+
 def test_windows_wsl_desktop_schedule_binds_resolved_powershell_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1182,6 +1548,59 @@ def test_schedule_cleanup_does_not_require_resolving_current_executable(
     assert captured[0].executable.name == "dependabot-watcher"
 
 
+def test_schedule_inventory_requires_no_profile_or_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Adapter:
+        def inventory(self):
+            return {"action": "inventory", "status": "complete"}
+
+    monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    monkeypatch.setattr(
+        "dependabot_watcher.scheduling.scheduler_adapter",
+        lambda platform, runner=None: _Adapter(),
+    )
+
+    assert inventory_schedules(requested_platform="systemd") == {
+        "action": "inventory",
+        "status": "complete",
+    }
+
+
+def test_schedule_inventory_human_output_exposes_recovery_and_untrusted_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _spec(tmp_path, platform="systemd")
+    monkeypatch.setattr(
+        "dependabot_watcher.schedulers.systemd.shutil.which",
+        lambda command: f"/usr/bin/{command}",
+    )
+    adapter = SystemdUserAdapter(
+        runner=_SuccessRunner(), unit_directory=tmp_path / "systemd"
+    )
+    definition = adapter.preview(spec)["definition"]
+    service_path = Path(definition["service_path"])
+    timer_path = Path(definition["timer_path"])
+    service_path.parent.mkdir(parents=True)
+    service_path.write_text(definition["service"], encoding="utf-8")
+    timer_path.write_text(definition["timer"], encoding="utf-8")
+    service_path.chmod(0o600)
+    timer_path.chmod(0o600)
+    untrusted = service_path.parent / "dependabot-watcher-not-a-hash.service"
+    untrusted.write_text("unrelated", encoding="utf-8")
+    untrusted.chmod(0o600)
+    report = adapter.inventory()
+
+    text = render_schedule(report, "text")
+    markdown = render_schedule(report, "markdown")
+
+    assert "Verified registrations: 1" in text
+    assert "Recovery: dependabot-watcher schedule remove" in text
+    assert "Untrusted candidates (never removal authority)" in text
+    assert "GitHub mutation authorized: **no**" in markdown
+
+
 def test_schedule_human_output_exposes_authority_and_no_github_mutation(
     tmp_path: Path,
 ) -> None:
@@ -1196,7 +1615,22 @@ def test_schedule_human_output_exposes_authority_and_no_github_mutation(
     assert "Missed runs: one current-state catch-up" in text
     assert "GitHub mutation authorized: no" in text
     assert "Authority: DESKTOP\\alex" in text
-    assert "--distribution Ubuntu --user alex" in text
+    assert "'--distribution' 'Ubuntu' '--user' 'alex'" in text
     assert "Output: Watcher runtime state" in text
     assert "GitHub mutation authorized: **no**" in markdown
     assert structured["definition"]["authority"] == "DESKTOP\\alex"
+
+
+def test_windows_recovery_command_is_powershell_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(scheduling_output.os, "name", "nt")
+
+    rendered = scheduling_output._command(
+        ["dependabot-watcher", "schedule", "remove", "C:\\O'Brien; Remove-Item *"]
+    )
+
+    assert rendered == (
+        "& 'dependabot-watcher' 'schedule' 'remove' "
+        "'C:\\O''Brien; Remove-Item *'"
+    )

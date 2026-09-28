@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Mapping
 
 from .common import (
@@ -14,8 +14,11 @@ from .common import (
     ScheduleError,
     ScheduleSpec,
     SubprocessRunner,
+    inventory_registration,
+    inventory_report,
     require_success,
     schedule_report,
+    validate_schedule_job_id,
 )
 from ..windows_helpers import (
     WindowsHelperError,
@@ -55,6 +58,51 @@ def _interval_minutes(value: str | None) -> int | str | None:
     )
 
 
+def _split_windows_command_line(value: str) -> list[str]:
+    """Parse the quoting emitted by subprocess.list2cmdline without executing it."""
+
+    arguments: list[str] = []
+    index = 0
+    while index < len(value):
+        while index < len(value) and value[index] in " \t":
+            index += 1
+        if index >= len(value):
+            break
+        argument: list[str] = []
+        quoted = False
+        while index < len(value):
+            character = value[index]
+            if character in " \t" and not quoted:
+                break
+            if character == "\\":
+                start = index
+                while index < len(value) and value[index] == "\\":
+                    index += 1
+                backslashes = index - start
+                if index < len(value) and value[index] == '"':
+                    argument.extend("\\" for _ in range(backslashes // 2))
+                    if backslashes % 2:
+                        argument.append('"')
+                    else:
+                        quoted = not quoted
+                    index += 1
+                else:
+                    argument.extend("\\" for _ in range(backslashes))
+                continue
+            if character == '"':
+                quoted = not quoted
+                index += 1
+                continue
+            argument.append(character)
+            index += 1
+        if quoted:
+            raise ScheduleError("Windows task command line has an unmatched quote.")
+        arguments.append("".join(argument))
+        while index < len(value) and value[index] in " \t":
+            index += 1
+    return arguments
+
+
 class WindowsTaskSchedulerAdapter:
     def __init__(
         self,
@@ -63,11 +111,17 @@ class WindowsTaskSchedulerAdapter:
         windows_user: str | None = None,
         powershell_path: Path | None = None,
         wsl_path: Path | None = None,
+        inventory_platform: str | None = None,
+        expected_wsl_user: str | None = None,
     ) -> None:
         self._runner = runner or SubprocessRunner()
         self._windows_user = windows_user
         self._powershell_path = powershell_path
         self._wsl_path = wsl_path
+        self._expected_wsl_user = expected_wsl_user
+        if inventory_platform not in {None, "windows", "wsl"}:
+            raise ScheduleError("Windows scheduler inventory platform is invalid.")
+        self._inventory_platform = inventory_platform
 
     def _powershell(self) -> str:
         if self._powershell_path is not None:
@@ -124,22 +178,125 @@ class WindowsTaskSchedulerAdapter:
         self._windows_user = value
         return value
 
+    def inventory(self) -> dict[str, Any]:
+        script = """
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$tasks = @(Get-ScheduledTask -TaskPath $payload.task_path -ErrorAction Stop | Where-Object {
+  $_.TaskName -like 'dependabot-watcher-*'
+} | ForEach-Object {
+  $xml = Export-ScheduledTask -TaskPath $_.TaskPath -TaskName $_.TaskName -ErrorAction Stop
+  @{name=$_.TaskName; task_path=$_.TaskPath; state=$_.State.ToString(); enabled=($_.Settings.Enabled -eq $true); xml=$xml}
+})
+@{tasks=$tasks} | ConvertTo-Json -Depth 5 -Compress
+""".strip()
+        result = self._run_script(script, {"task_path": _ROOT_TASK_PATH})
+        raw_tasks = result.get("tasks")
+        if not isinstance(raw_tasks, list):
+            raise ScheduleError("Windows Task Scheduler returned an invalid inventory shape.")
+        registrations: list[dict[str, Any]] = []
+        untrusted: list[str] = []
+        current_user = self._user()
+        for raw_task in raw_tasks:
+            candidate = "unknown Windows task"
+            try:
+                if not isinstance(raw_task, Mapping):
+                    raise ScheduleError("candidate has an invalid shape")
+                name = raw_task.get("name")
+                candidate = str(name or candidate)
+                job_id = validate_schedule_job_id(name)
+                if raw_task.get("task_path") != _ROOT_TASK_PATH:
+                    raise ScheduleError("candidate is outside the root task path")
+                xml = raw_task.get("xml")
+                if not isinstance(xml, str):
+                    raise ScheduleError("candidate has no readable task definition")
+                normalized = self._normalized_xml(xml)
+                if (
+                    normalized.get("source") != "Dependabot Watcher"
+                    or normalized.get("uri") != f"\\{job_id}"
+                    or normalized.get("user_id") != current_user
+                ):
+                    raise ScheduleError("candidate has mismatched ownership markers")
+                command = normalized.get("command")
+                argument_line = normalized.get("arguments")
+                if not isinstance(command, str) or not command:
+                    raise ScheduleError("candidate has no executable command")
+                if argument_line is None:
+                    argument_line = ""
+                if not isinstance(argument_line, str):
+                    raise ScheduleError("candidate has an invalid argument string")
+                arguments = _split_windows_command_line(argument_line)
+                platform = (
+                    "wsl"
+                    if PureWindowsPath(command).name.casefold() == "wsl.exe"
+                    else "windows"
+                )
+                if self._inventory_platform is not None and platform != self._inventory_platform:
+                    continue
+                enabled_value = raw_task.get("enabled")
+                enabled = enabled_value if isinstance(enabled_value, bool) else None
+                native_complete = all(
+                    normalized.get(key) == expected
+                    for key, expected in (
+                        ("trigger_count", 1),
+                        ("time_trigger_count", 1),
+                        ("principal_count", 1),
+                        ("action_count", 1),
+                        ("exec_action_count", 1),
+                    )
+                )
+                registrations.append(
+                    inventory_registration(
+                        platform=platform,
+                        job_id=job_id,
+                        run_argv=[command, *arguments],
+                        native_identity=f"\\{job_id}",
+                        authority=current_user,
+                        native_interval_minutes=normalized.get("interval"),
+                        native_complete=native_complete,
+                        enabled=enabled,
+                        active=raw_task.get("state") == "Running",
+                        expected_wsl_executable=(
+                            self._wsl() if platform == "wsl" else None
+                        ),
+                        expected_wsl_user=(
+                            self._expected_wsl_user if platform == "wsl" else None
+                        ),
+                        expected_wsl_paths=(
+                            {
+                                mode: self._wsl_linux_path(mode)
+                                for mode in ("off", "desktop")
+                            }
+                            if platform == "wsl"
+                            else None
+                        ),
+                    )
+                )
+            except ScheduleError as exc:
+                untrusted.append(f"{candidate} ({exc})")
+        return inventory_report(
+            platform=self._inventory_platform or "windows",
+            registrations=registrations,
+            untrusted_candidates=untrusted,
+        )
+
+    def _wsl_linux_path(self, notification_mode: str) -> str:
+        path_entries = [
+            str(Path.home() / ".local/bin"),
+            str(Path.home() / ".npm-global/bin"),
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+        if notification_mode == "desktop":
+            path_entries.append(str(Path(self._powershell()).parent))
+        return ":".join(path_entries)
+
     def _action(self, spec: ScheduleSpec) -> tuple[str, list[str]]:
         if spec.platform == "wsl":
             if not spec.distro:
                 raise ScheduleError("WSL scheduling requires an explicit distribution name.")
             if not spec.linux_user:
                 raise ScheduleError("WSL scheduling requires an explicit Linux user.")
-            path_entries = [
-                str(Path.home() / ".local/bin"),
-                str(Path.home() / ".npm-global/bin"),
-                "/usr/local/bin",
-                "/usr/bin",
-                "/bin",
-            ]
-            if spec.notification_mode == "desktop":
-                path_entries.append(str(Path(self._powershell()).parent))
-            linux_path = ":".join(path_entries)
             return (
                 self._wsl(),
                 [
@@ -149,7 +306,7 @@ class WindowsTaskSchedulerAdapter:
                     spec.linux_user,
                     "--exec",
                     "/usr/bin/env",
-                    f"PATH={linux_path}",
+                    f"PATH={self._wsl_linux_path(spec.notification_mode)}",
                     *spec.run_argv,
                 ],
             )
