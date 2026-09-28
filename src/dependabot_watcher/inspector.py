@@ -6,7 +6,12 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .config import RepositoryConfig, WatcherConfig
-from .github import CollectionResult, GitHubClient, GitHubError
+from .github import (
+    CollectionResult,
+    GitHubClient,
+    GitHubError,
+    public_github_error_message,
+)
 from .manifests import collect_manifest_evidence
 from .policy import (
     assess_pull_request,
@@ -29,7 +34,11 @@ def _timestamp(value: datetime) -> str:
 
 
 def _collection_error(repository: str, surface: str, exc: GitHubError) -> dict[str, str]:
-    return {"repository": repository, "surface": surface, "message": str(exc)}
+    return {
+        "repository": repository,
+        "surface": surface,
+        "message": public_github_error_message(f"collection for {surface}"),
+    }
 
 
 def _truncation(surface: str, result: CollectionResult[dict[str, Any]]) -> dict[str, Any] | None:
@@ -317,7 +326,7 @@ def _inspect_repository(
                         "head_sha": pull_request.get("headRefOid"),
                     },
                     "classification": "collection_error",
-                    "reasons": [str(exc)],
+                    "reasons": [public_github_error_message("pull-request collection")],
                     "mutation_authorized": False,
                 }
             )
@@ -412,7 +421,10 @@ def inspect(
 ) -> dict[str, Any]:
     """Return a model-free, read-only inspection report without persistent writes."""
 
-    client.validate_auth()
+    try:
+        client.validate_auth()
+    except GitHubError as exc:
+        raise GitHubError(public_github_error_message("authentication")) from exc
     generated_at = _timestamp(clock())
     repositories = [
         _inspect_repository(config, repository, client, observed_at=generated_at)

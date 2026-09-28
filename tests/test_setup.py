@@ -11,7 +11,7 @@ import dependabot_watcher.setup as setup_implementation
 from dependabot_watcher import diagnostics
 from dependabot_watcher.config import load_config
 from dependabot_watcher.diagnostics import CommandResult
-from dependabot_watcher.setup import SetupError, SetupRequest, setup
+from dependabot_watcher.setup import SetupError, SetupRequest, setup as create_profile
 
 
 def _runner(commands: list[tuple[str, ...]]):
@@ -46,7 +46,7 @@ def test_quick_setup_verifies_then_creates_model_off_profile(
     commands: list[tuple[str, ...]] = []
     monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
 
-    report = setup(
+    report = create_profile(
         path,
         SetupRequest(
             repositories=("example-org/example-app",),
@@ -77,7 +77,7 @@ def test_default_configuration_is_reused_without_redundant_flags(
     path = tmp_path / "config.toml"
     monkeypatch.setenv("DEPENDABOT_WATCHER_CONFIG", str(path))
 
-    report = setup(
+    report = create_profile(
         path,
         SetupRequest(
             repositories=("example-org/example-app",),
@@ -104,9 +104,9 @@ def test_setup_requires_separate_acknowledgement_for_approval_gated_execution(
     )
 
     with pytest.raises(SetupError, match="acknowledge-mutation"):
-        setup(tmp_path / "rejected.toml", request)
+        create_profile(tmp_path / "rejected.toml", request)
 
-    report = setup(
+    report = create_profile(
         tmp_path / "accepted.toml",
         SetupRequest(
             repositories=request.repositories,
@@ -129,7 +129,7 @@ def test_setup_refuses_to_overwrite_existing_configuration(tmp_path: Path) -> No
     path.write_text("keep me", encoding="utf-8")
 
     with pytest.raises(SetupError, match="will not overwrite"):
-        setup(
+        create_profile(
             path,
             SetupRequest(
                 repositories=("example-org/example-app",),
@@ -143,7 +143,7 @@ def test_setup_refuses_to_overwrite_existing_configuration(tmp_path: Path) -> No
 
 def test_enabled_model_setup_requires_explicit_acknowledgement(tmp_path: Path) -> None:
     with pytest.raises(SetupError, match="acknowledge-model-use"):
-        setup(
+        create_profile(
             tmp_path / "config.toml",
             SetupRequest(
                 repositories=("example-org/example-app",),
@@ -156,6 +156,38 @@ def test_enabled_model_setup_requires_explicit_acknowledgement(tmp_path: Path) -
         )
 
 
+def test_setup_requires_enabled_advice_for_execution_advice_policy(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SetupError, match="requires economy or reviewed"):
+        create_profile(
+            tmp_path / "rejected.toml",
+            SetupRequest(
+                repositories=("example-org/example-app",),
+                branches={},
+                require_advice_before_execution=True,
+                offline=True,
+            ),
+        )
+
+    path = tmp_path / "accepted.toml"
+    create_profile(
+        path,
+        SetupRequest(
+            repositories=("example-org/example-app",),
+            branches={},
+            advisory_mode="economy",
+            triage_model="triage-model",
+            triage_reasoning="high",
+            acknowledge_model_use=True,
+            require_advice_before_execution=True,
+            offline=True,
+        ),
+    )
+
+    assert load_config(path).operation.require_advice_before_execution is True
+
+
 def test_advanced_setup_checks_provider_auth_but_never_invokes_model(
     tmp_path: Path,
     monkeypatch,
@@ -164,7 +196,7 @@ def test_advanced_setup_checks_provider_auth_but_never_invokes_model(
     commands: list[tuple[str, ...]] = []
     monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
 
-    report = setup(
+    report = create_profile(
         path,
         SetupRequest(
             repositories=("example-org/example-app",),
@@ -197,7 +229,7 @@ def test_offline_setup_makes_no_commands_and_records_unverified_profile(
     def runner(command: Sequence[str], timeout: int) -> CommandResult:
         raise AssertionError("Offline setup must make no command calls")
 
-    setup(
+    create_profile(
         path,
         SetupRequest(
             repositories=("example-org/example-app",),
@@ -220,7 +252,7 @@ def test_online_setup_verifies_configured_branch(
     commands: list[tuple[str, ...]] = []
     monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
 
-    report = setup(
+    report = create_profile(
         path,
         SetupRequest(
             repositories=("example-org/example-app",),
@@ -244,7 +276,7 @@ def test_setup_rejects_repository_flag_injection_before_subprocess(tmp_path: Pat
         raise AssertionError("Invalid repository identity must fail before subprocess execution")
 
     with pytest.raises(SetupError, match="owner/repository"):
-        setup(
+        create_profile(
             tmp_path / "config.toml",
             SetupRequest(repositories=("--evil/repo",), branches={}),
             runner=runner,
@@ -278,7 +310,7 @@ def test_online_setup_fails_when_configured_branch_cannot_be_verified(
 
     path = tmp_path / "config.toml"
     with pytest.raises(SetupError, match="branch verification failed"):
-        setup(
+        create_profile(
             path,
             SetupRequest(
                 repositories=("example-org/example-app",),
@@ -290,7 +322,7 @@ def test_online_setup_fails_when_configured_branch_cannot_be_verified(
 
 
 def test_offline_model_setup_marks_provider_verification_skipped(tmp_path: Path) -> None:
-    report = setup(
+    report = create_profile(
         tmp_path / "config.toml",
         SetupRequest(
             repositories=("example-org/example-app",),
@@ -319,7 +351,7 @@ def test_setup_does_not_publish_partial_configuration_on_interruption(
     monkeypatch.setattr(setup_implementation.os, "fsync", interrupt)
 
     with pytest.raises(KeyboardInterrupt):
-        setup(
+        create_profile(
             path,
             SetupRequest(
                 repositories=("example-org/example-app",),

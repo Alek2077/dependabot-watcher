@@ -1,6 +1,6 @@
 # Setup and diagnostics
 
-The default first-use path remains read-only and model-off. Phase 6 adds a separate explicit setup option for approval-gated execution; scheduling, notifications, silent model use, and unattended mutation remain unavailable.
+The default first-use path remains read-only and model-off. Approval-gated execution, model advice, native scheduling, and desktop notifications are separate explicit opt-ins. Unattended mutation remains unavailable.
 
 ## GitHub access and authentication
 
@@ -47,6 +47,38 @@ dependabot-watcher setup \
 
 Setup checks Codex CLI availability and authentication but never invokes a model. The acknowledgement records consent to later quota/cost consumption; it does not authorize GitHub mutation. Provider credentials remain in the provider's supported authentication store and never enter the Watcher profile.
 
+Add `--require-advice-before-execution` only when approval-gated execution must fail closed unless the exact candidate received current successful advice under the configured model, reasoning, and budget policy. It does not make the model an approver and does not enable mutation by itself.
+
+## Run once and schedule
+
+Exercise the durable workflow manually before installing a schedule:
+
+```bash
+dependabot-watcher run
+dependabot-watcher run --format json
+```
+
+The command writes bounded private reconciliation state but performs no GitHub mutation. Repeating it with unchanged evidence skips repeated model work and suppresses an already delivered notification. `--quiet` suppresses stdout for scheduler use; the private latest-run report remains authoritative.
+
+Preview the exact same-user native registration before creating it:
+
+```bash
+dependabot-watcher schedule preview --interval-minutes 1440
+dependabot-watcher schedule install --interval-minutes 1440
+dependabot-watcher schedule status --interval-minutes 1440
+```
+
+On WSL, use `--platform wsl --distro EXACT-DISTRIBUTION` when automatic detection is unavailable or when the registration must bind a specific distribution. The task binds the exact Watcher console executable used for installation, the originating Linux user, and trusted Windows System32 WSL/PowerShell helpers; preview displays that actual host-wrapper command. `--notify desktop` is optional. The host can start WSL without an open terminal, but no local schedule runs while the computer is powered off; Watcher records one overdue catch-up after the host returns instead of replaying every missed interval.
+
+Disable or remove only the Watcher-owned registration while preserving configuration, run history, plans, and execution audit:
+
+```bash
+dependabot-watcher schedule disable --interval-minutes 1440
+dependabot-watcher schedule remove --interval-minutes 1440
+```
+
+WSL2 through Windows Task Scheduler has completed live collection, desktop-notification, and scheduled-Codex lifecycle validation. Native Windows has completed isolated installation, current-user configuration/state ACLs, atomic replacement, cross-process locking, offline setup, native Task Scheduler lifecycle, and a scheduled fail-closed launch without native GitHub CLI. Live native-Windows GitHub collection, notification delivery, missed-run catch-up, update/uninstall, and cleanup remain release gates. The systemd and launchd adapters still have deterministic coverage only. None of these private pre-release results is a broad platform support claim until the applicable validation gate closes.
+
 ## Approval-gated execution setup
 
 Use the execution option only after verifying the repository's real merge method and exact required-check names. A read-only `inspect --verbosity standard` or `plan --format json` report exposes observed names; confirm them against the repository's branch protection or ruleset rather than guessing:
@@ -62,7 +94,7 @@ dependabot-watcher setup \
 
 Repeat `--required-check` for every check the watcher must observe as explicitly successful. Names match exactly and case-sensitively, and ambiguous duplicate names fail closed. A qualifying result is either a completed check run with `conclusion = SUCCESS` or a legacy commit-status context with `state = SUCCESS`; `NEUTRAL`, `SKIPPED`, pending, missing, malformed, unknown, and failing evidence does not satisfy an execution gate. For multiple repositories, supply repository-qualified merge/check settings for each. Check names containing spaces should be shell-quoted.
 
-This setup call still performs no mutation. It records that later `execute` calls may request approval. Each action separately requires a complete saved JSON plan, a read-only live execution preflight, and the exact approval confirmation token bound to that current repository, PR, base, head SHA, and merge method. The deterministic token is a two-invocation confirmation value, not a secret, signature, separate approver identity, or proof of human interaction. Setup refuses to infer mutation consent from model/provider choices.
+This setup call still performs no mutation. It records that later `execute` calls may request approval. Each action separately requires a saved JSON plan whose selected repository and target step are complete, a read-only live execution preflight, and the exact approval confirmation token bound to that current repository, PR, base, head SHA, and merge method. Other repositories may remain partial but are not executable from that evidence. The deterministic token is a two-invocation confirmation value, not a secret, signature, separate approver identity, or proof of human interaction. Setup refuses to infer mutation consent from model/provider choices.
 
 ## Doctor
 
@@ -102,6 +134,6 @@ Credentials, tokens, cookies, raw auth responses, environment-file contents, and
 
 `doctor` reports the configuration path it resolved and, when execution is enabled, the audit-state location. Setup deliberately has no destructive overwrite flag. To replace a profile, move the existing file to a private backup, create and validate the replacement, then remove the backup only when it is no longer needed. `DEPENDABOT_WATCHER_CONFIG` is the safer choice for parallel experiments or a separate execution profile.
 
-Uninstall the executable with `uv tool uninstall dependabot-watcher` or `pipx uninstall dependabot-watcher`, matching the installer originally used. Uninstalling leaves configuration and execution audit evidence in place and has no GitHub effect. Delete local configuration or state only after confirming the exact paths and any retention requirement; deleting an audit log is not a recovery mechanism and does not undo a merge.
+Remove every Watcher-owned schedule before uninstalling the executable, using the same configuration, state, platform, cadence, notification, and WSL distribution arguments used at installation. Watcher does not yet inventory registrations across forgotten or moved profiles. Preserve those arguments; if they are lost, inspect the native scheduler and verify Watcher's ownership marker, exact command, and current-user authority before manual removal rather than trusting a task name alone. Then uninstall with `uv tool uninstall dependabot-watcher` or `pipx uninstall dependabot-watcher`, matching the installer originally used. Uninstalling leaves configuration, run history, plans, and execution audit evidence in place and has no GitHub effect. Delete local configuration or state only after confirming the exact paths and any retention requirement; deleting an audit log is not a recovery mechanism and does not undo a merge.
 
 Source-based updates and rollbacks should use an explicitly reviewed commit or release. Reinstall that checkout with `uv tool install --force .` or `pipx install --force .`, then rerun `doctor`, `inspect`, and `plan` before enabling execution. Until versioned distribution exists, a moving branch is not a reproducible installation target.

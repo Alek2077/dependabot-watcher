@@ -1,6 +1,6 @@
 # Output contract
 
-`dependabot-watcher inspect`, `advise`, `plan`, and `execute` support `text`, `json`, and `markdown`. Inspection, advice, and planning are not written to disk by the command. Approved execution writes its separate local audit log.
+`dependabot-watcher inspect`, `advise`, `plan`, `execute`, `run`, and `schedule` support `text`, `json`, and `markdown`. Inspection, advice, and planning are not written to disk by those direct commands. Approved execution writes its separate local audit log; `run` writes bounded private reconciliation state; schedule lifecycle commands may change only the derived Watcher-owned native registration.
 
 Human text and Markdown support `concise`, `standard`, and `detailed` verbosity. JSON is identical regardless of the selected human verbosity. Presentation depth never changes evidence collection, provider calls, deterministic policy, or mutation authority.
 
@@ -8,15 +8,26 @@ When both text stdout and stderr are attached to an interactive terminal, live s
 
 Terminal capabilities affect presentation only. Unsupported Unicode falls back to ASCII markers and spinner frames. Human renderers flatten line breaks and remove terminal control sequences from repository/provider-controlled values; versioned JSON retains the original structured evidence. Progress never appears on stdout, and presentation cannot change collection, advice, planning, or authorization.
 
-JSON is the automation contract. Its top-level fields are:
+JSON is the automation contract. Command reports share a versioned wrapper, but not every operational receipt has every evidence field. The complete mode/status matrix is:
+
+- `setup`: `created`;
+- `doctor`: `ready`, `attention`, or `blocked`;
+- `inspect`, `advise`, and `plan`: `complete` or `partial`;
+- `execute_preflight`: `ready` or `already_applied`;
+- `execute`: `merged` or `already_applied`;
+- `run`: report `status` is `complete` or `partial`, with the more specific outcome documented below; and
+- `schedule`: `preview`, `active`, `disabled`, `missing`, `drifted`, or `removed`.
+
+Top-level fields are:
 
 - `schema_version`: output schema version, currently `1`;
-- `mode`: `inspect`, `advise`, or `plan`, matching the command-specific wrapper;
-- `generated_at`: UTC timestamp;
-- `status`: `complete` or `partial`;
-- `capabilities`: explicit false values for model calls, local persistence, GitHub mutation, and notifications;
-- `summary`: aggregate counts; and
-- `repositories`: per-repository PR, alert, recent-sensitive-change, truncation, and error evidence.
+- `mode`: the command-specific wrapper named above;
+- `generated_at`: UTC timestamp on time-bearing reports; schedule lifecycle reports omit it;
+- `status`: one of the command-specific values above;
+- `capabilities`: explicit booleans for model calls, local persistence, GitHub mutation, and notifications; and
+- `mutation_authorized`: present on inspection/advice/planning/execution/reconciliation reports and always false outside token-bearing execution. Setup, doctor, and schedule receipts express authority through their capability fields and command-specific contract instead.
+
+Evidence wrappers additionally contain aggregate `summary` counts and per-repository PR, alert, recent-sensitive-change, truncation, and error evidence. Reconciliation and schedule wrappers use the command-specific fields defined below rather than pretending to share the inspection shape.
 
 Every inspected pull request includes collector-owned repository, PR, base, and head identity plus normalized named status-check evidence. Each status-check record preserves whether GitHub supplied a Checks API `check_run` or a legacy commit `status_context`; duplicate names remain visible instead of being collapsed. `classification` is either `baseline_candidate`, `attention_required`, or `collection_error`. It is not an execution decision, and `mutation_authorized` is always false.
 
@@ -76,10 +87,22 @@ Planning never removes ordered steps for concision. Standard planning renders ov
 
 `dependabot-watcher setup` emits a versioned receipt for the one configuration file it explicitly created, the selected repositories and safe operation settings, verification state, and exact next commands. Its `persistent_local_writes` capability is true because setup is explicitly a configuration-writing command; model calls, GitHub mutation, notifications, and scheduling remain false. Operational reports use the same established `persistent_local_writes` and `github_mutations` capability keys as inspection, advice, and planning.
 
+## Reconciliation output
+
+`dependabot-watcher run` emits a versioned durable report with `mode = "run"`. It contains a unique run ID, outcome, stable evidence revision, complete queue synopsis, advisory coverage and provider usage, post-action execution observation, schedule/catch-up observation, current plan and lineage, retry boundary, sparse notification and delivery state, sanitized failure category, state/report paths, and the underlying inspection. Outcomes include `action_required`, `no_work`, `unchanged`, `partial`, `failed`, and `retry_deferred`.
+
+The report always states `mutation_authorized: false`. Its capability flags reflect whether that run attempted a model call, wrote private local state, or delivered a notification; `github_mutations` remains false. Provider usage distinguishes attempted from successful calls so a timeout or failed call is never reported as model-free. `--quiet` suppresses stdout without changing the persisted report or notification decision. A fatal GitHub collection failure persists only a generic sanitized category and retry state rather than raw CLI output.
+
+## Schedule output
+
+`dependabot-watcher schedule` emits `mode = "schedule"` with action, status, changed flag, stable job identity, exact run command, configuration/state paths, cadence, authority, output destination, definition digest, native readback state, missed-run policy, overlap policy, and next step. Preview never changes local state. Install, disable, and remove mark `persistent_local_writes: true` because they may change the host scheduler; every schedule report keeps model calls, notifications, and GitHub mutation false.
+
+Status distinguishes `active`, `disabled`, `missing`, and `drifted`. Watcher normalizes native-equivalent definitions where the host omits defaults or rewrites an equivalent duration, but reports material changes to identity, command, cadence, authority, or safety settings as drift. A still-loaded owned native job whose definition file disappeared is reported as orphaned drift and remains removable through its stable identity. Launchd uses a private Watcher registration record rather than treating unstable human-formatted `launchctl print` text as an ownership API. Lifecycle commands refuse an unrelated native job at the derived Watcher identity.
+
 ## Execution output and audit
 
-Calling `execute` without `--approval-token` is a read-only live preflight. A ready report includes the exact target binding, stable action ID, `mutation_performed: false`, `mutation_authorized: false`, and the deterministic approval confirmation token for that current action. This token provides exact-action two-step confirmation; it is not an independent credential, signature, approver identity, or proof of human interaction. An already-applied report returns no token.
+Calling `execute` without `--approval-token` is a read-only live preflight. It checks any existing selected reconciliation state before returning a token, without creating state when none exists. A ready report includes the exact target binding, stable action ID, `mutation_performed: false`, `mutation_authorized: false`, and the deterministic approval confirmation token for that current action. This token provides exact-action two-step confirmation; it is not an independent credential, signature, approver identity, or proof of human interaction. An already-applied report returns no token.
 
-Calling it with the current token repeats the recheck and may return `merged`, `already_applied`, or an error. A merged report includes `mutation_performed: true`, `mutation_authorized: true`, the exact binding, validated deterministic decision context, GitHub's bounded merge result, audit path, and recovery/next-step guidance. It also includes a model-free post-action observation with remaining PR, alert, uncovered-alert, attention-required, and recommended-step counts when that follow-up collection is complete and structurally valid. A partial, malformed, or failed follow-up collection is represented as unavailable and its counts are suppressed without disguising or reversing the already completed merge. The authority applies only to that completed attempt; it does not change the saved plan or authorize later work.
+Calling it with the current token repeats the recheck and may return `merged`, `already_applied`, or an error. When the selected state directory contains reconciliation history, execution also requires the submitted plan to be its current non-revoked plan; a newer or no-work reconciliation invalidates the older token-bearing plan. A merged report includes `mutation_performed: true`, `mutation_authorized: true`, the exact binding, validated deterministic decision context, GitHub's bounded merge result, audit path, and recovery/next-step guidance. It also includes a model-free post-action observation with remaining PR, alert, uncovered-alert, attention-required, and recommended-step counts when that follow-up collection is complete and structurally valid. A partial, malformed, or failed follow-up collection is represented as unavailable and its counts are suppressed without disguising or reversing the already completed merge. The authority applies only to that completed attempt; it does not change the saved plan or authorize later work.
 
 The JSON Lines audit uses separate versioned events: `execution_started`, `execution_succeeded`, `execution_failed`, and `execution_reconciled`. Events retain the exact action binding and sanitized outcome without credentials, approval tokens, raw model output, or raw GitHub error text.

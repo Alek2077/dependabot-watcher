@@ -6,7 +6,12 @@ from collections import deque
 from typing import Any, Iterable
 from urllib.parse import urlsplit
 
-from .github import GitHubClient, GitHubError, repository_relative_path
+from .github import (
+    GitHubClient,
+    GitHubError,
+    public_github_error_message,
+    repository_relative_path,
+)
 
 
 _INCLUDE_OPTIONS = {
@@ -163,8 +168,10 @@ def collect_manifest_evidence(
                 base_sha,
                 max_file_bytes,
             )
-        except GitHubError as exc:
-            errors.append({"path": path, "message": str(exc)})
+        except GitHubError:
+            errors.append(
+                {"path": path, "message": public_github_error_message("manifest collection")}
+            )
             continue
         parsed_includes = parse_python_requirements_includes(path, content)
         remaining_relationships = max_files - len(relationships)

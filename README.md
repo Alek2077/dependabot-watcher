@@ -6,7 +6,7 @@ Dependabot Watcher is a local-first, provider-neutral control plane for Dependab
 
 The project is currently a **private pre-release with one narrow approval-gated action**. Inspection, advice, and planning remain non-mutating. An explicitly enabled `execute` command can merge one exact, freshly revalidated Dependabot pull request only after a separate preflight produces an action-bound approval confirmation token.
 
-It does not close, comment, approve, label, rebase an open PR branch, create remediation changes, notify, clone target repositories, schedule itself, or execute unattended. It may use GitHub's `rebase` merge method when explicitly configured. The default setup remains model-off and read-only. `setup` writes the requested configuration; approved execution writes a local append-only audit trail; inspection, advice, planning, and diagnostics do not persist product runtime state.
+It does not close, comment, approve, label, rebase an open PR branch, create remediation changes, clone target repositories, or execute mutations unattended. It may use GitHub's `rebase` merge method when explicitly configured. The default setup remains model-off and read-only. Optional `run` and `schedule` commands can persist bounded private reconciliation state, register a same-user native schedule, and deliver sparse desktop notifications; none of those capabilities authorizes GitHub mutation.
 
 The intended product end state is safe automation of the Dependabot maintenance loop: inspect, plan, recheck, execute only policy-authorized actions, and report what changed or still needs attention. Future provider adapters may use an officially supported subscription-authenticated CLI or an API credential, depending on what each provider permits. Deterministic collection, candidate grouping, sufficient decision-relevant context, and escalation only when useful should keep ordinary runs efficient without assuming that every repository needs the strongest available model.
 
@@ -70,6 +70,8 @@ Choose the command that matches the result you want:
 | `dependabot-watcher advise` | Adds optional per-PR or per-alert model recommendations when advice is explicitly configured. |
 | `dependabot-watcher plan` | Produces an ordered action list for the complete queue, using optional advice if configured; it does not execute the actions. |
 | `dependabot-watcher execute` | Revalidates one saved plan step, then either prints its exact approval confirmation token or uses that token to merge only the bound PR head. |
+| `dependabot-watcher run` | Performs one durable, non-mutating inspect/advice/plan reconciliation for manual or scheduled use. |
+| `dependabot-watcher schedule` | Previews or manages one Watcher-owned native host schedule without granting mutation authority. |
 
 Run the preflight, then inspect the evidence or request the ordered action list:
 
@@ -109,7 +111,7 @@ A capable agent can investigate a dependency update directly. Watcher supplies r
 - one-action execution followed by reinspection and replanning; and
 - auditable execution, reconciliation, and recovery evidence.
 
-The agent supplies judgment; Watcher supplies dependable evidence and authority boundaries. Scheduling, revision deduplication, sparse notifications, and deeper tool-capable investigation remain roadmap capabilities rather than current claims.
+The agent supplies judgment; Watcher supplies dependable evidence and authority boundaries. Revision deduplication, bounded run history, native scheduling adapters, and sparse desktop notifications are now available in the private pre-release. Deeper tool-capable investigation and unattended mutation remain roadmap capabilities rather than current claims.
 
 Common output and scope options:
 
@@ -168,7 +170,7 @@ dependabot-watcher setup \
 
 Use a prior read-only `inspect --verbosity standard` or `plan --format json` run to discover the exact, case-sensitive observed check names, then verify those names against the repository's branch protection or ruleset. Ambiguous duplicate names fail closed. Execution requires an explicit successful GitHub result for every configured required check: a completed check run with `conclusion = SUCCESS`, or a legacy commit-status context with `state = SUCCESS`. `NEUTRAL`, `SKIPPED`, pending, missing, malformed, unknown, and failing checks do not qualify. Setup refuses to overwrite an existing profile, so either deliberately edit the reviewed profile or create a separate execution profile with `--config` after confirming these settings.
 
-Save a complete machine-readable plan, then run a non-mutating execution preflight for one displayed step ID:
+Save a machine-readable plan, then run a non-mutating execution preflight for one displayed step ID. The selected repository plan and target step must be complete; unrelated repositories may remain partial and cannot be executed from that evidence:
 
 ```bash
 (umask 077 && dependabot-watcher plan \
@@ -224,7 +226,30 @@ Generic inspection and planning are not Python-specific: they operate on Dependa
 - `economy`: bounded AI triage of deterministically prioritized candidates;
 - `reviewed`: bounded AI triage plus a stronger second AI pass for ambiguous or higher-risk candidates.
 
-The provider boundary is generic, but only the first-party Codex CLI adapter is currently implemented. Its command, schema, parsing, timeout, failure, economy, and reviewed paths have deterministic coverage; a real installed-path Watcher-initiated Codex call remains a recorded validation gate before scheduled model-assisted operation or public-release support claims. The adapter runs non-interactively with an ephemeral session, read-only sandbox, isolated temporary work directory, schema-constrained output, ignored Codex user configuration and exec-policy rules, a sanitized process environment, and explicit timeout/model settings. Web search, shell tools, apps/connectors, dependency-install tools, and subagents are disabled. Codex platform safety still applies, while the watcher's own prompt, schema, and deterministic validator define the portable advisory contract.
+The provider boundary is generic, but only the first-party Codex CLI adapter is currently implemented. Its command, schema, parsing, timeout, failure, economy, and reviewed paths have deterministic coverage. Real Watcher-initiated `economy` and `reviewed` calls, plus a Windows Task Scheduler → WSL → Watcher → Codex run, have completed without mutation; wider installed-path and release evidence remains recorded in the validation workflow. The adapter runs non-interactively with an ephemeral session, read-only sandbox, isolated temporary work directory, schema-constrained output, ignored Codex user configuration and exec-policy rules, a sanitized process environment, and explicit timeout/model settings. Web search, shell tools, apps/connectors, dependency-install tools, and subagents are disabled. Codex platform safety still applies, while the watcher's own prompt, schema, and deterministic validator define the portable advisory contract.
+
+## Scheduled reconciliation
+
+`run` performs one durable, scheduler-independent reconciliation. It collects current evidence, skips repeated model work for an unchanged revision, persists a bounded private history and current plan, observes prior execution outcomes, and decides whether a sparse notification is needed. It never authorizes or performs a GitHub mutation.
+
+```bash
+dependabot-watcher run
+dependabot-watcher run --quiet --notify desktop
+```
+
+`schedule` manages a stable Watcher-owned registration through Windows Task Scheduler for WSL2 or native Windows, a systemd user timer on Linux, or a LaunchAgent on macOS. Preview is non-mutating; install/update, status, disable, and remove operate only on the derived Watcher identity and refuse an unrelated native job at that identity.
+
+```bash
+dependabot-watcher schedule preview --interval-minutes 1440
+dependabot-watcher schedule install --interval-minutes 1440
+dependabot-watcher schedule status --interval-minutes 1440
+dependabot-watcher schedule disable --interval-minutes 1440
+dependabot-watcher schedule remove --interval-minutes 1440
+```
+
+WSL2 scheduling uses Windows Task Scheduler to start the exact distribution, originating Linux user, and Watcher console executable, so an open WSL terminal is unnecessary. Preview shows the actual trusted System32 WSL wrapper and its arguments. If the computer is asleep or powered off, no local process can run; the next available invocation performs one current-state catch-up rather than replaying every missed interval. `--notify desktop` sends only a bounded action message and next command, not the full private queue. Model calls still follow the profile's explicit advisory mode, model, reasoning, and workload budget.
+
+The Windows Task Scheduler → WSL2 path has completed live collection, desktop-notification, and scheduled-Codex lifecycle validation. Native Windows has completed isolated installation, private ACL/state/locking validation, real Task Scheduler lifecycle, and a scheduled fail-closed launch without native GitHub CLI; live native GitHub collection and the remaining release exercises are still pending. Native Linux systemd and macOS launchd operation remain evidence gates before corresponding support claims.
 
 Model output is treated as untrusted advice. The watcher binds it back to opaque collector-issued candidate IDs, rejects missing/unknown/duplicate results, and retains collector-owned repository, PR, alert, base, and head identity. Provider failure is reported without erasing deterministic inspection evidence.
 
@@ -246,19 +271,22 @@ Every plan is bound to the collected base SHA, PR head SHA, PR update time, aler
 
 Collection limits are explicit. If a repository exceeds one, the report says which surface was truncated and exits as partial rather than silently claiming completeness.
 
-`doctor` is also non-mutating and never makes a model call. It checks every repository in the loaded profile, reports executable versions and authentication readiness without retaining raw command output, verifies each configured branch, reads only configured repositories, and never opens provider credential files. Use a repository-scoped `inspect --repo OWNER/REPOSITORY` when only that repository is in scope; it checks collected evidence but does not replace the whole-profile readiness preflight. `setup` persists one explicitly requested non-secret configuration file. Approved execution is the only GitHub mutation and the only other persistent path: it appends sanitized start/outcome events to a user-private local audit log.
+`doctor` is also non-mutating and never makes a model call. It checks every repository in the loaded profile, reports executable versions and authentication readiness without retaining raw command output, verifies each configured branch, reads only configured repositories, and never opens provider credential files. Use a repository-scoped `inspect --repo OWNER/REPOSITORY` when only that repository is in scope; it checks collected evidence but does not replace the whole-profile readiness preflight. Local persistence is explicit: `setup` creates one requested non-secret profile, `run` writes bounded private reconciliation state and retained plans, approved execution appends a private audit trail, and schedule lifecycle commands manage one Watcher-owned native registration. Approved execution remains the only GitHub mutation.
 
 ## Output and exit codes
 
 | Code | Meaning |
 |---:|---|
-| `0` | Complete inspection |
-| `2` | CLI or configuration error |
-| `3` | GitHub CLI, authentication, collection, or merge-API failure |
-| `4` | Partial inspection/advice, or a doctor report requiring attention |
+| `0` | Successful command completion |
+| `2` | CLI, setup, or configuration error |
+| `3` | An uncaught direct GitHub transport, authentication, or API operation failed; per-repository collection failures instead produce a partial report |
+| `4` | Partial direct report, doctor attention/blockage, or persisted `run` outcome `partial`/`failed`, including GitHub or advisory incompleteness |
 | `5` | Advisory provider could not be initialized |
 | `6` | Planning input contract error |
 | `7` | Execution eligibility, freshness, approval, or audit error |
+| `8` | Reconciliation state or run-once contract error |
+| `9` | Native schedule definition or lifecycle error |
+| `10` | Desktop notification delivery failed; the persisted run report remains authoritative for the reconciliation outcome |
 | `70` | Unexpected internal failure |
 
 The JSON output is versioned with `schema_version: 1`. See [the architecture](docs/architecture.md), [setup guide](docs/setup.md), [advisory contract](docs/advisory-contract.md), [planning contract](docs/planning-contract.md), [execution contract](docs/execution-contract.md), [output contract](docs/output-contract.md), [configuration reference](docs/configuration.md), and [roadmap](docs/roadmap.md).
@@ -276,7 +304,7 @@ To roll back, check out a previously reviewed commit or release before running t
 
 `doctor` prints the configuration path it actually loaded. Because `setup` refuses to overwrite it, reset safely by moving that file to a backup, running `setup` again, and deleting the backup only after the replacement works. `DEPENDABOT_WATCHER_CONFIG` can keep experimental profiles separate.
 
-Uninstall the executable with the installer that created it:
+Before uninstalling, run `dependabot-watcher schedule remove` with the same configuration, state directory, platform, cadence, notification, and WSL distribution arguments used to install each Watcher-owned schedule, then verify `schedule status` reports it missing. Watcher does not yet provide a cross-profile schedule inventory: preserve those registration arguments. If a profile path or registration arguments were lost, inspect the native scheduler and verify Watcher's embedded ownership marker, exact command, and current-user authority before removal; do not remove a similarly named job by name alone. Uninstall the executable with the installer that created it:
 
 ```bash
 uv tool uninstall dependabot-watcher
@@ -287,11 +315,11 @@ Uninstalling does not delete the configuration or execution audit history and ne
 
 ## Platform status
 
-The initial implementation targets WSL2 and ordinary Linux. Ubuntu CI covers the supported Python versions once this repository is connected to GitHub. macOS and native Windows are architectural goals, not current support claims.
+The strongest installed-path evidence is WSL2, including real Windows Task Scheduler wake-up, live collection, scheduled Codex advice, notification delivery, idempotent update, disable, and removal. Native Windows now has real private-state, locking, scheduler-lifecycle, and scheduled failure-path evidence, but not live native GitHub collection or the remaining release exercises. Native Linux/systemd and macOS/launchd remain deterministic-only. No implemented adapter becomes a public support claim until its platform gate is complete. Ubuntu CI covers the supported Python versions once this repository can run hosted workflows.
 
 The private pre-release currently retains Python 3.10 compatibility so it can be validated in the existing WSL environment. Before public release, the project must move its minimum to a still-supported Python version and align packaging metadata, classifiers, static analysis, CI, and installation validation with that floor.
 
-The core commands are scheduler-independent. Task Scheduler, cron/systemd, launchd, GitHub Actions, additional model providers, notifications, and unattended execution belong to later separately tested adapters.
+The run-once reconciler remains scheduler-independent. GitHub Actions or another always-on remote runner, additional model providers, richer notification destinations, and unattended mutation remain later separately tested capabilities.
 
 ## Development
 

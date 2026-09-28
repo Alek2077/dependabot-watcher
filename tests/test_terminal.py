@@ -295,3 +295,8 @@ def test_human_values_strip_terminal_controls_and_flatten_lines() -> None:
         ),
     )
     assert error == "GitHub error: Title next"
+
+
+def test_human_value_sanitization_preserves_numeric_zero() -> None:
+    assert sanitize_human_value(0) == "0"
+    assert sanitize_human_value(None) == ""

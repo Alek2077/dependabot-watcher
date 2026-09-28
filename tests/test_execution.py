@@ -9,10 +9,12 @@ from typing import Any
 
 import pytest
 
+from dependabot_watcher.advisory import advisory_action_policy
 from dependabot_watcher.config import AdvisoryConfig, parse_config
 from dependabot_watcher.execution import (
     ExecutionError,
     approval_token,
+    execution_observation,
     execute_approved,
     load_plan,
     preflight_execution,
@@ -24,32 +26,46 @@ from dependabot_watcher.planning import (
     _repository_plan_identifier,
     _step_identifier,
 )
+from dependabot_watcher.runtime_state import run_lock, save_run_state
 
 
 HEAD_SHA = "a" * 40
 BASE_SHA = "b" * 40
 
 
-def execution_config(*, required_checks: list[str] | None = None) -> Any:
-    return parse_config(
-        {
-            "schema_version": 1,
-            "operation": {
-                "autonomy": "approval_required",
-                "mutation_enabled": True,
+def execution_config(
+    *,
+    required_checks: list[str] | None = None,
+    require_advice: bool = False,
+    triage_model: str = "triage-model",
+) -> Any:
+    data: dict[str, Any] = {
+        "schema_version": 1,
+        "operation": {
+            "autonomy": "approval_required",
+            "mutation_enabled": True,
+            "require_advice_before_execution": require_advice,
+        },
+        "repositories": [
+            {
+                "name": "example-org/example-app",
+                "default_branch": "main",
+                "workflow": {
+                    "merge_method": "squash",
+                    "required_checks": required_checks or ["CI"],
+                },
+            }
+        ],
+    }
+    if require_advice:
+        data["advisory"] = {
+            "mode": "economy",
+            "provider": "codex_cli",
+            "codex_cli": {
+                "triage": {"model": triage_model, "reasoning_effort": "high"}
             },
-            "repositories": [
-                {
-                    "name": "example-org/example-app",
-                    "default_branch": "main",
-                    "workflow": {
-                        "merge_method": "squash",
-                        "required_checks": required_checks or ["CI"],
-                    },
-                }
-            ],
         }
-    )
+    return parse_config(data)
 
 
 def saved_plan() -> dict[str, Any]:
@@ -154,10 +170,42 @@ def plan_step_id(report: dict[str, Any]) -> str:
     return str(report["repositories"][0]["recommended_order"][0]["step_id"])
 
 
+def add_required_advice(
+    report: dict[str, Any],
+    *,
+    recommended_action: str = "merge_candidate",
+    requires_review: bool = False,
+) -> dict[str, Any]:
+    policy = advisory_action_policy(execution_config(require_advice=True))
+    report["source"] = {
+        "advisory": {
+            "mode": "economy",
+            "provider": "codex_cli",
+            "required_for_execution": True,
+            "action_policy_id": policy["policy_id"],
+            "status": "complete",
+        }
+    }
+    report["repositories"][0]["action_policy"] = policy
+    report["repositories"][0]["recommended_order"][0]["advice"] = {
+        "recommended_action": recommended_action,
+        "requires_review": requires_review,
+        "assurance": "triage",
+    }
+    return refresh_plan_identities(report)
+
+
 class ExecutionClient:
-    def __init__(self, *, state: str = "OPEN", merge_error: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        state: str = "OPEN",
+        merge_error: bool = False,
+        merged: bool = True,
+    ) -> None:
         self.state = state
         self.merge_error = merge_error
+        self.merged = merged
         self.merges: list[dict[str, Any]] = []
         self.fetches = 0
 
@@ -190,11 +238,12 @@ class ExecutionClient:
         )
         if self.merge_error:
             raise GitHubError("simulated protected-branch rejection")
-        self.state = "MERGED"
+        if self.merged:
+            self.state = "MERGED"
         return {
-            "merged": True,
-            "message": "merged",
-            "merge_commit_sha": "c" * 40,
+            "merged": self.merged,
+            "message": "merged" if self.merged else "merge was not confirmed",
+            "merge_commit_sha": "c" * 40 if self.merged else None,
         }
 
 
@@ -262,8 +311,99 @@ def test_preflight_rechecks_and_binds_exact_approval(
         "classification": "baseline_candidate",
         "decision_source": "deterministic_policy",
         "model_used": False,
+        "advice_assurance": None,
         "required_checks": [{"name": "CI", "state": "passing"}],
     }
+
+
+def test_preflight_requires_successful_current_saved_advice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+
+    with pytest.raises(ExecutionError, match="complete current advice"):
+        preflight_execution(
+            execution_config(require_advice=True),
+            ExecutionClient(),
+            report,
+            plan_step_id(report),
+        )
+
+    mismatched = add_required_advice(saved_plan())
+    mismatched["repositories"][0]["action_policy"]["advisory_mode"] = "reviewed"
+    refresh_plan_identities(mismatched)
+    with pytest.raises(ExecutionError, match="complete current advice"):
+        preflight_execution(
+            execution_config(require_advice=True),
+            ExecutionClient(),
+            mismatched,
+            plan_step_id(mismatched),
+        )
+
+    unresolved = add_required_advice(saved_plan(), requires_review=True)
+    with pytest.raises(ExecutionError, match="still requires review"):
+        preflight_execution(
+            execution_config(require_advice=True),
+            ExecutionClient(),
+            unresolved,
+            plan_step_id(unresolved),
+        )
+
+    advised = add_required_advice(saved_plan())
+    with pytest.raises(ExecutionError, match="complete current advice"):
+        preflight_execution(
+            execution_config(require_advice=True, triage_model="replacement-model"),
+            ExecutionClient(),
+            advised,
+            plan_step_id(advised),
+        )
+
+
+def test_preflight_preserves_advice_provenance_but_rechecks_deterministically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = add_required_advice(saved_plan())
+    observed_requirements: list[bool] = []
+
+    def fresh_plan(config, client):
+        observed_requirements.append(config.operation.require_advice_before_execution)
+        return report
+
+    monkeypatch.setattr("dependabot_watcher.execution.plan", fresh_plan)
+
+    result = preflight_execution(
+        execution_config(require_advice=True),
+        ExecutionClient(),
+        report,
+        plan_step_id(report),
+    )
+
+    assert observed_requirements == [False]
+    assert result["decision"]["decision_source"] == "model_informed_policy"
+    assert result["decision"]["model_used"] is True
+    assert result["decision"]["advice_assurance"] == "triage"
+
+
+def test_partial_multi_repository_plan_can_use_complete_target_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    report["status"] = "partial"
+    report["plan_id"] = _overall_plan_identifier(
+        "partial", [report["repositories"][0]["plan_id"]]
+    )
+    fresh_report = saved_plan()
+    monkeypatch.setattr(
+        "dependabot_watcher.execution.plan",
+        lambda config, client: fresh_report,
+    )
+
+    result = preflight_execution(
+        execution_config(), ExecutionClient(), report, plan_step_id(report)
+    )
+
+    assert result["status"] == "ready"
 
 
 def test_already_applied_human_output_explains_that_no_action_is_needed(
@@ -542,6 +682,199 @@ def test_execute_requires_token_then_writes_locked_append_only_audit(
     assert reconciled["prior_success_recorded"] is True
 
 
+def test_execute_rejects_plan_superseded_by_reconciliation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    client = ExecutionClient()
+    step_id = plan_step_id(report)
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+    token = preflight_execution(execution_config(), client, report, step_id)[
+        "approval_token"
+    ]
+    state_directory = tmp_path / "state"
+    save_run_state(
+        state_directory,
+        {
+            "schema_version": 1,
+            "last_attempt": None,
+            "last_success": None,
+            "latest_plan": {"plan_id": "plan_newer"},
+            "history": [],
+        },
+    )
+
+    with pytest.raises(ExecutionError, match="superseded"):
+        execute_approved(
+            execution_config(),
+            client,
+            report,
+            step_id,
+            token,
+            state_directory=state_directory,
+        )
+
+    assert client.merges == []
+
+    with pytest.raises(ExecutionError, match="superseded"):
+        preflight_execution(
+            execution_config(),
+            client,
+            report,
+            step_id,
+            state_directory=state_directory,
+        )
+
+
+def test_execute_rejects_plan_revoked_by_reconciliation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    client = ExecutionClient()
+    step_id = plan_step_id(report)
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+    token = preflight_execution(execution_config(), client, report, step_id)[
+        "approval_token"
+    ]
+    state_directory = tmp_path / "state"
+    save_run_state(
+        state_directory,
+        {
+            "schema_version": 1,
+            "last_attempt": None,
+            "last_success": None,
+            "latest_plan": {
+                "plan_id": None,
+                "revoked_reason": "no_work",
+                "supersedes_plan_id": report["plan_id"],
+            },
+            "history": [],
+        },
+    )
+
+    with pytest.raises(ExecutionError, match="revoked"):
+        execute_approved(
+            execution_config(),
+            client,
+            report,
+            step_id,
+            token,
+            state_directory=state_directory,
+        )
+
+    assert client.merges == []
+
+
+def test_unrelated_reconciliation_revocation_does_not_invalidate_manual_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    client = ExecutionClient()
+    step_id = plan_step_id(report)
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+    state_directory = tmp_path / "state"
+    save_run_state(
+        state_directory,
+        {
+            "schema_version": 1,
+            "last_attempt": None,
+            "last_success": None,
+            "latest_plan": {
+                "plan_id": None,
+                "revoked_reason": "github_collection_error",
+                "supersedes_plan_id": "plan_unrelated",
+            },
+            "history": [],
+        },
+    )
+
+    preflight = preflight_execution(
+        execution_config(),
+        client,
+        report,
+        step_id,
+        state_directory=state_directory,
+    )
+
+    assert preflight["status"] == "ready"
+    assert preflight["mutation_authorized"] is False
+
+
+def test_revocation_rejects_every_plan_in_cumulative_reconciliation_lineage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    client = ExecutionClient()
+    step_id = plan_step_id(report)
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+    state_directory = tmp_path / "state"
+    save_run_state(
+        state_directory,
+        {
+            "schema_version": 1,
+            "last_attempt": None,
+            "last_success": None,
+            "latest_plan": {
+                "plan_id": None,
+                "revoked_reason": "github_collection_error",
+                "supersedes_plan_id": "plan_newer",
+                "invalidated_plan_ids": [report["plan_id"], "plan_newer"],
+                "lineage_overflow": False,
+            },
+            "history": [],
+        },
+    )
+
+    with pytest.raises(ExecutionError, match="revoked"):
+        preflight_execution(
+            execution_config(),
+            client,
+            report,
+            step_id,
+            state_directory=state_directory,
+        )
+
+
+def test_revocation_lineage_overflow_fails_closed_for_unrecognized_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    client = ExecutionClient()
+    step_id = plan_step_id(report)
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+    state_directory = tmp_path / "state"
+    save_run_state(
+        state_directory,
+        {
+            "schema_version": 1,
+            "last_attempt": None,
+            "last_success": None,
+            "latest_plan": {
+                "plan_id": None,
+                "revoked_reason": "github_collection_error",
+                "supersedes_plan_id": None,
+                "invalidated_plan_ids": [],
+                "lineage_overflow": True,
+            },
+            "history": [],
+        },
+    )
+
+    with pytest.raises(ExecutionError, match="revoked"):
+        preflight_execution(
+            execution_config(),
+            client,
+            report,
+            step_id,
+            state_directory=state_directory,
+        )
+
+
 def test_invalid_token_fails_before_live_reinspection_or_state_creation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -566,6 +899,40 @@ def test_invalid_token_fails_before_live_reinspection_or_state_creation(
 
     assert client.fetches == 0
     assert not state_path.exists()
+
+
+def test_unconfirmed_merge_response_fails_and_records_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+    client = ExecutionClient(merged=False)
+    step_id = plan_step_id(report)
+    preflight = preflight_execution(execution_config(), client, report, step_id)
+
+    with pytest.raises(ExecutionError, match="did not confirm"):
+        execute_approved(
+            execution_config(),
+            client,
+            report,
+            step_id,
+            preflight["approval_token"],
+            state_directory=tmp_path,
+        )
+
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "execution-audit.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert [event["event_type"] for event in events] == [
+        "execution_started",
+        "execution_failed",
+    ]
+    assert events[-1]["outcome"] == "merge_not_confirmed"
+    assert client.state == "OPEN"
 
 
 def test_approved_execution_performs_one_locked_live_reinspection(
@@ -788,7 +1155,7 @@ def test_start_audit_fsync_failure_prevents_mutation(
     def fail_audit_fsync(descriptor: int) -> None:
         nonlocal fsync_calls
         fsync_calls += 1
-        if fsync_calls == 2:
+        if fsync_calls == 3:
             raise OSError("simulated audit fsync failure")
         real_fsync(descriptor)
 
@@ -1001,7 +1368,7 @@ def test_execute_records_sanitized_failure(
         execution_config(), client, report, plan_step_id(report)
     )
 
-    with pytest.raises(GitHubError, match="simulated"):
+    with pytest.raises(GitHubError, match="details were withheld") as error:
         execute_approved(
             execution_config(),
             client,
@@ -1010,6 +1377,8 @@ def test_execute_records_sanitized_failure(
             preflight["approval_token"],
             state_directory=tmp_path,
         )
+
+    assert "simulated" not in str(error.value)
 
     events = [
         json.loads(line)
@@ -1050,3 +1419,86 @@ def test_execution_lock_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyP
             preflight["approval_token"],
             state_directory=tmp_path,
         )
+
+    assert client.merges == []
+
+
+def test_active_reconciliation_lock_blocks_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = saved_plan()
+    monkeypatch.setattr("dependabot_watcher.execution.plan", lambda config, client: report)
+    client = ExecutionClient()
+    step_id = plan_step_id(report)
+    preflight = preflight_execution(execution_config(), client, report, step_id)
+
+    with run_lock(tmp_path):
+        with pytest.raises(ExecutionError, match="already active"):
+            execute_approved(
+                execution_config(),
+                client,
+                report,
+                step_id,
+                preflight["approval_token"],
+                state_directory=tmp_path,
+            )
+
+    assert client.merges == []
+
+
+def test_execution_observation_correlates_success_and_recovery(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o700)
+    binding = {
+        "repository": "example-org/example-app",
+        "pull_request": 42,
+        "head_sha": HEAD_SHA,
+    }
+    events = [
+        {
+            "schema_version": 1,
+            "event_id": "event_success",
+            "event_type": "execution_succeeded",
+            "occurred_at": "2026-09-27T10:00:00Z",
+            "action_id": "action_success",
+            "binding": binding,
+            "outcome": "merged",
+        },
+        {
+            "schema_version": 1,
+            "event_id": "event_failure",
+            "event_type": "execution_failed",
+            "occurred_at": "2026-09-27T10:01:00Z",
+            "action_id": "action_failure",
+            "binding": {**binding, "pull_request": 43},
+            "outcome": "github_error",
+            "recovery": "Create a fresh plan before retrying.",
+        },
+    ]
+    audit_path = tmp_path / "execution-audit.jsonl"
+    audit_path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    audit_path.chmod(0o600)
+    inspection = {
+        "repositories": [
+            {
+                "repository": "example-org/example-app",
+                "pull_requests": [],
+                "errors": [],
+                "truncations": [],
+            }
+        ]
+    }
+
+    result = execution_observation(tmp_path, inspection)
+
+    assert result["action_count"] == 2
+    assert result["recovery_required_count"] == 1
+    assert result["recovery_required"] is True
+    assert result["observations"][0]["status"] == "success_observed"
+    assert result["observations"][1]["status"] == "failed"
+    assert result["revision"].startswith("execution_")

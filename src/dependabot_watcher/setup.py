@@ -22,6 +22,12 @@ from .diagnostics import (
     _run_command,
     _tool_status,
 )
+from .runtime_state import (
+    RuntimeStateError,
+    ensure_private_directory,
+    ensure_user_owned_directory,
+    secure_private_file,
+)
 
 
 SETUP_SCHEMA_VERSION = 1
@@ -45,6 +51,7 @@ class SetupRequest:
     review_model: str | None = None
     review_reasoning: str | None = None
     acknowledge_model_use: bool = False
+    require_advice_before_execution: bool = False
     autonomy: str = "read_only"
     acknowledge_mutation: bool = False
     offline: bool = False
@@ -81,6 +88,7 @@ def _config_data(
         "operation": {
             "autonomy": request.autonomy,
             "mutation_enabled": request.autonomy == "approval_required",
+            "require_advice_before_execution": request.require_advice_before_execution,
             "report_verbosity": request.report_verbosity,
             "machine_output": "json",
         },
@@ -144,6 +152,8 @@ def _render_config(data: Mapping[str, Any]) -> str:
         "[operation]",
         f"autonomy = {_toml_string(operation['autonomy'])}",
         f"mutation_enabled = {str(operation['mutation_enabled']).lower()}",
+        "require_advice_before_execution = "
+        f"{str(operation['require_advice_before_execution']).lower()}",
         f"report_verbosity = {_toml_string(operation['report_verbosity'])}",
         f"machine_output = {_toml_string(operation['machine_output'])}",
         "",
@@ -201,7 +211,16 @@ def _render_config(data: Mapping[str, Any]) -> str:
 
 def _write_exclusive(path: Path, content: str) -> None:
     expanded = path.expanduser()
-    expanded.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name == "nt":
+        try:
+            ensure_private_directory(expanded.parent)
+        except RuntimeStateError as exc:
+            raise SetupError(str(exc)) from exc
+    else:
+        try:
+            ensure_user_owned_directory(expanded.parent)
+        except RuntimeStateError as exc:
+            raise SetupError(str(exc)) from exc
     descriptor = -1
     temporary_path: Path | None = None
     try:
@@ -211,7 +230,8 @@ def _write_exclusive(path: Path, content: str) -> None:
             dir=expanded.parent,
         )
         temporary_path = Path(temporary_name)
-        os.fchmod(descriptor, 0o600)
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
         handle = os.fdopen(descriptor, "w", encoding="utf-8", newline="\n")
         descriptor = -1
         with handle:
@@ -226,6 +246,12 @@ def _write_exclusive(path: Path, content: str) -> None:
             ) from exc
         except OSError as exc:
             raise SetupError(f"Could not atomically create configuration at {expanded}.") from exc
+        if os.name == "nt":
+            try:
+                secure_private_file(expanded)
+            except RuntimeStateError as exc:
+                expanded.unlink(missing_ok=True)
+                raise SetupError(str(exc)) from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -294,6 +320,10 @@ def _validate_request(request: SetupRequest) -> None:
     if request.advisory_mode != "off" and not request.acknowledge_model_use:
         raise SetupError(
             "Enabling model advice requires --acknowledge-model-use; setup itself makes no model call."
+        )
+    if request.require_advice_before_execution and request.advisory_mode == "off":
+        raise SetupError(
+            "--require-advice-before-execution requires economy or reviewed advisory mode."
         )
     if request.advisory_mode != "off" and (
         not request.triage_model or not request.triage_reasoning

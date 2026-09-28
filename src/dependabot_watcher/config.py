@@ -3,16 +3,24 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import stat
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+from .runtime_state import (
+    RuntimeStateError,
+    validate_private_file,
+    validate_user_owned_directory,
+)
+
 tomllib = importlib.import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
 
 SCHEMA_VERSION = 1
+_MAX_CONFIG_BYTES = 5_000_000
 _REPOSITORY_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
@@ -123,6 +131,7 @@ class AdvisoryConfig:
 class OperationConfig:
     autonomy: str = "read_only"
     mutation_enabled: bool = False
+    require_advice_before_execution: bool = False
     report_verbosity: str = "concise"
     machine_output: str = "json"
 
@@ -209,7 +218,13 @@ def _operation(value: object) -> OperationConfig:
     data = _require_mapping({} if value is None else value, "operation")
     _reject_unknown(
         data,
-        {"autonomy", "mutation_enabled", "report_verbosity", "machine_output"},
+        {
+            "autonomy",
+            "mutation_enabled",
+            "require_advice_before_execution",
+            "report_verbosity",
+            "machine_output",
+        },
         "operation",
     )
     autonomy = _optional_string(data.get("autonomy", "read_only"), "operation.autonomy")
@@ -225,6 +240,9 @@ def _operation(value: object) -> OperationConfig:
             "operation.mutation_enabled must be true only when autonomy is "
             "'approval_required', and false for 'read_only'."
         )
+    require_advice = data.get("require_advice_before_execution", False)
+    if not isinstance(require_advice, bool):
+        raise ConfigError("operation.require_advice_before_execution must be a boolean.")
     report_verbosity = _optional_string(
         data.get("report_verbosity", "concise"),
         "operation.report_verbosity",
@@ -242,6 +260,7 @@ def _operation(value: object) -> OperationConfig:
     return OperationConfig(
         autonomy=autonomy,
         mutation_enabled=mutation_enabled,
+        require_advice_before_execution=require_advice,
         report_verbosity=report_verbosity,
         machine_output=machine_output,
     )
@@ -629,25 +648,68 @@ def parse_config(data: Mapping[str, Any]) -> WatcherConfig:
     names = [repository.name.casefold() for repository in repositories]
     if len(names) != len(set(names)):
         raise ConfigError("repositories contains duplicate repository names.")
+    advisory = _advisory(data.get("advisory", {}))
+    operation = _operation(data.get("operation", {}))
+    if operation.require_advice_before_execution and advisory.mode == "off":
+        raise ConfigError(
+            "operation.require_advice_before_execution requires an enabled advisory mode."
+        )
     return WatcherConfig(
         schema_version=SCHEMA_VERSION,
         repositories=repositories,
         collection=_collection(data.get("collection", {})),
         path_policy=_path_policy(data.get("path_policy", {}), "path_policy"),
-        advisory=_advisory(data.get("advisory", {})),
-        operation=_operation(data.get("operation", {})),
+        advisory=advisory,
+        operation=operation,
         profile=_profile(data.get("profile", {})),
     )
 
 
 def load_config(path: Path) -> WatcherConfig:
+    expanded = path.expanduser()
+    descriptor = -1
     try:
-        with path.expanduser().open("rb") as handle:
+        validate_user_owned_directory(expanded.parent)
+        inspected = expanded.lstat()
+        if stat.S_ISLNK(inspected.st_mode) or not stat.S_ISREG(inspected.st_mode):
+            raise ConfigError(f"Configuration is not a trusted regular file: {expanded}.")
+        if inspected.st_size > _MAX_CONFIG_BYTES:
+            raise ConfigError("Configuration exceeds its 5 MB safety ceiling.")
+        if os.name == "nt":
+            validate_private_file(expanded, maximum_bytes=_MAX_CONFIG_BYTES)
+        else:
+            if hasattr(os, "getuid") and inspected.st_uid != os.getuid():
+                raise ConfigError(f"Configuration is not owned by the current user: {expanded}.")
+            if stat.S_IMODE(inspected.st_mode) & 0o022:
+                raise ConfigError(
+                    f"Configuration permissions allow another principal to modify it: {expanded}."
+                )
+        descriptor = os.open(
+            expanded,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (
+            inspected.st_dev,
+            inspected.st_ino,
+        ) != (opened.st_dev, opened.st_ino):
+            raise ConfigError("Configuration changed during safe open.")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
             raw = tomllib.load(handle)
     except FileNotFoundError as exc:
         raise ConfigError(
-            f"Configuration file not found: {path.expanduser()}. Copy config.example.toml and edit it."
+            f"Configuration file not found: {expanded}. Copy config.example.toml and edit it."
         ) from exc
+    except RuntimeStateError as exc:
+        raise ConfigError(str(exc)) from exc
+    except ConfigError:
+        raise
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ConfigError(f"Could not read configuration {path.expanduser()}: {exc}") from exc
+        raise ConfigError(f"Could not read configuration {expanded}: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     return parse_config(raw)

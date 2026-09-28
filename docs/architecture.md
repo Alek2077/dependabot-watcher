@@ -124,6 +124,28 @@ Modes control workload rather than universal model names. Provider/model/reasoni
 
 Additional providers, schedulers, notifications, broader mutation types, automatic execution, high-coverage analysis, and wider autonomy/observability belong to later phases. They must consume the same trusted identity and deterministic evidence without weakening fail-closed behavior.
 
+### Scheduler, platform, and remote-runner boundary
+
+The recurring core is an idempotent run-once reconciler, not a permanent Watcher daemon. Watcher owns collection, stable revision identity, no-work and duplicate suppression, policy, bounded durable run history, notification decisions, and action/recovery state. A platform adapter owns only registration, wake-up, environment selection, and removal, then invokes the same reconciler.
+
+The initial adapters are Windows Task Scheduler invoking WSL2, Windows Task Scheduler invoking native Windows, a systemd user timer on native Linux, and `launchd` on macOS. Each adapter implements a small common lifecycle boundary: capability detection, non-mutating preview, idempotent install/update, native-definition readback, status and drift reporting, disable/remove, and the exact scheduler-facing command. Every registration has a stable Watcher-owned identity so updates cannot create duplicates across old cadence or authority settings and removal cannot target unrelated jobs. Registration uses absolute executable/configuration/state paths and the same least-privileged user that owns the Watcher profile and GitHub/provider credentials by default; elevated or system-wide operation is a separately disclosed advanced choice.
+
+A missed interval is never replayed as a backlog. Windows uses `StartWhenAvailable` with overlapping instances suppressed, and the proven WSL path performs one overdue reconciliation against current authoritative state. The systemd adapter invokes reconciliation shortly after the user manager starts and then at the configured interval, but its monotonic interval does not yet guarantee an immediate post-suspend invocation; real suspend/resume catch-up remains a native-Linux Phase 10 gate. The launchd adapter uses `RunAtLoad` plus `StartInterval`, with actual sleep/login/power-cycle behavior likewise requiring installed macOS evidence. Closing a WSL terminal is not a failure because the Windows task can start the distribution; a sleeping or powered-off machine cannot run local work until a supported native trigger runs after it returns.
+
+Platform-private storage is an explicit boundary. POSIX ownership/mode, no-follow, lock, and atomic-write assumptions must not be reused as if they establish equivalent native Windows privacy or durability. The state layer must provide platform-appropriate private-directory creation, file validation, locking, atomic replacement, and recovery while preserving the same higher-level state schema and fail-closed invariants.
+
+Scheduled history is lineage, not an unbounded transcript. Retain stable job/run identity, repository and evidence revisions, advice assurance and provider usage, plan supersession, action/audit outcome, post-action observation, deferral/blocker reason, recovery state, and timestamps. A fresh plan revokes stale executable authority but links to the event and plan it supersedes; token-bearing execution checks the selected state directory and rejects a plan that current reconciliation state superseded or revoked. Credentials, secret material, and unrestricted provider transcripts are never scheduled-state fields.
+
+The reconciler must remain runnable from a future user-owned CI job, self-hosted server/container, or managed service. That seam preserves a path to continuous availability without coupling the local product to multitenant hosting, webhook infrastructure, or one scheduler library before demand justifies them.
+
+### Implementation-language boundary
+
+Python owns the current CLI, evidence, policy, advisory, execution, state, and scheduler-adapter implementation. Preserve language-neutral boundaries around persisted schemas, structured JSON reports, job identities, subprocess invocation, provider contracts, and future remote-runner messages so the architecture does not require every component to share one runtime.
+
+A future Go, Rust, or other native component must solve a measured problem and remain narrower than the product core. Prefer a separately versioned executable or service with explicit input/output schemas, capability and authority limits, timeouts, cancellation, provenance, and compatibility tests. Do not share opaque in-process state, duplicate policy or execution authorization, or let a native helper silently gain broader filesystem, credential, network, or mutation authority than the Python caller.
+
+The leading future Go roles are native launcher/scheduler registration, single-binary distribution support, a low-overhead webhook or remote runner, and bounded high-concurrency workers. Keep these roles replaceable and preserve the Python run-once reconciler and exact-action boundary unless evidence shows that replacing a specific responsibility produces a better reliability and maintenance outcome than adapting it.
+
 ### Future agent-runtime seam
 
 Do not couple deeper AI behavior directly to the synchronous Codex subprocess. Preserve `AdvisoryProvider` as the bounded evidence-review contract while adding future investigation through versioned jobs and artifacts:
