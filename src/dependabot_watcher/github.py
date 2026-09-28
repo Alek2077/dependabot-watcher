@@ -15,6 +15,12 @@ class GitHubError(RuntimeError):
     """Raised when a read-only GitHub operation cannot be completed."""
 
 
+def public_github_error_message(surface: str = "operation") -> str:
+    """Return a stable public error without forwarding CLI or API response text."""
+
+    return f"GitHub {surface} failed; command and response details were withheld."
+
+
 T = TypeVar("T")
 
 
@@ -121,10 +127,10 @@ def _run_command(command: Sequence[str], timeout_seconds: int) -> str:
     except subprocess.TimeoutExpired as exc:
         raise GitHubError(f"GitHub command timed out after {timeout_seconds} seconds.") from exc
     if result.returncode != 0:
-        message = (result.stderr or result.stdout).strip()
-        if len(message) > 2000:
-            message = message[:1997] + "..."
-        raise GitHubError(message or f"GitHub CLI exited with status {result.returncode}.")
+        raise GitHubError(
+            f"GitHub CLI command failed with status {result.returncode}; "
+            "command output was withheld."
+        )
     return result.stdout
 
 
@@ -620,8 +626,9 @@ class GhCliClient:
         if not isinstance(response, dict) or not isinstance(response.get("merged"), bool):
             raise GitHubError("GitHub returned an invalid merge response.")
         if response["merged"] is not True:
-            message = str(response.get("message") or "GitHub did not merge the pull request.")
-            raise GitHubError(message[:2000])
+            raise GitHubError(
+                "GitHub did not confirm the requested merge; response details were withheld."
+            )
         merge_commit_sha = response.get("sha")
         if merge_commit_sha is not None and (
             not isinstance(merge_commit_sha, str)

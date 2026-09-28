@@ -34,17 +34,49 @@ class AdvisoryContractError(AdvisoryError):
     """Raised when provider output does not satisfy the advisory contract."""
 
 
+def advisory_action_policy(config: WatcherConfig) -> dict[str, Any]:
+    """Return the stable non-secret advisory policy bound into executable plans."""
+
+    policy_input = {
+        "schema_version": 1,
+        "advice_required": config.operation.require_advice_before_execution,
+        "mode": config.advisory.mode,
+        "provider": config.advisory.provider,
+        "budget": asdict(config.advisory.budget),
+        "codex_cli": (
+            asdict(config.advisory.codex_cli)
+            if config.advisory.codex_cli is not None
+            else None
+        ),
+    }
+    payload = json.dumps(
+        policy_input,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "advice_required": config.operation.require_advice_before_execution,
+        "advisory_mode": config.advisory.mode,
+        "provider": config.advisory.provider,
+        "policy_id": f"advisory_policy_{hashlib.sha256(payload).hexdigest()[:24]}",
+    }
+
+
 @dataclass(frozen=True)
 class AdvisoryRequest:
     role: str
     candidates: tuple[dict[str, Any], ...]
+    queue_synopsis: Mapping[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": ADVISORY_SCHEMA_VERSION,
             "role": self.role,
             "candidates": list(self.candidates),
         }
+        if self.queue_synopsis is not None:
+            payload["queue_synopsis"] = copy.deepcopy(dict(self.queue_synopsis))
+        return payload
 
 
 @dataclass(frozen=True)
@@ -203,6 +235,104 @@ def _build_candidates(
             )
     candidates.sort(key=lambda candidate: candidate.priority)
     return candidates, deferred
+
+
+def queue_synopsis(inspection: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a compact complete-queue view for model ordering awareness."""
+
+    repository_synopses: list[dict[str, Any]] = []
+    total_items = 0
+    for raw_repository in inspection.get("repositories") or []:
+        if not isinstance(raw_repository, Mapping):
+            continue
+        pull_requests: list[dict[str, Any]] = []
+        for assessment in raw_repository.get("pull_requests") or []:
+            if not isinstance(assessment, Mapping):
+                continue
+            identity = assessment.get("candidate_identity")
+            trusted_identity = identity if isinstance(identity, Mapping) else {}
+            path_assessment = assessment.get("path_assessment")
+            path_data = path_assessment if isinstance(path_assessment, Mapping) else {}
+            paths = [
+                str(item.get("path"))
+                for item in path_data.get("files") or []
+                if isinstance(item, Mapping) and item.get("path")
+            ]
+            related_alerts = [
+                item.get("number")
+                for item in assessment.get("related_alerts") or []
+                if isinstance(item, Mapping) and isinstance(item.get("number"), int)
+            ]
+            pull_requests.append(
+                {
+                    "number": trusted_identity.get("number"),
+                    "head_sha": trusted_identity.get("head_sha"),
+                    "observed_base": trusted_identity.get("observed_base"),
+                    "title": trusted_identity.get("title"),
+                    "classification": assessment.get("classification"),
+                    "mergeable": assessment.get("mergeable"),
+                    "merge_state_status": assessment.get("merge_state_status"),
+                    "checks": assessment.get("checks"),
+                    "changed_paths": paths[:10],
+                    "changed_paths_truncated": len(paths) > 10,
+                    "related_alert_numbers": related_alerts,
+                }
+            )
+        alerts: list[dict[str, Any]] = []
+        for alert in raw_repository.get("alerts") or []:
+            if not isinstance(alert, Mapping):
+                continue
+            relationships = [
+                {
+                    "pull_request_number": relationship.get("number"),
+                    "coverage_evidence": relationship.get("coverage_evidence"),
+                    "target_version": relationship.get("target_version"),
+                }
+                for relationship in alert.get("package_related_open_pull_requests") or []
+                if isinstance(relationship, Mapping)
+            ]
+            alerts.append(
+                {
+                    "number": alert.get("number"),
+                    "dependency_name": alert.get("dependency_name"),
+                    "ecosystem": alert.get("ecosystem"),
+                    "manifest_path": alert.get("manifest_path"),
+                    "severity": alert.get("severity"),
+                    "classification": alert.get("classification"),
+                    "first_patched_version": alert.get("first_patched_version"),
+                    "pull_request_relationships": relationships,
+                }
+            )
+        total_items += len(pull_requests) + len(alerts)
+        evidence_snapshot = raw_repository.get("evidence_snapshot")
+        snapshot = evidence_snapshot if isinstance(evidence_snapshot, Mapping) else {}
+        raw_summary = raw_repository.get("summary")
+        repository_summary = raw_summary if isinstance(raw_summary, Mapping) else {}
+        repository_synopses.append(
+            {
+                "repository": raw_repository.get("repository"),
+                "expected_base": raw_repository.get("expected_base"),
+                "base_sha": snapshot.get("base_sha"),
+                "summary": copy.deepcopy(dict(repository_summary)),
+                "evidence_complete": not bool(
+                    raw_repository.get("errors") or raw_repository.get("truncations")
+                ),
+                "pull_requests": pull_requests,
+                "alerts": alerts,
+            }
+        )
+    return {
+        "repository_count": len(repository_synopses),
+        "item_count": total_items,
+        "complete": inspection.get("status") == "complete",
+        "truncated": any(
+            bool(repository.get("truncations"))
+            for repository in inspection.get("repositories") or []
+            if isinstance(repository, Mapping)
+        ),
+        "semantic_relationship_status": "only_collected_relationships",
+        "repositories": repository_synopses,
+    }
 
 
 def _string_list(value: object, location: str) -> list[str]:
@@ -394,6 +524,8 @@ def advise_from_inspection(
 ) -> dict[str, Any]:
     advisory_config = config.advisory
     candidates, deferred = _build_candidates(inspection)
+    synopsis = queue_synopsis(inspection)
+    action_policy = advisory_action_policy(config)
     if advisory_config.mode == "off":
         return {
             "schema_version": ADVISORY_SCHEMA_VERSION,
@@ -411,6 +543,10 @@ def advise_from_inspection(
             "advisory": {
                 "mode": "off",
                 "provider": None,
+                "required_for_execution": (
+                    config.operation.require_advice_before_execution
+                ),
+                "action_policy_id": action_policy["policy_id"],
                 "status": "disabled",
                 "budget": asdict(advisory_config.budget),
                 "summary": {
@@ -449,10 +585,24 @@ def advise_from_inspection(
         request = AdvisoryRequest(
             role="triage",
             candidates=tuple(_candidate_payload(candidate) for candidate in batch),
+            queue_synopsis=synopsis,
         )
         try:
             attempted_calls += 1
             response = active_provider.analyze(request, stage="triage")
+        except Exception:
+            errors.append(
+                {
+                    "stage": "triage",
+                    "batch": batch_index + 1,
+                    "category": "provider_failure",
+                    "message": "Advisory provider failed during triage; details were withheld.",
+                }
+            )
+            remaining = [candidate for later in triage_batches[batch_index:] for candidate in later]
+            deferred.extend(_deferred(candidate, "triage_provider_failure") for candidate in remaining)
+            break
+        try:
             validated = validate_provider_payload(
                 response.payload,
                 [candidate.candidate_id for candidate in batch],
@@ -460,16 +610,17 @@ def advise_from_inspection(
             _validate_candidate_actions(validated, batch, stage="triage")
             triage_decisions.update(validated)
             calls.append(_call_metadata(response, "triage", len(batch)))
-        except AdvisoryError as exc:
+        except AdvisoryContractError as exc:
             errors.append(
                 {
                     "stage": "triage",
                     "batch": batch_index + 1,
+                    "category": "invalid_provider_response",
                     "message": str(exc),
                 }
             )
             remaining = [candidate for later in triage_batches[batch_index:] for candidate in later]
-            deferred.extend(_deferred(candidate, "triage_provider_failure") for candidate in remaining)
+            deferred.extend(_deferred(candidate, "triage_contract_failure") for candidate in remaining)
             break
 
     selected_by_id = {candidate.candidate_id: candidate for candidate in selected}
@@ -502,10 +653,24 @@ def advise_from_inspection(
                     _candidate_payload(candidate, triage_decisions[candidate.candidate_id])
                     for candidate in batch
                 ),
+                queue_synopsis=synopsis,
             )
             try:
                 attempted_calls += 1
                 response = active_provider.analyze(request, stage="review")
+            except Exception:
+                errors.append(
+                    {
+                        "stage": "review",
+                        "batch": batch_index + 1,
+                        "category": "provider_failure",
+                        "message": "Advisory provider failed during review; details were withheld.",
+                    }
+                )
+                remaining = [candidate for later in review_batches[batch_index:] for candidate in later]
+                deferred.extend(_deferred(candidate, "review_provider_failure") for candidate in remaining)
+                break
+            try:
                 validated = validate_provider_payload(
                     response.payload,
                     [candidate.candidate_id for candidate in batch],
@@ -513,16 +678,17 @@ def advise_from_inspection(
                 _validate_candidate_actions(validated, batch, stage="review")
                 review_decisions.update(validated)
                 calls.append(_call_metadata(response, "review", len(batch)))
-            except AdvisoryError as exc:
+            except AdvisoryContractError as exc:
                 errors.append(
                     {
                         "stage": "review",
                         "batch": batch_index + 1,
+                        "category": "invalid_provider_response",
                         "message": str(exc),
                     }
                 )
                 remaining = [candidate for later in review_batches[batch_index:] for candidate in later]
-                deferred.extend(_deferred(candidate, "review_provider_failure") for candidate in remaining)
+                deferred.extend(_deferred(candidate, "review_contract_failure") for candidate in remaining)
                 break
 
     decisions: list[dict[str, Any]] = []
@@ -566,6 +732,8 @@ def advise_from_inspection(
         "advisory": {
             "mode": advisory_config.mode,
             "provider": advisory_config.provider,
+            "required_for_execution": config.operation.require_advice_before_execution,
+            "action_policy_id": action_policy["policy_id"],
             "status": "partial" if errors else "complete",
             "budget": asdict(budget),
             "summary": {

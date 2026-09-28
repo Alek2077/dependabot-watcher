@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from contextlib import contextmanager
 from enum import IntEnum
@@ -12,11 +13,22 @@ from .advisory import AdvisoryError, advise
 from .config import ConfigError, WatcherConfig, default_config_path, load_config
 from .diagnostics import doctor
 from .execution import ExecutionError, execute_approved, load_plan, preflight_execution
-from .github import GhCliClient, GitHubError
+from .github import GhCliClient, GitHubError, public_github_error_message
 from .inspector import inspect
+from .notifications import deliver_desktop_notification
 from .operational_output import render_operational
 from .output import render, render_advisory, render_execution, render_plan
 from .planning import PlanningError, plan
+from .reconciliation import (
+    ReconciliationError,
+    reconcile,
+    record_notification_delivery,
+)
+from .reconciliation_output import render_reconciliation
+from .runtime_state import default_state_directory
+from .schedulers.common import ScheduleError
+from .scheduling import manage_schedule
+from .scheduling_output import render_schedule
 from .setup import SetupError, SetupRequest, setup
 from .terminal import (
     ProgressMode,
@@ -37,7 +49,50 @@ class ExitCode(IntEnum):
     ADVISORY_ERROR = 5
     PLANNING_ERROR = 6
     EXECUTION_ERROR = 7
+    RECONCILIATION_ERROR = 8
+    SCHEDULE_ERROR = 9
+    NOTIFICATION_ERROR = 10
     INTERNAL_ERROR = 70
+
+
+def _normalized_console_invocation(raw_invocation: str, *, windows: bool) -> str:
+    if windows and raw_invocation.startswith("/mnt/"):
+        parts = raw_invocation.split("/")
+        if len(parts) > 4 and len(parts[2]) == 1:
+            return f"{parts[2].upper()}:\\" + "\\".join(parts[3:])
+    return raw_invocation
+
+
+def _current_console_executable() -> str:
+    raw_invocation = _normalized_console_invocation(
+        sys.argv[0],
+        windows=os.name == "nt",
+    )
+    sibling_name = "dependabot-watcher.exe" if os.name == "nt" else "dependabot-watcher"
+    invoked = Path(raw_invocation).expanduser()
+    candidates: list[Path] = []
+    if invoked.name.casefold() in {"dependabot-watcher", "dependabot-watcher.exe"}:
+        candidates.append(invoked)
+    candidates.extend(
+        [
+            Path(sys.executable).resolve(strict=False).parent / sibling_name,
+            Path(sys.prefix) / "Scripts" / sibling_name,
+            Path(sys.prefix) / "bin" / sibling_name,
+        ]
+    )
+    package_path = Path(__file__).resolve(strict=False)
+    for parent in list(package_path.parents)[:6]:
+        candidates.extend(
+            [parent / "Scripts" / sibling_name, parent / "bin" / sibling_name]
+        )
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.is_file():
+            return str(resolved)
+    return "dependabot-watcher"
 
 
 @contextmanager
@@ -88,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dependabot-watcher",
         description=(
-            "Inspect, plan, and safely gate Dependabot activity across configured "
+            "Inspect, reconcile, plan, and safely gate Dependabot activity across configured "
             "GitHub repositories."
         ),
     )
@@ -115,6 +170,31 @@ def build_parser() -> argparse.ArgumentParser:
         "execute",
         help="Preflight or perform one exact approval-gated plan action.",
     )
+    run_parser = commands.add_parser(
+        "run",
+        help="Run one durable non-mutating reconciliation for scheduling.",
+    )
+    schedule_parser = commands.add_parser(
+        "schedule",
+        help="Preview or manage one native host-scheduler registration.",
+    )
+    schedule_commands = schedule_parser.add_subparsers(
+        dest="schedule_action",
+        required=True,
+    )
+    schedule_action_parsers = {
+        action: schedule_commands.add_parser(
+            action,
+            help={
+                "preview": "Show the exact native schedule without changing it.",
+                "install": "Create or update the Watcher-owned native schedule.",
+                "status": "Read back native schedule state and report drift.",
+                "disable": "Disable the Watcher-owned schedule without removing it.",
+                "remove": "Remove only the Watcher-owned native schedule.",
+            }[action],
+        )
+        for action in ("preview", "install", "status", "disable", "remove")
+    }
     for command_parser in (
         inspect_parser,
         advise_parser,
@@ -122,6 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
         doctor_parser,
         setup_parser,
         execute_parser,
+        run_parser,
     ):
         command_parser.add_argument(
             "--plain",
@@ -237,6 +318,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Acknowledge that later advice can consume provider quota or incur cost.",
     )
     setup_parser.add_argument(
+        "--require-advice-before-execution",
+        action="store_true",
+        help="Make unadvised, deferred, or failed model results ineligible for execution.",
+    )
+    setup_parser.add_argument(
         "--offline",
         action="store_true",
         help="Create an unverified profile without authentication or repository calls.",
@@ -259,6 +345,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Saved JSON output from `plan --format json`.",
     )
+    execute_parser.add_argument(
+        "--state-dir",
+        type=Path,
+        default=default_state_directory(),
+        help="Private execution/reconciliation state directory (default: platform user state path).",
+    )
     execute_parser.add_argument("--step-id", required=True, help="Exact saved plan step ID.")
     execute_parser.add_argument(
         "--approval-token",
@@ -270,6 +362,92 @@ def build_parser() -> argparse.ArgumentParser:
         default="text",
         dest="output_format",
     )
+    run_parser.add_argument(
+        "--config",
+        type=Path,
+        default=default_config_path(),
+        help="TOML configuration path (default: platform user config path).",
+    )
+    run_parser.add_argument(
+        "--state-dir",
+        type=Path,
+        default=default_state_directory(),
+        help="Private reconciler state directory (default: platform user state path).",
+    )
+    run_parser.add_argument(
+        "--retry-after-seconds",
+        type=int,
+        default=3600,
+        help="Delay before retrying unchanged partial/failed work (default: 3600).",
+    )
+    run_parser.add_argument(
+        "--expected-interval-minutes",
+        type=int,
+        help="Expected schedule cadence used to report missed-run catch-up.",
+    )
+    run_parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress stdout; durable state and notifications retain action details.",
+    )
+    run_parser.add_argument(
+        "--notify",
+        choices=("off", "desktop"),
+        default="off",
+        help="Optional sparse notification delivery (default: off).",
+    )
+    run_parser.add_argument(
+        "--format",
+        choices=("text", "json", "markdown"),
+        default="text",
+        dest="output_format",
+    )
+    for schedule_action_parser in schedule_action_parsers.values():
+        schedule_action_parser.add_argument(
+            "--plain",
+            action="store_true",
+            help="Disable animation and terminal styling for accessible human output.",
+        )
+        schedule_action_parser.add_argument(
+            "--config",
+            type=Path,
+            default=default_config_path(),
+            help="TOML configuration path bound to this schedule.",
+        )
+        schedule_action_parser.add_argument(
+            "--state-dir",
+            type=Path,
+            default=default_state_directory(),
+            help="Private reconciler state directory bound to this schedule.",
+        )
+        schedule_action_parser.add_argument(
+            "--platform",
+            choices=("auto", "wsl", "windows", "systemd", "launchd"),
+            default="auto",
+            help="Native scheduler adapter (default: detect current platform).",
+        )
+        schedule_action_parser.add_argument(
+            "--interval-minutes",
+            type=int,
+            default=1440,
+            help="Reconciliation cadence from 15 to 10080 minutes (default: 1440).",
+        )
+        schedule_action_parser.add_argument(
+            "--distro",
+            help="Exact WSL distribution name for the WSL adapter.",
+        )
+        schedule_action_parser.add_argument(
+            "--notify",
+            choices=("off", "desktop"),
+            default="off",
+            help="Notification mode recorded in the scheduled run command.",
+        )
+        schedule_action_parser.add_argument(
+            "--format",
+            choices=("text", "json", "markdown"),
+            default="text",
+            dest="output_format",
+        )
     return parser
 
 
@@ -404,6 +582,9 @@ def main(argv: list[str] | None = None) -> int:
                         review_model=args.review_model,
                         review_reasoning=args.review_reasoning,
                         acknowledge_model_use=args.acknowledge_model_use,
+                        require_advice_before_execution=(
+                            args.require_advice_before_execution
+                        ),
                         autonomy=args.autonomy,
                         acknowledge_mutation=args.acknowledge_mutation,
                         offline=args.offline,
@@ -427,12 +608,90 @@ def main(argv: list[str] | None = None) -> int:
                         saved_plan,
                         args.step_id,
                         args.approval_token,
+                        state_directory=args.state_dir,
                     )
                 else:
                     report = preflight_execution(
-                        config, client, saved_plan, args.step_id
+                        config,
+                        client,
+                        saved_plan,
+                        args.step_id,
+                        state_directory=args.state_dir,
                     )
             _write_report(render_execution(report, args.output_format), presentation)
+            return ExitCode.SUCCESS
+        if args.command == "run":
+            config = load_config(args.config)
+            client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
+            repository_count = len(config.repositories)
+            repository_word = "repository" if repository_count == 1 else "repositories"
+            with live_progress(
+                f"Reconciling Dependabot evidence for {repository_count} {repository_word}...",
+                presentation=presentation,
+                stream=sys.stderr,
+            ):
+                report = reconcile(
+                    config,
+                    client,
+                    config_path=args.config.expanduser(),
+                    state_directory=args.state_dir,
+                    retry_after_seconds=args.retry_after_seconds,
+                    notification_mode=args.notify,
+                    expected_interval_minutes=args.expected_interval_minutes,
+                )
+            notification = report.get("notification") or {}
+            delivery_failed = False
+            if args.notify == "desktop" and notification.get("needed"):
+                delivery = deliver_desktop_notification(report)
+                report = record_notification_delivery(
+                    args.state_dir,
+                    str(report["run_id"]),
+                    delivery,
+                )
+                delivery_failed = delivery.get("status") != "delivered"
+            if not args.quiet:
+                _write_report(
+                    render_reconciliation(report, args.output_format),
+                    presentation,
+                )
+            if delivery_failed:
+                _write_error(
+                    "Notification",
+                    "Desktop notification could not be delivered; the durable run report contains the action and next command.",
+                    presentation,
+                )
+                return ExitCode.NOTIFICATION_ERROR
+            return (
+                ExitCode.PARTIAL_INSPECTION
+                if report["status"] == "partial"
+                else ExitCode.SUCCESS
+            )
+        if args.command == "schedule":
+            if args.schedule_action in {"preview", "install"}:
+                load_config(args.config)
+            schedule_progress = {
+                "preview": "Preparing the native Watcher schedule preview...",
+                "install": "Installing the native Watcher schedule...",
+                "status": "Checking the native Watcher schedule...",
+                "disable": "Disabling the native Watcher schedule...",
+                "remove": "Removing the native Watcher schedule...",
+            }
+            with live_progress(
+                schedule_progress[args.schedule_action],
+                presentation=presentation,
+                stream=sys.stderr,
+            ):
+                report = manage_schedule(
+                    args.schedule_action,
+                    config_path=args.config,
+                    state_directory=args.state_dir,
+                    interval_minutes=args.interval_minutes,
+                    notification_mode=args.notify,
+                    requested_platform=args.platform,
+                    distro=args.distro,
+                    executable=_current_console_executable(),
+                )
+            _write_report(render_schedule(report, args.output_format), presentation)
             return ExitCode.SUCCESS
         config = _select_repositories(load_config(args.config), args.repositories)
         client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
@@ -471,11 +730,19 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         _write_error("Configuration", exc, presentation)
         return ExitCode.CONFIGURATION_ERROR
-    except GitHubError as exc:
-        _write_error("GitHub", exc, presentation)
+    except GitHubError:
+        _write_error(
+            "GitHub",
+            GitHubError(public_github_error_message()),
+            presentation,
+        )
         return ExitCode.GITHUB_ERROR
-    except AdvisoryError as exc:
-        _write_error("Advisory", exc, presentation)
+    except AdvisoryError:
+        _write_error(
+            "Advisory",
+            AdvisoryError("Advisory provider failed; details were withheld."),
+            presentation,
+        )
         return ExitCode.ADVISORY_ERROR
     except PlanningError as exc:
         _write_error("Planning", exc, presentation)
@@ -486,6 +753,12 @@ def main(argv: list[str] | None = None) -> int:
     except ExecutionError as exc:
         _write_error("Execution", exc, presentation)
         return ExitCode.EXECUTION_ERROR
+    except ReconciliationError as exc:
+        _write_error("Reconciliation", exc, presentation)
+        return ExitCode.RECONCILIATION_ERROR
+    except ScheduleError as exc:
+        _write_error("Schedule", exc, presentation)
+        return ExitCode.SCHEDULE_ERROR
     except Exception as exc:  # defensive CLI boundary
         _write_error("Unexpected", exc, presentation)
         return ExitCode.INTERNAL_ERROR

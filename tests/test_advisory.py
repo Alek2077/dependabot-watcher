@@ -249,6 +249,11 @@ def test_economy_mode_prioritizes_alert_and_rebinds_identity() -> None:
     report = advise_from_inspection(_config("economy"), _inspection(), provider)
 
     assert len(provider.requests) == 1
+    assert provider.requests[0].queue_synopsis is not None
+    assert provider.requests[0].queue_synopsis["item_count"] == 2
+    assert provider.requests[0].queue_synopsis["repositories"][0][
+        "repository"
+    ] == "example-org/example-app"
     assert provider.requests[0].candidates[0]["kind"] == "alert"
     pull_request_input = next(
         candidate
@@ -301,7 +306,13 @@ def test_provider_failure_is_explicit_and_non_mutating() -> None:
     report = advise_from_inspection(_config("economy"), _inspection(), FailingProvider())
 
     assert report["status"] == "partial"
-    assert report["advisory"]["errors"][0]["message"] == "synthetic provider failure"
+    assert report["advisory"]["errors"][0] == {
+        "stage": "triage",
+        "batch": 1,
+        "category": "provider_failure",
+        "message": "Advisory provider failed during triage; details were withheld.",
+    }
+    assert "synthetic provider failure" not in json.dumps(report)
     assert report["advisory"]["decisions"] == []
     assert report["capabilities"]["github_mutations"] is False
     assert report["mutation_authorized"] is False
@@ -309,6 +320,22 @@ def test_provider_failure_is_explicit_and_non_mutating() -> None:
         item["mutation_authorized"] is False
         for item in report["advisory"]["deferred"]
     )
+
+
+def test_unexpected_provider_exception_is_sanitized() -> None:
+    class UnexpectedFailureProvider(FakeProvider):
+        def analyze(self, request: AdvisoryRequest, *, stage: str) -> ProviderResponse:
+            raise RuntimeError("credential=must-not-escape")
+
+    report = advise_from_inspection(
+        _config("economy"),
+        _inspection(),
+        UnexpectedFailureProvider(),
+    )
+
+    assert report["status"] == "partial"
+    assert report["advisory"]["errors"][0]["category"] == "provider_failure"
+    assert "credential=must-not-escape" not in json.dumps(report)
 
 
 def test_malformed_provider_fields_fail_into_structured_partial_report() -> None:

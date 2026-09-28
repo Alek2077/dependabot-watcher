@@ -2,12 +2,33 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
 from typing import Any, Callable, Sequence
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from dependabot_watcher import github
 from dependabot_watcher.github import GhCliClient, GitHubError
+
+
+def test_failed_cli_command_withholds_raw_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "credential=must-not-escape"
+    monkeypatch.setattr(
+        github.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, stdout="", stderr=secret
+        ),
+    )
+
+    with pytest.raises(GitHubError) as raised:
+        github._run_command(["gh", "auth", "status"], 30)
+
+    assert secret not in str(raised.value)
+    assert "output was withheld" in str(raised.value)
 
 
 def open_pr(number: int) -> dict[str, Any]:

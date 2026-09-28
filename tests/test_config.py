@@ -36,6 +36,7 @@ def test_parse_config_accepts_generic_repository() -> None:
     assert config.advisory.mode == "off"
     assert config.advisory.provider is None
     assert config.advisory.budget.max_candidates == 0
+    assert config.operation.require_advice_before_execution is False
 
 
 def test_unknown_key_is_rejected() -> None:
@@ -94,6 +95,30 @@ def test_load_config_reads_toml(tmp_path: Path) -> None:
     config = load_config(path)
 
     assert config.repositories[0].default_branch == "develop"
+
+
+def test_load_config_rejects_replaceable_parent_and_symlink(
+    tmp_path: Path,
+) -> None:
+    unsafe_parent = tmp_path / "shared"
+    unsafe_parent.mkdir(mode=0o777)
+    unsafe_parent.chmod(0o777)
+    unsafe = unsafe_parent / "config.toml"
+    unsafe.write_text(
+        'schema_version = 1\n[[repositories]]\nname = "example-org/example-app"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="another principal"):
+        load_config(unsafe)
+
+    safe = tmp_path / "safe.toml"
+    safe.write_text(unsafe.read_text(encoding="utf-8"), encoding="utf-8")
+    linked = tmp_path / "linked.toml"
+    linked.symlink_to(safe)
+
+    with pytest.raises(ConfigError, match="trusted regular file"):
+        load_config(linked)
 
 
 def test_default_config_path_honors_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -300,6 +325,26 @@ def test_operational_profile_accepts_only_approval_gated_mutation_pair() -> None
 
     assert config.operation.autonomy == "approval_required"
     assert config.operation.mutation_enabled is True
+
+
+def test_execution_advice_requirement_requires_enabled_advisory_mode() -> None:
+    data = valid_config()
+    data["operation"] = {"require_advice_before_execution": True}
+
+    with pytest.raises(ConfigError, match="requires an enabled advisory mode"):
+        parse_config(data)
+
+    data["advisory"] = {
+        "mode": "economy",
+        "provider": "codex_cli",
+        "codex_cli": {
+            "triage": {"model": "triage-model", "reasoning_effort": "high"}
+        },
+    }
+
+    config = parse_config(data)
+
+    assert config.operation.require_advice_before_execution is True
 
 
 @pytest.mark.parametrize(

@@ -300,6 +300,31 @@ def test_model_advice_can_make_action_more_conservative_without_changing_order()
     assert "accepted optional Codex CLI advice (reviewed mode)" in rendered
 
 
+def test_required_advice_makes_unadvised_pull_requests_ineligible() -> None:
+    source = _advisory_report()
+    source["advisory"].update(  # type: ignore[union-attr]
+        {
+            "mode": "economy",
+            "provider": "codex_cli",
+            "required_for_execution": True,
+            "status": "complete",
+        }
+    )
+
+    report = plan_from_advisory(source)  # type: ignore[arg-type]
+    pull_request_steps = [
+        step
+        for step in report["repositories"][0]["recommended_order"]
+        if step["kind"] == "pull_request"
+    ]
+
+    assert all(step["action"] != "validate_then_merge" for step in pull_request_steps)
+    assert all(
+        "model advice is required" in " ".join(step["blockers"])
+        for step in pull_request_steps
+    )
+
+
 def test_plan_provenance_does_not_treat_failed_provider_call_as_advice() -> None:
     source = _advisory_report()
     source["advisory"]["mode"] = "economy"  # type: ignore[index]

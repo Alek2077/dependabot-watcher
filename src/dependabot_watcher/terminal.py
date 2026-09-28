@@ -65,7 +65,7 @@ def _supports_unicode(stream: TextIO) -> bool:
 def sanitize_human_value(value: object) -> str:
     """Flatten untrusted display values and remove terminal control sequences."""
 
-    text = _ANSI_ESCAPE.sub("", str(value or ""))
+    text = _ANSI_ESCAPE.sub("", "" if value is None else str(value))
     text = "".join(
         " " if ord(character) < 32 or 127 <= ord(character) <= 159 else character
         for character in text

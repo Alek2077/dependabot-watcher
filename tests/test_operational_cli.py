@@ -23,6 +23,250 @@ def test_cli_help_explains_doctor_profile_scope() -> None:
         "Run a read-only preflight for the environment and every configured repository."
         in help_text
     )
+    assert "Run one durable non-mutating reconciliation for scheduling." in help_text
+
+
+def test_cli_run_quiet_suppresses_all_private_report_output(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config = SimpleNamespace(
+        collection=SimpleNamespace(command_timeout_seconds=120),
+        repositories=(SimpleNamespace(name="example-org/example-app"),),
+    )
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
+    observed: dict[str, object] = {}
+
+    def reconcile(*args, **kwargs):
+        observed.update(kwargs)
+        return {
+            "status": "complete",
+            "outcome": "action_required",
+            "notification": {"needed": True, "reason": "approval_ready"},
+        }
+
+    monkeypatch.setattr(cli, "reconcile", reconcile)
+
+    exit_code = cli.main(
+        [
+            "run",
+            "--config",
+            str(tmp_path / "config.toml"),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--expected-interval-minutes",
+            "60",
+            "--quiet",
+            "--format",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.ExitCode.SUCCESS
+    assert captured.out == ""
+    assert captured.err == ""
+    assert observed["expected_interval_minutes"] == 60
+
+
+def test_cli_run_delivers_and_records_desktop_notification(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config = SimpleNamespace(
+        collection=SimpleNamespace(command_timeout_seconds=120),
+        repositories=(SimpleNamespace(name="example-org/example-app"),),
+    )
+    report = {
+        "status": "complete",
+        "outcome": "action_required",
+        "run_id": "run_example",
+        "notification": {"needed": True, "reason": "approval_ready"},
+    }
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
+    monkeypatch.setattr(cli, "reconcile", lambda *args, **kwargs: report)
+    monkeypatch.setattr(
+        cli,
+        "deliver_desktop_notification",
+        lambda value: {"mode": "desktop", "status": "delivered"},
+    )
+
+    def record(state_directory, run_id, delivery):
+        return {
+            **report,
+            "notification": {
+                **report["notification"],
+                "delivery": delivery,
+            },
+        }
+
+    monkeypatch.setattr(cli, "record_notification_delivery", record)
+
+    exit_code = cli.main(
+        [
+            "run",
+            "--config",
+            str(tmp_path / "config.toml"),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--notify",
+            "desktop",
+            "--format",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.ExitCode.SUCCESS
+    assert json.loads(captured.out)["notification"]["delivery"]["status"] == "delivered"
+    assert captured.err == ""
+
+
+def test_cli_run_notification_failure_is_actionable_and_nonzero(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config = SimpleNamespace(
+        collection=SimpleNamespace(command_timeout_seconds=120),
+        repositories=(SimpleNamespace(name="example-org/example-app"),),
+    )
+    report = {
+        "status": "complete",
+        "outcome": "action_required",
+        "run_id": "run_example",
+        "notification": {"needed": True, "reason": "approval_ready"},
+    }
+    failed = {"mode": "desktop", "status": "failed"}
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
+    monkeypatch.setattr(cli, "reconcile", lambda *args, **kwargs: report)
+    monkeypatch.setattr(cli, "deliver_desktop_notification", lambda value: failed)
+    monkeypatch.setattr(
+        cli,
+        "record_notification_delivery",
+        lambda *args, **kwargs: {
+            **report,
+            "notification": {**report["notification"], "delivery": failed},
+        },
+    )
+
+    exit_code = cli.main(
+        [
+            "run",
+            "--config",
+            str(tmp_path / "config.toml"),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--notify",
+            "desktop",
+            "--quiet",
+            "--format",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.ExitCode.NOTIFICATION_ERROR
+    assert captured.out == ""
+    assert "durable run report" in captured.err
+
+
+def test_cli_schedule_preview_routes_without_local_scheduler_mutation(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(cli, "load_config", lambda path: object())
+
+    def preview(action, **kwargs):
+        observed.update(action=action, **kwargs)
+        return {
+            "schema_version": 1,
+            "mode": "schedule",
+            "action": "preview",
+            "status": "preview",
+            "changed": False,
+            "schedule": {
+                "platform": "wsl",
+                "job_id": "dependabot-watcher-test",
+                "interval_minutes": 1440,
+                "run_argv": ["dependabot-watcher", "run"],
+                "config_path": str(tmp_path / "config.toml"),
+                "state_directory": str(tmp_path / "state"),
+            },
+            "native_status": {},
+            "missed_run_policy": "one current-state catch-up",
+            "overlap_policy": "runtime lock",
+            "next": None,
+        }
+
+    monkeypatch.setattr(cli, "manage_schedule", preview)
+
+    exit_code = cli.main(
+        [
+            "schedule",
+            "preview",
+            "--config",
+            str(tmp_path / "config.toml"),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--platform",
+            "wsl",
+            "--distro",
+            "Ubuntu",
+            "--format",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.ExitCode.SUCCESS
+    assert json.loads(captured.out)["status"] == "preview"
+    assert observed["action"] == "preview"
+    assert observed["requested_platform"] == "wsl"
+    assert observed["distro"] == "Ubuntu"
+    assert Path(str(observed["executable"])).name == "dependabot-watcher"
+    assert Path(str(observed["executable"])).is_absolute()
+
+
+def test_cli_schedule_binds_the_invoked_console_script(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    executable = tmp_path / "dependabot-watcher"
+    executable.write_text("placeholder", encoding="utf-8")
+    executable.chmod(0o700)
+    monkeypatch.setattr(cli.sys, "argv", [str(executable)])
+
+    assert cli._current_console_executable() == str(executable.resolve())
+
+
+def test_cli_schedule_normalizes_wsl_style_native_windows_invocation() -> None:
+    assert cli._normalized_console_invocation(
+        "/mnt/c/Users/Alek/AppData/Local/Programs/dependabot-watcher.exe",
+        windows=True,
+    ) == r"C:\Users\Alek\AppData\Local\Programs\dependabot-watcher.exe"
+
+
+def test_cli_schedule_uses_console_sibling_when_launcher_argv_is_opaque(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    python = tmp_path / "bin/python"
+    console = tmp_path / "bin/dependabot-watcher"
+    python.parent.mkdir(parents=True)
+    python.write_text("placeholder", encoding="utf-8")
+    console.write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(cli.sys, "argv", ["opaque-launcher"])
+    monkeypatch.setattr(cli.sys, "executable", str(python))
+
+    assert cli._current_console_executable() == str(console.resolve())
 
 
 def test_cli_offline_setup_creates_safe_profile_without_external_calls(
@@ -88,11 +332,19 @@ def test_cli_execute_without_token_runs_read_only_preflight(
     monkeypatch.setattr(cli, "load_plan", lambda path: saved_plan)
     monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
 
-    def preflight(config_arg, client_arg, plan_arg, step_id):
+    def preflight(
+        config_arg,
+        client_arg,
+        plan_arg,
+        step_id,
+        *,
+        state_directory,
+    ):
         observed.update(
             config=config_arg,
             plan=plan_arg,
             step_id=step_id,
+            state_directory=state_directory,
         )
         return {
             "mode": "execute_preflight",
@@ -125,7 +377,12 @@ def test_cli_execute_without_token_runs_read_only_preflight(
 
     captured = capsys.readouterr()
     assert exit_code == cli.ExitCode.SUCCESS
-    assert observed == {"config": config, "plan": saved_plan, "step_id": "step_exact"}
+    assert observed == {
+        "config": config,
+        "plan": saved_plan,
+        "step_id": "step_exact",
+        "state_directory": cli.default_state_directory(),
+    }
     assert "Mutation performed: no" in captured.out
     assert "approve_test" in captured.out
 
@@ -146,7 +403,7 @@ def test_cli_execute_already_applied_shows_next_step(
     monkeypatch.setattr(
         cli,
         "preflight_execution",
-        lambda *args: {
+        lambda *args, **kwargs: {
             "mode": "execute_preflight",
             "status": "already_applied",
             "binding": {
@@ -195,8 +452,20 @@ def test_cli_execute_with_token_routes_approved_execution(
     monkeypatch.setattr(cli, "load_plan", lambda path: {"saved": True})
     monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
 
-    def execute(config_arg, client_arg, plan_arg, step_id, token):
-        observed.update(step_id=step_id, token=token)
+    def execute(
+        config_arg,
+        client_arg,
+        plan_arg,
+        step_id,
+        token,
+        *,
+        state_directory,
+    ):
+        observed.update(
+            step_id=step_id,
+            token=token,
+            state_directory=state_directory,
+        )
         return {
             "schema_version": 1,
             "mode": "execute",
@@ -225,6 +494,8 @@ def test_cli_execute_with_token_routes_approved_execution(
             "step_exact",
             "--approval-token",
             "approve_exact",
+            "--state-dir",
+            str(tmp_path / "custom-state"),
             "--format",
             "json",
         ]
@@ -232,7 +503,11 @@ def test_cli_execute_with_token_routes_approved_execution(
 
     captured = capsys.readouterr()
     assert exit_code == cli.ExitCode.SUCCESS
-    assert observed == {"step_id": "step_exact", "token": "approve_exact"}
+    assert observed == {
+        "step_id": "step_exact",
+        "token": "approve_exact",
+        "state_directory": tmp_path / "custom-state",
+    }
     assert json.loads(captured.out)["status"] == "merged"
 
 
@@ -252,7 +527,9 @@ def test_cli_execute_reports_execution_error_with_specific_exit_code(
     monkeypatch.setattr(
         cli,
         "preflight_execution",
-        lambda *args: (_ for _ in ()).throw(cli.ExecutionError("stale exact action")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            cli.ExecutionError("stale exact action")
+        ),
     )
 
     exit_code = cli.main(
@@ -271,6 +548,54 @@ def test_cli_execute_reports_execution_error_with_specific_exit_code(
     assert exit_code == cli.ExitCode.EXECUTION_ERROR
     assert captured.out == ""
     assert "Execution error: stale exact action" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("command", "exception", "expected_code", "expected_error"),
+    [
+        (
+            ["run", "--format", "json"],
+            cli.ReconciliationError("state is unavailable"),
+            cli.ExitCode.RECONCILIATION_ERROR,
+            "Reconciliation error: state is unavailable",
+        ),
+        (
+            ["schedule", "status", "--format", "json"],
+            cli.ScheduleError("native definition is invalid"),
+            cli.ExitCode.SCHEDULE_ERROR,
+            "Schedule error: native definition is invalid",
+        ),
+    ],
+)
+def test_cli_reports_new_operational_exit_codes(
+    command,
+    exception,
+    expected_code,
+    expected_error,
+    monkeypatch,
+    capsys,
+) -> None:
+    if command[0] == "run":
+        config = SimpleNamespace(
+            collection=SimpleNamespace(command_timeout_seconds=120),
+            repositories=(SimpleNamespace(name="example-org/example-app"),),
+        )
+        monkeypatch.setattr(cli, "load_config", lambda path: config)
+        monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
+        monkeypatch.setattr(cli, "reconcile", lambda *args, **kwargs: (_ for _ in ()).throw(exception))
+    else:
+        monkeypatch.setattr(
+            cli,
+            "manage_schedule",
+            lambda *args, **kwargs: (_ for _ in ()).throw(exception),
+        )
+
+    exit_code = cli.main(command)
+
+    captured = capsys.readouterr()
+    assert exit_code == expected_code
+    assert captured.out == ""
+    assert expected_error in captured.err
 
 
 def test_cli_setup_can_create_explicit_approval_gated_profile(

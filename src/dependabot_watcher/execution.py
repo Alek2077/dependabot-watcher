@@ -13,13 +13,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, cast
 
+from .advisory import advisory_action_policy
 from .config import AdvisoryConfig, RepositoryConfig, WatcherConfig
-from .github import ExecutionGitHubClient, GitHubClient, GitHubError
+from .github import (
+    ExecutionGitHubClient,
+    GitHubClient,
+    GitHubError,
+    public_github_error_message,
+)
 from .planning import (
     PLAN_SCHEMA_VERSION,
     PlanningError,
     plan,
     validate_plan_identities,
+)
+from .runtime_state import (
+    RuntimeStateError,
+    default_state_directory,
+    ensure_private_directory,
+    load_run_state,
+    run_lock,
+    secure_private_file,
+    validate_private_file,
 )
 
 
@@ -37,16 +52,6 @@ _AUDIT_EVENT_TYPES = {
 
 class ExecutionError(RuntimeError):
     """Raised when an action is not safely executable."""
-
-
-def default_state_directory() -> Path:
-    override = os.getenv("DEPENDABOT_WATCHER_STATE_DIR")
-    if override:
-        return Path(override).expanduser()
-    if os.name == "nt" and os.getenv("LOCALAPPDATA"):
-        return Path(os.environ["LOCALAPPDATA"]) / "dependabot-watcher"
-    state_home = Path(os.getenv("XDG_STATE_HOME", "~/.local/state")).expanduser()
-    return state_home / "dependabot-watcher"
 
 
 def load_plan(path: Path) -> dict[str, Any]:
@@ -67,8 +72,8 @@ def load_plan(path: Path) -> dict[str, Any]:
         raise ExecutionError("Execution plan must be a JSON object.")
     if value.get("schema_version") != PLAN_SCHEMA_VERSION or value.get("mode") != "plan":
         raise ExecutionError("Execution plan has an unsupported schema or mode.")
-    if value.get("status") != "complete":
-        raise ExecutionError("Execution requires a complete plan; partial plans fail closed.")
+    if value.get("status") not in {"complete", "partial"}:
+        raise ExecutionError("Execution plan has no safely usable planning status.")
     if value.get("mutation_authorized") is not False:
         raise ExecutionError("Saved plan contains invalid mutation authority.")
     if not isinstance(value.get("repositories"), list):
@@ -334,6 +339,40 @@ def _material_snapshot(
     }
 
 
+def _require_saved_advice(
+    config: WatcherConfig,
+    saved_repository: Mapping[str, Any],
+    saved_step: Mapping[str, Any],
+) -> None:
+    if not config.operation.require_advice_before_execution:
+        return
+    if config.advisory.mode == "off" or config.advisory.provider is None:
+        raise ExecutionError("Execution policy requires enabled model advice.")
+    action_policy = saved_repository.get("action_policy")
+    policy = action_policy if isinstance(action_policy, Mapping) else {}
+    expected_policy = advisory_action_policy(config)
+    if (
+        policy.get("advice_required") is not True
+        or policy.get("advisory_mode") != config.advisory.mode
+        or policy.get("provider") != config.advisory.provider
+        or policy.get("policy_id") != expected_policy["policy_id"]
+    ):
+        raise ExecutionError(
+            "Saved plan does not contain complete current advice for the configured action policy."
+        )
+    advice = saved_step.get("advice")
+    if not isinstance(advice, Mapping):
+        raise ExecutionError(
+            "Execution policy requires successful current advice for this candidate."
+        )
+    if advice.get("assurance") not in {"triage", "review"}:
+        raise ExecutionError("Saved candidate advice has no valid assurance level.")
+    if advice.get("requires_review") is True:
+        raise ExecutionError("Saved candidate advice still requires review.")
+    if advice.get("recommended_action") != "merge_candidate":
+        raise ExecutionError("Saved candidate advice does not recommend merge eligibility.")
+
+
 def _fresh_preflight(
     config: WatcherConfig,
     client: ExecutionGitHubClient,
@@ -342,6 +381,7 @@ def _fresh_preflight(
 ) -> tuple[dict[str, Any], Mapping[str, Any], Mapping[str, Any]]:
     _validate_plan_integrity(saved_plan)
     saved_repository, saved_step = _find_step(saved_plan, step_id)
+    _require_saved_advice(config, saved_repository, saved_step)
     identity = saved_step.get("identity")
     if not isinstance(identity, Mapping):
         raise ExecutionError("Execution step has malformed identity evidence.")
@@ -365,6 +405,10 @@ def _fresh_preflight(
         config,
         repositories=(repository_config,),
         advisory=AdvisoryConfig(),
+        operation=replace(
+            config.operation,
+            require_advice_before_execution=False,
+        ),
     )
     fresh_report = plan(deterministic_config, cast(GitHubClient, client))
     if fresh_report.get("status") != "complete":
@@ -405,13 +449,16 @@ def _decision_context(
             observed_checks[str(item["name"]).casefold()] = str(
                 item.get("state") or "unknown"
             )
+    advice_value = step.get("advice")
+    advice = advice_value if isinstance(advice_value, Mapping) else None
     return {
         "title": str(identity.get("title") or f"PR #{identity.get('number') or 'unknown'}"),
         "classification": str(
             step.get("deterministic_classification") or "unknown"
         ),
-        "decision_source": "deterministic_policy",
-        "model_used": False,
+        "decision_source": "model_informed_policy" if advice else "deterministic_policy",
+        "model_used": advice is not None,
+        "advice_assurance": advice.get("assurance") if advice else None,
         "required_checks": [
             {
                 "name": name,
@@ -431,6 +478,10 @@ def _post_action_state(
         config,
         repositories=(repository_config,),
         advisory=AdvisoryConfig(),
+        operation=replace(
+            config.operation,
+            require_advice_before_execution=False,
+        ),
     )
     try:
         refreshed = plan(deterministic_config, cast(GitHubClient, client))
@@ -505,12 +556,19 @@ def preflight_execution(
     client: ExecutionGitHubClient,
     saved_plan: Mapping[str, Any],
     step_id: str,
+    *,
+    state_directory: Path | None = None,
 ) -> dict[str, Any]:
     if config.operation.autonomy != "approval_required" or not config.operation.mutation_enabled:
         raise ExecutionError(
             "Execution is disabled; configure autonomy='approval_required' and mutation_enabled=true."
         )
-    binding, _, fresh_step = _fresh_preflight(config, client, saved_plan, step_id)
+    if state_directory is not None and os.path.lexists(state_directory.expanduser()):
+        _require_current_reconciled_plan(state_directory.expanduser(), saved_plan)
+    try:
+        binding, _, fresh_step = _fresh_preflight(config, client, saved_plan, step_id)
+    except GitHubError as exc:
+        raise GitHubError(public_github_error_message("execution preflight")) from exc
     already_applied = bool(fresh_step.get("already_applied"))
     _, saved_step = _find_step(saved_plan, step_id)
     repository_config = _repository_config(config, str(binding["repository"]))
@@ -528,9 +586,7 @@ def preflight_execution(
             "notifications": False,
         },
         "binding": binding,
-        "decision": _decision_context(
-            saved_step if already_applied else fresh_step, repository_config
-        ),
+        "decision": _decision_context(saved_step, repository_config),
         "action_id": _action_id(binding),
         "approval_token": None if already_applied else approval_token(binding),
         "next": (
@@ -547,6 +603,11 @@ def _timestamp() -> str:
 
 def _prepare_state_directory(path: Path) -> Path:
     expanded = path.expanduser()
+    if os.name == "nt":
+        try:
+            return ensure_private_directory(expanded)
+        except RuntimeStateError as exc:
+            raise ExecutionError(str(exc)) from exc
     try:
         if expanded.is_symlink():
             raise ExecutionError("Execution state directory must not be a symbolic link.")
@@ -585,11 +646,28 @@ def _validate_private_regular_file(descriptor: int, label: str) -> os.stat_resul
     state = os.fstat(descriptor)
     if not stat.S_ISREG(state.st_mode):
         raise ExecutionError(f"{label} must be a regular file.")
-    if hasattr(os, "getuid") and state.st_uid != os.getuid():
-        raise ExecutionError(f"{label} must be owned by the current user.")
-    if stat.S_IMODE(state.st_mode) & 0o077:
-        raise ExecutionError(f"{label} permissions must not allow group or other access.")
+    if os.name != "nt":
+        if hasattr(os, "getuid") and state.st_uid != os.getuid():
+            raise ExecutionError(f"{label} must be owned by the current user.")
+        if stat.S_IMODE(state.st_mode) & 0o077:
+            raise ExecutionError(f"{label} permissions must not allow group or other access.")
     return state
+
+
+def _validate_windows_path_matches_descriptor(
+    path: Path,
+    descriptor: int,
+    *,
+    maximum_bytes: int,
+    label: str,
+) -> None:
+    try:
+        path_state = validate_private_file(path, maximum_bytes=maximum_bytes)
+    except RuntimeStateError as exc:
+        raise ExecutionError(str(exc)) from exc
+    opened = os.fstat(descriptor)
+    if (path_state.st_dev, path_state.st_ino) != (opened.st_dev, opened.st_ino):
+        raise ExecutionError(f"{label} changed during safe open.")
 
 
 @contextmanager
@@ -612,6 +690,8 @@ def _execution_lock(state_directory: Path) -> Iterator[None]:
     except OSError as exc:
         raise ExecutionError(f"Execution lock cannot be safely created at {lock_path}.") from exc
     try:
+        if os.name == "nt":
+            secure_private_file(lock_path)
         _validate_private_regular_file(descriptor, "Execution lock")
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -633,6 +713,64 @@ def _execution_lock(state_directory: Path) -> Iterator[None]:
         lock_path.unlink(missing_ok=True)
 
 
+@contextmanager
+def _operation_locks(state_directory: Path) -> Iterator[None]:
+    """Serialize reconciliation and execution before taking the execution lock."""
+
+    try:
+        with run_lock(state_directory):
+            with _execution_lock(state_directory):
+                yield
+    except RuntimeStateError as exc:
+        raise ExecutionError(str(exc)) from exc
+
+
+def _require_current_reconciled_plan(
+    state_directory: Path,
+    saved_plan: Mapping[str, Any],
+) -> None:
+    """Reject authority from a plan superseded or revoked by reconciliation."""
+
+    try:
+        state = load_run_state(state_directory)
+    except RuntimeStateError as exc:
+        raise ExecutionError(str(exc)) from exc
+    latest = state.get("latest_plan")
+    if not isinstance(latest, Mapping):
+        return
+    latest_plan_id = latest.get("plan_id")
+    saved_plan_id = saved_plan.get("plan_id")
+    revoked_reason = latest.get("revoked_reason")
+    superseded_plan_id = latest.get("supersedes_plan_id")
+    invalidated_plan_ids = {
+        item
+        for item in latest.get("invalidated_plan_ids") or []
+        if isinstance(item, str)
+    }
+    if isinstance(superseded_plan_id, str):
+        invalidated_plan_ids.add(superseded_plan_id)
+    if (
+        revoked_reason is not None
+        and (
+            saved_plan_id in invalidated_plan_ids
+            or latest.get("lineage_overflow") is True
+        )
+    ):
+        raise ExecutionError(
+            "The latest reconciled plan was revoked; run Watcher again and request fresh approval."
+        )
+    if revoked_reason is not None:
+        return
+    if (
+        isinstance(latest_plan_id, str)
+        and latest_plan_id
+        and saved_plan_id != latest_plan_id
+    ):
+        raise ExecutionError(
+            "This plan was superseded by a newer reconciliation; request approval from the current plan."
+        )
+
+
 def _append_audit(
     state_directory: Path,
     event: Mapping[str, Any],
@@ -640,6 +778,12 @@ def _append_audit(
     reserve_bytes: int = 0,
 ) -> Path:
     audit_path = state_directory / _AUDIT_FILE
+    existed = os.path.lexists(audit_path)
+    if os.name == "nt" and existed:
+        try:
+            validate_private_file(audit_path, maximum_bytes=_MAX_AUDIT_BYTES)
+        except RuntimeStateError as exc:
+            raise ExecutionError(str(exc)) from exc
     try:
         descriptor = os.open(
             audit_path,
@@ -654,6 +798,18 @@ def _append_audit(
     except OSError as exc:
         raise ExecutionError(f"Execution audit cannot be safely opened at {audit_path}.") from exc
     try:
+        if os.name == "nt" and not existed:
+            try:
+                secure_private_file(audit_path, maximum_bytes=_MAX_AUDIT_BYTES)
+            except RuntimeStateError as exc:
+                raise ExecutionError(str(exc)) from exc
+        if os.name == "nt":
+            _validate_windows_path_matches_descriptor(
+                audit_path,
+                descriptor,
+                maximum_bytes=_MAX_AUDIT_BYTES,
+                label="Execution audit",
+            )
         state = _validate_private_regular_file(descriptor, "Execution audit")
         payload = _audit_payload(event)
         if state.st_size + len(payload) + reserve_bytes > _MAX_AUDIT_BYTES:
@@ -691,6 +847,11 @@ def _audit_payload(event: Mapping[str, Any]) -> bytes:
 
 def _read_audit_events(state_directory: Path) -> list[dict[str, Any]]:
     audit_path = state_directory / _AUDIT_FILE
+    if os.name == "nt" and os.path.lexists(audit_path):
+        try:
+            validate_private_file(audit_path, maximum_bytes=_MAX_AUDIT_BYTES)
+        except RuntimeStateError as exc:
+            raise ExecutionError(str(exc)) from exc
     try:
         descriptor = os.open(
             audit_path,
@@ -705,6 +866,13 @@ def _read_audit_events(state_directory: Path) -> list[dict[str, Any]]:
         raise ExecutionError("Execution audit cannot be safely read for reconciliation.") from exc
     try:
         state = _validate_private_regular_file(descriptor, "Execution audit")
+        if os.name == "nt":
+            _validate_windows_path_matches_descriptor(
+                audit_path,
+                descriptor,
+                maximum_bytes=_MAX_AUDIT_BYTES,
+                label="Execution audit",
+            )
         if state.st_size > _MAX_AUDIT_BYTES:
             raise ExecutionError("Execution audit cannot be safely read for reconciliation.")
         with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
@@ -740,6 +908,121 @@ def validate_audit_history(state_directory: Path) -> None:
     """Fail closed when an existing bounded audit is malformed or unsafe."""
 
     _read_audit_events(state_directory)
+
+
+def execution_observation(
+    state_directory: Path,
+    inspection: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Summarize terminal and interrupted execution events against current evidence."""
+
+    events = _read_audit_events(state_directory)
+    repositories: dict[str, dict[str, Any]] = {}
+    for raw_repository in inspection.get("repositories") or []:
+        if not isinstance(raw_repository, Mapping):
+            continue
+        name = raw_repository.get("repository")
+        if not isinstance(name, str):
+            continue
+        open_heads: dict[int, str] = {}
+        for pull_request in raw_repository.get("pull_requests") or []:
+            if not isinstance(pull_request, Mapping):
+                continue
+            identity = pull_request.get("candidate_identity")
+            if not isinstance(identity, Mapping):
+                continue
+            number = identity.get("number")
+            head_sha = identity.get("head_sha")
+            if isinstance(number, int) and isinstance(head_sha, str):
+                open_heads[number] = head_sha
+        repositories[name] = {
+            "complete": not bool(
+                raw_repository.get("errors") or raw_repository.get("truncations")
+            ),
+            "open_heads": open_heads,
+        }
+
+    action_events: dict[str, list[Mapping[str, Any]]] = {}
+    for event in events:
+        action_id = event.get("action_id")
+        if isinstance(action_id, str):
+            action_events.setdefault(action_id, []).append(event)
+
+    observations: list[dict[str, Any]] = []
+    for action_id, grouped_events in action_events.items():
+        latest = grouped_events[-1]
+        binding = latest.get("binding")
+        binding_data = binding if isinstance(binding, Mapping) else {}
+        repository = binding_data.get("repository")
+        pull_request = binding_data.get("pull_request")
+        head_sha = binding_data.get("head_sha")
+        event_type = latest.get("event_type")
+        repository_state = repositories.get(str(repository))
+        recovery_required = False
+        if event_type == "execution_started":
+            status = "interrupted"
+            recovery_required = True
+        elif event_type == "execution_failed":
+            status = "failed"
+            recovery_required = True
+        elif event_type == "execution_reconciled":
+            status = "already_applied"
+        elif event_type == "execution_succeeded":
+            if repository_state is None or repository_state.get("complete") is not True:
+                status = "observation_incomplete"
+                recovery_required = True
+            else:
+                current_open_heads = repository_state.get("open_heads")
+                current_head = (
+                    current_open_heads.get(pull_request)
+                    if isinstance(current_open_heads, dict)
+                    and isinstance(pull_request, int)
+                    else None
+                )
+                if current_head is None:
+                    status = "success_observed"
+                elif current_head == head_sha:
+                    status = "success_not_reflected"
+                    recovery_required = True
+                else:
+                    status = "repository_state_changed"
+                    recovery_required = True
+        else:
+            status = "unknown"
+            recovery_required = True
+        observations.append(
+            {
+                "action_id": action_id,
+                "repository": repository,
+                "pull_request": pull_request,
+                "head_sha": head_sha,
+                "latest_event": event_type,
+                "latest_outcome": latest.get("outcome"),
+                "status": status,
+                "recovery_required": recovery_required,
+                "recovery": latest.get("recovery"),
+            }
+        )
+
+    bounded = observations[-20:]
+    revision_payload = json.dumps(
+        observations,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "event_count": len(events),
+        "action_count": len(observations),
+        "recovery_required_count": sum(
+            1 for item in observations if item["recovery_required"]
+        ),
+        "recovery_required": any(
+            item["recovery_required"] for item in observations
+        ),
+        "truncated": len(observations) > len(bounded),
+        "revision": f"execution_{hashlib.sha256(revision_payload).hexdigest()[:24]}",
+        "observations": bounded,
+    }
 
 
 def _audit_has_success(state_directory: Path, action_id: str) -> bool:
@@ -824,9 +1107,13 @@ def execute_approved(
         )
 
     state_path = _prepare_state_directory(state_directory or default_state_directory())
-    with _execution_lock(state_path):
+    with _operation_locks(state_path):
+        _require_current_reconciled_plan(state_path, saved_plan)
         validate_audit_history(state_path)
-        binding, _, current = _fresh_preflight(config, client, saved_plan, step_id)
+        try:
+            binding, _, current = _fresh_preflight(config, client, saved_plan, step_id)
+        except GitHubError as exc:
+            raise GitHubError(public_github_error_message("execution preflight")) from exc
         if current.get("already_applied"):
             prior_success = _audit_has_success(state_path, _action_id(binding))
             audit_path = _append_audit(
@@ -874,7 +1161,7 @@ def execute_approved(
                 head_sha=str(binding["head_sha"]),
                 merge_method=str(binding["merge_method"]),
             )
-        except GitHubError:
+        except GitHubError as exc:
             _append_audit(
                 state_path,
                 _audit_event(
@@ -884,8 +1171,21 @@ def execute_approved(
                     recovery="Reinspect GitHub state and create a fresh plan before retrying.",
                 ),
             )
-            raise
+            raise GitHubError(public_github_error_message("merge operation")) from exc
         result = _sanitized_merge_result(raw_result)
+        if result["merged"] is not True:
+            _append_audit(
+                state_path,
+                _audit_event(
+                    "execution_failed",
+                    binding,
+                    outcome="merge_not_confirmed",
+                    recovery="Reinspect GitHub state and create a fresh plan before retrying.",
+                ),
+            )
+            raise ExecutionError(
+                "GitHub did not confirm that the approved pull request was merged."
+            )
         _append_audit(
             state_path,
             _audit_event(
@@ -910,7 +1210,7 @@ def execute_approved(
                 "notifications": False,
             },
             "binding": binding,
-            "decision": _decision_context(current, repository_config),
+            "decision": _decision_context(saved_step, repository_config),
             "action_id": _action_id(binding),
             "result": result,
             "post_action_state": post_action_state,

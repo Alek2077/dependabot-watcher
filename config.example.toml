@@ -6,6 +6,9 @@ schema_version = 1
 # remains read-only.
 autonomy = "read_only"
 mutation_enabled = false
+# When true, execution additionally requires current successful advice under
+# this profile's exact advisory mode, models, reasoning, timeout, and budget.
+require_advice_before_execution = false
 report_verbosity = "concise"
 machine_output = "json"
 

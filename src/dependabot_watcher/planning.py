@@ -707,7 +707,11 @@ def _effective_advice(
     if decision is None:
         return None
     effective = decision.get("effective_advice")
-    return dict(effective) if isinstance(effective, dict) else None
+    if not isinstance(effective, dict):
+        return None
+    result = dict(effective)
+    result["assurance"] = "review" if isinstance(decision.get("review"), dict) else "triage"
+    return result
 
 
 def _conservative_action(action: str, advice: Mapping[str, Any] | None) -> str:
@@ -804,6 +808,7 @@ def _pr_step(
     alert_snapshot: Mapping[str, Any],
     workflow: Mapping[str, Any],
     advice: Mapping[str, Any] | None,
+    advice_required: bool,
     evidence_complete: bool,
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
     identity = dict(pull_request.get("candidate_identity") or {})
@@ -847,6 +852,11 @@ def _pr_step(
     blockers = list(pull_request.get("reasons") or [])
     if not evidence_complete:
         blockers.append("Repository inspection evidence is incomplete.")
+    if advice_required and advice is None:
+        blockers.append(
+            "Current model advice is required but unavailable, deferred, or failed."
+        )
+        action = "investigate"
     step_core = {
         "kind": "pull_request",
         "action": action,
@@ -1022,6 +1032,15 @@ def plan_from_advisory(advisory_report: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(inspection, dict):
         raise PlanningError("Planning requires an advisory report with inspection evidence.")
     decisions = _advice_by_identity(advisory_report)
+    advisory = advisory_report.get("advisory")
+    advisory_data = advisory if isinstance(advisory, Mapping) else {}
+    advice_required = advisory_data.get("required_for_execution") is True
+    action_policy = {
+        "advice_required": advice_required,
+        "advisory_mode": advisory_data.get("mode"),
+        "provider": advisory_data.get("provider"),
+        "policy_id": advisory_data.get("action_policy_id"),
+    }
     repository_plans: list[dict[str, Any]] = []
     total_steps = 0
     repositories = inspection.get("repositories")
@@ -1101,6 +1120,7 @@ def plan_from_advisory(advisory_report: dict[str, Any]) -> dict[str, Any]:
                         repository=repository,
                         number=identity.get("number"),
                     ),
+                    advice_required=advice_required,
                     evidence_complete=bool(evidence_complete),
                 )
             )
@@ -1142,6 +1162,7 @@ def plan_from_advisory(advisory_report: dict[str, Any]) -> dict[str, Any]:
             "evidence_snapshot": dict(snapshot),
             "alert_snapshot": alert_snapshot,
             "workflow_profile": dict(workflow),
+            "action_policy": action_policy,
             "state": dict(repository_report.get("summary") or {}),
             "recommended_order": steps,
             "unresolved_evidence": unresolved_evidence,

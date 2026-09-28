@@ -10,7 +10,7 @@ import pytest
 
 from dependabot_watcher import cli
 from dependabot_watcher.config import parse_config
-from dependabot_watcher.github import CollectionResult
+from dependabot_watcher.github import CollectionResult, GitHubError
 from dependabot_watcher.inspector import inspect
 from dependabot_watcher.inspector import _manifest_relationship_path
 from dependabot_watcher.output import render, render_json, render_markdown, render_text
@@ -136,6 +136,31 @@ class FakeClient:
                 },
             )
         return CollectionResult(items=items, truncated=self.truncate_history, limit=limit)
+
+
+class _FailingCollectionClient(FakeClient):
+    def list_open_dependabot_alerts(self, repository: str, limit: int):
+        raise GitHubError("credential=must-not-escape")
+
+
+class _FailingAuthenticationClient(FakeClient):
+    def validate_auth(self) -> None:
+        raise GitHubError("token=must-not-escape")
+
+
+def test_direct_inspection_withholds_raw_github_failure() -> None:
+    report = inspect(config(), _FailingCollectionClient())
+    rendered = json.dumps(report)
+
+    assert "credential=must-not-escape" not in rendered
+    assert "command and response details were withheld" in rendered
+
+
+def test_direct_inspection_withholds_raw_authentication_failure() -> None:
+    with pytest.raises(GitHubError, match="details were withheld") as error:
+        inspect(config(), _FailingAuthenticationClient())
+
+    assert "token=must-not-escape" not in str(error.value)
 
 
 class ManifestRelationshipClient(FakeClient):
