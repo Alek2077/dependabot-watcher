@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -61,25 +61,56 @@ def _platform() -> str:
     return "unsupported"
 
 
-def _next_command(notification: Mapping[str, Any]) -> str | None:
-    next_action = notification.get("next")
-    next_data = next_action if isinstance(next_action, Mapping) else {}
-    argv = next_data.get("argv")
-    if not isinstance(argv, list) or any(not isinstance(item, str) for item in argv):
+def _profile_identity(report: Mapping[str, Any]) -> str | None:
+    state_path = report.get("state_path") or report.get("report_path")
+    if not isinstance(state_path, str) or not state_path:
         return None
-    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    digest = hashlib.sha256(state_path.encode("utf-8")).hexdigest()[:12]
+    return f"state-{digest}"
 
 
 def _content(report: Mapping[str, Any]) -> tuple[str, str]:
     notification = report.get("notification")
     data = notification if isinstance(notification, Mapping) else {}
-    title = "Dependabot Watcher: action needed"
-    body = sanitize_human_value(
-        data.get("message") or "The Dependabot maintenance queue needs attention."
-    )
-    command = _next_command(data)
-    if command:
-        body = f"{body}\nNext: {sanitize_human_value(command)}"
+    titles = {
+        "action_recovery_required": "Dependabot Watcher: recovery needed",
+        "incomplete_evidence_or_advice": "Dependabot Watcher: run incomplete",
+        "approval_ready": "Dependabot Watcher: approval ready",
+        "review_required": "Dependabot Watcher: review needed",
+    }
+    title = titles.get(str(data.get("reason")), "Dependabot Watcher: action needed")
+    summary_value = report.get("summary")
+    summary = summary_value if isinstance(summary_value, Mapping) else {}
+    lines = [
+        sanitize_human_value(
+            data.get("message") or "The Dependabot maintenance queue needs attention."
+        ),
+        (
+            f"{sanitize_human_value(summary.get('repository_count', 0))} repositories | "
+            f"{sanitize_human_value(summary.get('open_pull_request_count', 0))} PRs | "
+            f"{sanitize_human_value(summary.get('open_alert_count', 0))} alerts | "
+            f"{sanitize_human_value(summary.get('attention_required_count', 0))} need attention"
+        ),
+    ]
+    profile_id = _profile_identity(report)
+    if profile_id:
+        lines.append(f"Profile: {sanitize_human_value(profile_id)}")
+    run_id = data.get("run_id") or report.get("run_id")
+    if run_id:
+        lines.append(f"Run: {sanitize_human_value(run_id)}")
+    coverage_value = report.get("advisory_coverage")
+    coverage = coverage_value if isinstance(coverage_value, Mapping) else {}
+    mode = str(coverage.get("mode") or "off")
+    usage_value = report.get("provider_usage")
+    usage = usage_value if isinstance(usage_value, Mapping) else {}
+    if mode == "off":
+        lines.append("AI: off (no model used)")
+    else:
+        call_count = int(usage.get("call_count") or 0)
+        unit = "call" if call_count == 1 else "calls"
+        lines.append(f"AI: {sanitize_human_value(mode)} ({call_count} model {unit} this run)")
+    lines.append("Ask your agent to review the latest Dependabot Watcher result.")
+    body = "\n".join(lines)
     return title[:120], body[:1000]
 
 
@@ -167,6 +198,7 @@ def deliver_desktop_notification(
         return {
             "mode": "desktop",
             "status": "not_needed",
+            "assurance": "not_attempted",
             "attempted_at": None,
             "delivered_at": None,
             "error": None,
@@ -188,6 +220,7 @@ def deliver_desktop_notification(
         "mode": "desktop",
         "adapter": platform,
         "status": "delivered" if returncode == 0 else "failed",
+        "assurance": "adapter_accepted_only" if returncode == 0 else "not_accepted",
         "attempted_at": attempted_at,
         "delivered_at": delivered_at,
         "error": None if returncode == 0 else "desktop_notification_unavailable",

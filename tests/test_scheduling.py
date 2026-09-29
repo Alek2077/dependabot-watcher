@@ -98,6 +98,11 @@ class _WindowsRunner:
         self.xml: str | None = None
         self.enabled = False
         self.task_path = "\\"
+        self.has_run = False
+        self.next_run_at = "2026-09-30T00:00:00.0000000+02:00"
+        self.last_run_at: str | None = None
+        self.last_result = 267011
+        self.missed_runs = 0
         self.commands: list[list[str]] = []
         self.payloads: list[dict[str, Any]] = []
 
@@ -156,6 +161,11 @@ class _WindowsRunner:
                 "enabled": self.enabled,
                 "task_path": self.task_path,
                 "xml": self.xml,
+                "has_run": self.has_run,
+                "next_run_at": self.next_run_at,
+                "last_run_at": self.last_run_at,
+                "last_result": self.last_result,
+                "missed_runs": self.missed_runs,
             }
         return CommandResult(0, json.dumps(body), "")
 
@@ -347,6 +357,23 @@ class _WindowsInventoryFailureRunner(_WindowsRunner):
         timeout_seconds: int = 60,
     ) -> CommandResult:
         if "@{tasks=$tasks}" in command[-1]:
+            return CommandResult(1, "", "access denied")
+        return super().run(
+            command,
+            input_text=input_text,
+            timeout_seconds=timeout_seconds,
+        )
+
+
+class _WindowsLifecycleFailureRunner(_WindowsRunner):
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        input_text: str | None = None,
+        timeout_seconds: int = 60,
+    ) -> CommandResult:
+        if "Get-ScheduledTask" in command[-1] and "@{tasks=$tasks}" not in command[-1]:
             return CommandResult(1, "", "access denied")
         return super().run(
             command,
@@ -1181,6 +1208,11 @@ def test_windows_wsl_lifecycle_preserves_exact_distro_and_readback(tmp_path: Pat
     assert installed["status"] == "active"
     assert installed["capabilities"]["persistent_local_writes"] is True
     assert installed["native_status"]["drifted"] is False
+    assert installed["native_status"]["has_run"] is False
+    assert installed["native_status"]["last_result"] is None
+    assert installed["native_status"]["next_run_at"] == (
+        "2026-09-30T00:00:00.0000000+02:00"
+    )
     assert status["status"] == "active"
     assert disabled["status"] == "disabled"
     assert disabled_status["status"] == "disabled"
@@ -1266,6 +1298,17 @@ def test_windows_inventory_fails_closed_when_task_query_fails(tmp_path: Path) ->
 
     with pytest.raises(ScheduleError, match="PowerShell operation failed"):
         adapter.inventory()
+
+
+@pytest.mark.parametrize("operation", ["install", "status", "disable", "remove"])
+def test_windows_lifecycle_fails_closed_when_task_query_fails(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    adapter = _windows_adapter(tmp_path, _WindowsLifecycleFailureRunner())
+
+    with pytest.raises(ScheduleError, match="PowerShell operation failed"):
+        getattr(adapter, operation)(_spec(tmp_path, platform="windows"))
 
 
 def test_windows_inventory_rejects_unexpected_owned_command(tmp_path: Path) -> None:
@@ -1548,6 +1591,43 @@ def test_schedule_cleanup_does_not_require_resolving_current_executable(
     assert captured[0].executable.name == "dependabot-watcher"
 
 
+def test_schedule_install_requires_a_manual_verification_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "dependabot-watcher"
+    executable.write_text("placeholder", encoding="utf-8")
+    executable.chmod(0o700)
+
+    class _Adapter:
+        def install(self, spec):
+            return {"status": "active", "next": None}
+
+    monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    monkeypatch.setattr(
+        "dependabot_watcher.scheduling.scheduler_adapter",
+        lambda platform, runner=None: _Adapter(),
+    )
+
+    result = manage_schedule(
+        "install",
+        config_path=tmp_path / "config.toml",
+        state_directory=tmp_path / "state",
+        interval_minutes=60,
+        requested_platform="systemd",
+        executable=str(executable),
+    )
+
+    assert "manual verification run does not prove" in result["next"]
+    verification = result["verification"]["argv"]
+    assert "--config" in verification
+    assert "--state-dir" in verification
+    assert "--expected-interval-minutes" in verification
+    assert "--notify" in verification
+    assert "--quiet" not in verification
+    assert verification[verification.index("--format") + 1] == "text"
+
+
 def test_schedule_inventory_requires_no_profile_or_executable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1619,6 +1699,29 @@ def test_schedule_human_output_exposes_authority_and_no_github_mutation(
     assert "Output: Watcher runtime state" in text
     assert "GitHub mutation authorized: **no**" in markdown
     assert structured["definition"]["authority"] == "DESKTOP\\alex"
+
+
+def test_schedule_install_output_exposes_recurring_choices_and_native_timing(
+    tmp_path: Path,
+) -> None:
+    runner = _WindowsRunner()
+    adapter = _windows_adapter(tmp_path, runner)
+    report = adapter.install(_spec(tmp_path, platform="wsl", distro="Ubuntu"))
+    report["profile"] = {
+        "repository_count": 3,
+        "repositories": ["one/example", "two/example"],
+        "advisory": {"mode": "off", "provider": None},
+        "operation": {"mutation_enabled": False},
+    }
+
+    text = render_schedule(report, "text")
+
+    assert "Cadence: every 1 hour" in text
+    assert "Repositories watched: one/example, two/example" in text
+    assert "AI during scheduled runs: off" in text
+    assert "GitHub changes: disabled" in text
+    assert "Next scheduled run: 2026-09-30T00:00:00.0000000+02:00" in text
+    assert "Last scheduled run: never" in text
 
 
 def test_windows_recovery_command_is_powershell_safe(

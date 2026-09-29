@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -67,6 +68,14 @@ def _timestamp(clock: Clock) -> str:
 
 def _toml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _shell_quote(value: str) -> str:
+    """Quote a path for the shell used by the current operator host."""
+
+    if os.name == "nt":
+        return "'" + value.replace("'", "''") + "'"
+    return shlex.quote(value)
 
 
 def _config_data(
@@ -439,13 +448,13 @@ def setup(
         verified=verified,
     )
     try:
-        parse_config(data)
+        parsed_config = parse_config(data)
     except ConfigError as exc:
         raise SetupError(f"Setup choices are invalid: {exc}") from exc
     _write_exclusive(expanded, _render_config(data))
     automatically_loaded = expanded.resolve() == default_config_path().expanduser().resolve()
     config_argument = (
-        "" if automatically_loaded else f" --config {_toml_string(str(expanded))}"
+        "" if automatically_loaded else f" --config {_shell_quote(str(expanded))}"
     )
     return {
         "schema_version": SETUP_SCHEMA_VERSION,
@@ -461,6 +470,29 @@ def setup(
             "mode": request.advisory_mode,
             "provider": "codex_cli" if request.advisory_mode != "off" else None,
             "model_use_acknowledged": request.acknowledge_model_use,
+            "triage": (
+                asdict(parsed_config.advisory.codex_cli.triage)
+                if parsed_config.advisory.codex_cli is not None
+                and parsed_config.advisory.codex_cli.triage is not None
+                else None
+            ),
+            "review": (
+                asdict(parsed_config.advisory.codex_cli.review)
+                if parsed_config.advisory.codex_cli is not None
+                and parsed_config.advisory.codex_cli.review is not None
+                else None
+            ),
+            "budget": asdict(parsed_config.advisory.budget),
+            "usage_effect": (
+                "no_model_calls_or_provider_usage"
+                if request.advisory_mode == "off"
+                else "may_consume_provider_quota_or_incur_cost"
+            ),
+            "evidence_privacy": (
+                "not_applicable_ai_off"
+                if request.advisory_mode == "off"
+                else "selected_repository_pr_alert_dependency_path_check_and_deterministic_assessment_evidence_may_be_sent_to_provider"
+            ),
         },
         "verification": verification,
         "capabilities": {
@@ -472,6 +504,15 @@ def setup(
         },
         "next_commands": [
             f"dependabot-watcher doctor{config_argument}",
-            f"dependabot-watcher plan{config_argument}",
+            f"dependabot-watcher run{config_argument} --notify off",
+        ],
+        "next_decisions": [
+            "Run one read-only reconciliation before scheduling recurring operation.",
+            "Choose a schedule cadence and notification mode before installing a native schedule.",
+            (
+                "AI advice is off; decide whether deterministic operation is sufficient before enabling model use."
+                if request.advisory_mode == "off"
+                else "Review the configured models, reasoning levels, and call limits before recurring operation."
+            ),
         ],
     }

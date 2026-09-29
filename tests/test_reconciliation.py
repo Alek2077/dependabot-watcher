@@ -304,6 +304,14 @@ def test_reconcile_persists_plan_and_suppresses_unchanged_model_work(
     assert "calls this run 1" in first_text
     assert "calls this run 0" in second_text
     assert "retained plan calls 1" in second_text
+    first["notification"]["delivery"] = {
+        "mode": "desktop",
+        "status": "delivered",
+        "assurance": "adapter_accepted_only",
+    }
+    assert "submitted to the desktop adapter (display not confirmed)" in (
+        render_reconciliation(first, "text")
+    )
 
 
 def test_reconciliation_human_output_exposes_superseded_plan_lineage(

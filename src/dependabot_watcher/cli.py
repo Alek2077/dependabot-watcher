@@ -27,7 +27,7 @@ from .reconciliation import (
 from .reconciliation_output import render_reconciliation
 from .runtime_state import default_state_directory
 from .schedulers.common import ScheduleError
-from .scheduling import inventory_schedules, manage_schedule
+from .scheduling import inventory_schedules, manage_schedule, recurring_profile_summary
 from .scheduling_output import render_schedule
 from .setup import SetupError, SetupRequest, setup
 from .terminal import (
@@ -678,8 +678,9 @@ def main(argv: list[str] | None = None) -> int:
                 else ExitCode.SUCCESS
             )
         if args.command == "schedule":
+            schedule_config: WatcherConfig | None = None
             if args.schedule_action in {"preview", "install"}:
-                load_config(args.config)
+                schedule_config = load_config(args.config)
             schedule_progress = {
                 "inventory": "Discovering current-user Watcher schedules...",
                 "preview": "Preparing the native Watcher schedule preview...",
@@ -706,6 +707,8 @@ def main(argv: list[str] | None = None) -> int:
                         distro=args.distro,
                         executable=_current_console_executable(),
                     )
+                    if schedule_config is not None:
+                        report["profile"] = recurring_profile_summary(schedule_config)
             _write_report(render_schedule(report, args.output_format), presentation)
             return ExitCode.SUCCESS
         config = _select_repositories(load_config(args.config), args.repositories)

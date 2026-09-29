@@ -183,6 +183,15 @@ def test_cli_schedule_preview_routes_without_local_scheduler_mutation(
 ) -> None:
     observed: dict[str, object] = {}
     monkeypatch.setattr(cli, "load_config", lambda path: object())
+    monkeypatch.setattr(
+        cli,
+        "recurring_profile_summary",
+        lambda config: {
+            "repository_count": 1,
+            "advisory": {"mode": "off"},
+            "operation": {"mutation_enabled": False},
+        },
+    )
 
     def preview(action, **kwargs):
         observed.update(action=action, **kwargs)
@@ -228,6 +237,7 @@ def test_cli_schedule_preview_routes_without_local_scheduler_mutation(
     captured = capsys.readouterr()
     assert exit_code == cli.ExitCode.SUCCESS
     assert json.loads(captured.out)["status"] == "preview"
+    assert json.loads(captured.out)["profile"]["advisory"]["mode"] == "off"
     assert observed["action"] == "preview"
     assert observed["requested_platform"] == "wsl"
     assert observed["distro"] == "Ubuntu"
@@ -814,6 +824,11 @@ def test_cli_setup_defaults_to_human_text_and_existing_path_fails_cleanly(
     first = capsys.readouterr()
     assert "Dependabot Watcher setup" in first.out
     assert "Verification: offline" in first.out
+    assert "example-org/example-app (main)" in first.out
+    assert "AI: off (no model calls and no provider quota or cost)" in first.out
+    assert "GitHub changes: disabled" in first.out
+    assert "dependabot-watcher run" in first.out
+    assert "Choose a schedule cadence" in first.out
 
     assert cli.main(arguments) == cli.ExitCode.CONFIGURATION_ERROR
     second = capsys.readouterr()

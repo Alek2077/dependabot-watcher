@@ -20,7 +20,7 @@ dependabot-watcher setup --repo owner/repository
 
 `owner/repository` denotes the GitHub repository identifier and must be replaced with a real value. It is example syntax, not a built-in demonstration repository.
 
-The command checks GitHub CLI authentication, verifies read-only repository and configured-branch access, discovers default branches, creates a non-secret operational profile, and prints the exact `doctor` and `plan` commands to run next.
+The command checks GitHub CLI authentication, verifies read-only repository and configured-branch access, discovers default branches, creates a non-secret operational profile, and prints the exact `doctor` and read-only `run` commands to use next. Its receipt also states repository scope, AI/provider usage, and the decisions still required before recurring operation.
 
 The generated profile is deliberately conservative: advisory mode `off`, autonomy `read_only`, mutation disabled, concise human reporting, complete JSON machine output, and no scheduler or notification configuration.
 
@@ -64,10 +64,18 @@ Preview the exact same-user native registration before creating it:
 
 ```bash
 dependabot-watcher schedule inventory
-dependabot-watcher schedule preview --interval-minutes 1440
-dependabot-watcher schedule install --interval-minutes 1440
-dependabot-watcher schedule status --interval-minutes 1440
+dependabot-watcher schedule preview --interval-minutes CADENCE_MINUTES --notify NOTIFICATION_MODE
+dependabot-watcher schedule install --interval-minutes CADENCE_MINUTES --notify NOTIFICATION_MODE
 ```
+
+Replace the placeholders only after confirming the cadence and notification
+mode. Use the exact install arguments for status. For disable or removal,
+prefer the exact `recovery_command` returned by `schedule inventory` rather
+than reconstructing profile and cadence arguments from memory.
+
+Before previewing or installing, choose the cadence and notification mode and decide whether the existing model-off profile is sufficient. If AI is enabled, review the provider, exact model and reasoning settings, maximum calls per changed run, private evidence sent, and quota/cost implications. The workload limits are not financial spending caps. Also keep approval-gated mutation as a separate decision; scheduling does not enable it.
+
+The install receipt reports the recurring profile and, where the native scheduler exposes it, the next scheduled run and whether any native run has completed. Use the exact manual verification command printed in that receipt; it uses the same configuration, state directory, cadence, and notification mode as the installed schedule. Only native task history proves that the scheduler itself has fired.
 
 Inventory is read-only and independent of any one profile. It validates the
 native ownership marker, current-user authority, embedded command, and
@@ -75,14 +83,16 @@ configuration-derived job ID before returning a recovery command. A similarly
 named candidate that fails those checks is reported as untrusted rather than
 treated as removal authority.
 
-On WSL, use `--platform wsl --distro EXACT-DISTRIBUTION` when automatic detection is unavailable or when the registration must bind a specific distribution. The task binds the exact Watcher console executable used for installation, the originating Linux user, and trusted Windows System32 WSL/PowerShell helpers; preview displays that actual host-wrapper command. `--notify desktop` is optional. The host can start WSL without an open terminal, but no local schedule runs while the computer is powered off; Watcher records one overdue catch-up after the host returns instead of replaying every missed interval.
+On WSL, use `--platform wsl --distro EXACT-DISTRIBUTION` when automatic detection is unavailable or when the registration must bind a specific distribution. The task binds the exact Watcher console executable used for installation, the originating Linux user, and trusted Windows System32 WSL/PowerShell helpers; preview displays that actual host-wrapper command. `--notify desktop` is optional. Notifications are non-interactive attention signals containing a bounded queue summary and AI-use status; clicking one has no defined Watcher action. Adapter acceptance does not prove that the user saw the notification. The host can start WSL without an open terminal, but no local schedule runs while the computer is powered off; Watcher records one overdue catch-up after the host returns instead of replaying every missed interval.
 
-Disable or remove only the Watcher-owned registration while preserving configuration, run history, plans, and execution audit:
+Check or remove only the Watcher-owned registration while preserving configuration, run history, plans, and execution audit:
 
 ```bash
-dependabot-watcher schedule disable --interval-minutes 1440
-dependabot-watcher schedule remove --interval-minutes 1440
+dependabot-watcher schedule status --config CONFIG_PATH --state-dir STATE_DIRECTORY \
+  --interval-minutes CADENCE_MINUTES --notify NOTIFICATION_MODE
 ```
+
+Use the exact `recovery_command` from `schedule inventory` for removal.
 
 WSL2 through Windows Task Scheduler has completed live collection, desktop-notification, and scheduled-Codex lifecycle validation. Native Windows has completed isolated installation, current-user configuration/state ACLs, atomic replacement, cross-process locking, offline setup, native Task Scheduler lifecycle, and a scheduled fail-closed launch without native GitHub CLI. Live native-Windows GitHub collection, notification delivery, missed-run catch-up, update/uninstall, and cleanup remain release gates. The systemd and launchd adapters still have deterministic coverage only. None of these private pre-release results is a broad platform support claim until the applicable validation gate closes.
 
