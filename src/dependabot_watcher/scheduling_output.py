@@ -36,6 +36,90 @@ def _effective_command(definition: Mapping[str, Any], spec: Mapping[str, Any]) -
     return _command(spec.get("run_argv"))
 
 
+def _cadence(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return _plain(value)
+    if value == 1_440:
+        return "daily (every 24 hours)"
+    if value == 10_080:
+        return "weekly (every 7 days)"
+    if value % 60 == 0:
+        hours = value // 60
+        unit = "hour" if hours == 1 else "hours"
+        return f"every {hours} {unit}"
+    return f"every {value} minutes"
+
+
+def _profile_text(profile: Mapping[str, Any]) -> list[str]:
+    advisory_value = profile.get("advisory")
+    advisory = advisory_value if isinstance(advisory_value, Mapping) else {}
+    operation_value = profile.get("operation")
+    operation = operation_value if isinstance(operation_value, Mapping) else {}
+    mode = str(advisory.get("mode") or "off")
+    if mode == "off":
+        ai = "off (scheduled runs make no model calls and use no provider quota or cost)"
+    else:
+        triage_value = advisory.get("triage")
+        triage = triage_value if isinstance(triage_value, Mapping) else {}
+        review_value = advisory.get("review")
+        review = review_value if isinstance(review_value, Mapping) else {}
+        budget_value = advisory.get("budget")
+        budget = budget_value if isinstance(budget_value, Mapping) else {}
+        call_limit = f"up to {_plain(budget.get('max_triage_calls', 0))} triage calls"
+        review_summary = ""
+        if mode == "reviewed":
+            call_limit += f" and {_plain(budget.get('max_review_calls', 0))} review calls"
+            review_summary = (
+                f"review {_plain(review.get('model') or 'unknown model')} "
+                f"({_plain(review.get('reasoning_effort') or 'unknown')} reasoning); "
+            )
+        ai = (
+            f"{mode} via {_plain(advisory.get('provider') or 'unknown provider')}; "
+            f"triage {_plain(triage.get('model') or 'unknown model')} "
+            f"({_plain(triage.get('reasoning_effort') or 'unknown')} reasoning); "
+            f"{review_summary}{call_limit} per changed run (not a financial cap); "
+            "scheduled changes may consume provider quota or incur cost"
+        )
+        ai += "; selected private repository evidence may be sent to the provider"
+    mutation = (
+        "approval-gated only"
+        if operation.get("mutation_enabled") is True
+        else "disabled"
+    )
+    repositories = profile.get("repositories")
+    if isinstance(repositories, list) and repositories:
+        repository_summary = ", ".join(_plain(item) for item in repositories)
+    else:
+        repository_summary = _plain(profile.get("repository_count", 0))
+    return [
+        f"Repositories watched: {repository_summary}",
+        f"AI during scheduled runs: {ai}",
+        f"GitHub changes: {mutation}",
+    ]
+
+
+def _native_text(native_status: Mapping[str, Any]) -> list[str]:
+    lines: list[str] = []
+    if "next_run_at" in native_status:
+        lines.append(
+            f"Next scheduled run: {_plain(native_status.get('next_run_at') or 'not scheduled')}"
+        )
+    if native_status.get("has_run") is False:
+        lines.append("Last scheduled run: never")
+    elif native_status.get("has_run") is True:
+        lines.append(
+            f"Last scheduled run: {_plain(native_status.get('last_run_at') or 'unknown')}"
+        )
+        last_result = native_status.get("last_result")
+        lines.append(
+            f"Last native result: {_plain('unknown' if last_result is None else last_result)}"
+        )
+    missed_runs = native_status.get("missed_runs")
+    if isinstance(missed_runs, int) and not isinstance(missed_runs, bool) and missed_runs:
+        lines.append(f"Missed native starts: {_plain(missed_runs)}")
+    return lines
+
+
 def _inventory_registrations(report: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     value = report.get("registrations")
     if not isinstance(value, list):
@@ -130,7 +214,7 @@ def _text(report: Mapping[str, Any]) -> str:
         f"Status: {_plain(report.get('status'))}",
         f"Platform: {_plain(spec.get('platform'))}",
         f"Job: {_plain(spec.get('job_id'))}",
-        f"Cadence: every {_plain(spec.get('interval_minutes'))} minutes",
+        f"Cadence: {_cadence(spec.get('interval_minutes'))}",
         f"Notifications: {_plain(spec.get('notification_mode') or 'off')}",
         f"Command: {_plain(_effective_command(definition, spec))}",
         f"Configuration: {_plain(spec.get('config_path'))}",
@@ -142,12 +226,29 @@ def _text(report: Mapping[str, Any]) -> str:
         f"Changed local scheduler: {'yes' if report.get('changed') else 'no'}",
         "GitHub mutation authorized: no",
     ]
+    profile_value = report.get("profile")
+    if isinstance(profile_value, Mapping):
+        lines.extend(_profile_text(profile_value))
+    verification_value = report.get("verification")
+    if isinstance(verification_value, Mapping):
+        lines.append(
+            f"Manual verification: {_plain(_command(verification_value.get('argv')))}"
+        )
+    lines.extend(_native_text(native_status))
     if native_status:
+        dedicated = {
+            "has_run",
+            "next_run_at",
+            "last_run_at",
+            "last_result",
+            "missed_runs",
+        }
         lines.append(
             "Native state: "
             + ", ".join(
                 f"{_plain(key)}={_plain(value)}"
                 for key, value in sorted(native_status.items())
+                if key not in dedicated
             )
         )
     if report.get("next"):
@@ -169,7 +270,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
         f"Status: **{_escape(report.get('status'))}**  ",
         f"Platform: `{_escape(spec.get('platform'))}`  ",
         f"Job: `{_escape(spec.get('job_id'))}`  ",
-        f"Cadence: every {_escape(spec.get('interval_minutes'))} minutes  ",
+        f"Cadence: {_escape(_cadence(spec.get('interval_minutes')))}  ",
         f"Notifications: `{_escape(spec.get('notification_mode') or 'off')}`  ",
         f"Command: `{_escape(_effective_command(definition, spec))}`  ",
         f"Configuration: `{_escape(spec.get('config_path'))}`  ",
@@ -181,11 +282,35 @@ def _markdown(report: Mapping[str, Any]) -> str:
         f"Changed local scheduler: **{'yes' if report.get('changed') else 'no'}**  ",
         "GitHub mutation authorized: **no**",
     ]
+    profile_value = report.get("profile")
+    if isinstance(profile_value, Mapping):
+        lines.extend(["", "## Recurring operation", ""])
+        lines.extend(f"- {_escape(item)}" for item in _profile_text(profile_value))
+    verification_value = report.get("verification")
+    if isinstance(verification_value, Mapping):
+        lines.extend(
+            [
+                "",
+                f"Manual verification: `{_escape(_command(verification_value.get('argv')))}`  ",
+            ]
+        )
+    native_lines = _native_text(native_status)
+    if native_lines:
+        lines.extend(["", "## Scheduled timing", ""])
+        lines.extend(f"- {_escape(item)}" for item in native_lines)
     if native_status:
         lines.extend(["", "## Native state", ""])
+        dedicated = {
+            "has_run",
+            "next_run_at",
+            "last_run_at",
+            "last_result",
+            "missed_runs",
+        }
         lines.extend(
             f"- `{_escape(key)}`: {_escape(value)}"
             for key, value in sorted(native_status.items())
+            if key not in dedicated
         )
     if report.get("next"):
         lines.extend(["", f"Next: {_escape(report['next'])}"])

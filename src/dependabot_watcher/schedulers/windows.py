@@ -453,13 +453,41 @@ $tasks = @(Get-ScheduledTask -TaskPath $payload.task_path -ErrorAction Stop | Wh
     def _native_status(self, spec: ScheduleSpec) -> dict[str, Any]:
         script = """
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$task = Get-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -ErrorAction SilentlyContinue
+$task = $null
+try {
+  $task = Get-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -ErrorAction Stop
+} catch {
+  if ($_.CategoryInfo.Category -eq 'ObjectNotFound' -or $_.FullyQualifiedErrorId -match 'NotFound') {
+    @{installed=$false; state='Missing'; enabled=$false; xml=$null} | ConvertTo-Json -Compress
+    exit 0
+  }
+  throw
+}
 if ($null -eq $task) {
   @{installed=$false; state='Missing'; enabled=$false; xml=$null} | ConvertTo-Json -Compress
   exit 0
 }
-$xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name
-@{installed=$true; state=$task.State.ToString(); enabled=($task.Settings.Enabled -eq $true); task_path=$task.TaskPath; xml=$xml} | ConvertTo-Json -Compress
+$info = Get-ScheduledTaskInfo -TaskPath $payload.task_path -TaskName $payload.name -ErrorAction Stop
+$xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -ErrorAction Stop
+$hasRun = ([int64]$info.LastTaskResult -ne 267011)
+$nextRunAt = if ($info.NextRunTime.Year -gt 1900) {
+  $info.NextRunTime.ToString('o')
+} else {
+  $null
+}
+$lastRunAt = if ($hasRun) { $info.LastRunTime.ToString('o') } else { $null }
+@{
+  installed=$true
+  state=$task.State.ToString()
+  enabled=($task.Settings.Enabled -eq $true)
+  task_path=$task.TaskPath
+  xml=$xml
+  has_run=$hasRun
+  next_run_at=$nextRunAt
+  last_run_at=$lastRunAt
+  last_result=if ($hasRun) { [int64]$info.LastTaskResult } else { $null }
+  missed_runs=[int]$info.NumberOfMissedRuns
+} | ConvertTo-Json -Compress
 """.strip()
         return self._run_script(
             script,
@@ -480,7 +508,7 @@ $xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
 Register-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -Xml $payload.xml -Force | Out-Null
 $task = Get-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -ErrorAction Stop
-$xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name
+$xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -ErrorAction Stop
 @{installed=$true; state=$task.State.ToString(); enabled=($task.Settings.Enabled -eq $true); task_path=$task.TaskPath; xml=$xml} | ConvertTo-Json -Compress
 """.strip()
         installed = self._run_script(
@@ -518,6 +546,7 @@ $xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name
         )
         enabled = bool(native.get("enabled"))
         status = "drifted" if drifted else "active" if enabled else "disabled"
+        has_run = bool(native.get("has_run"))
         return schedule_report(
             action="status",
             spec=spec,
@@ -528,6 +557,11 @@ $xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name
                 "enabled": enabled,
                 "state": native.get("state"),
                 "drifted": drifted,
+                "has_run": has_run,
+                "next_run_at": native.get("next_run_at"),
+                "last_run_at": native.get("last_run_at"),
+                "last_result": native.get("last_result") if has_run else None,
+                "missed_runs": native.get("missed_runs"),
             },
         )
 
@@ -546,12 +580,21 @@ $xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name
         self._require_owned_xml(spec, prior.get("xml"))
         script = """
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$task = Get-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -ErrorAction SilentlyContinue
+$task = $null
+try {
+  $task = Get-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -ErrorAction Stop
+} catch {
+  if ($_.CategoryInfo.Category -eq 'ObjectNotFound' -or $_.FullyQualifiedErrorId -match 'NotFound') {
+    @{installed=$false; changed=$false} | ConvertTo-Json -Compress
+    exit 0
+  }
+  throw
+}
 if ($null -eq $task) {
   @{installed=$false; changed=$false} | ConvertTo-Json -Compress
   exit 0
 }
-Disable-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name | Out-Null
+Disable-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -ErrorAction Stop | Out-Null
 @{installed=$true; changed=$true} | ConvertTo-Json -Compress
 """.strip()
         native = self._run_script(
@@ -582,12 +625,21 @@ Disable-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name | Out
         self._require_owned_xml(spec, prior.get("xml"))
         script = """
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$task = Get-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -ErrorAction SilentlyContinue
+$task = $null
+try {
+  $task = Get-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -ErrorAction Stop
+} catch {
+  if ($_.CategoryInfo.Category -eq 'ObjectNotFound' -or $_.FullyQualifiedErrorId -match 'NotFound') {
+    @{installed=$false; changed=$false} | ConvertTo-Json -Compress
+    exit 0
+  }
+  throw
+}
 if ($null -eq $task) {
   @{installed=$false; changed=$false} | ConvertTo-Json -Compress
   exit 0
 }
-Unregister-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -Confirm:$false
+Unregister-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -Confirm:$false -ErrorAction Stop
 @{installed=$false; changed=$true} | ConvertTo-Json -Compress
 """.strip()
         native = self._run_script(

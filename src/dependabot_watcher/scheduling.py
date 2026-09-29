@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .config import WatcherConfig
 from .schedulers.common import (
     CommandRunner,
     ScheduleError,
@@ -18,6 +20,48 @@ from .schedulers.windows import WindowsTaskSchedulerAdapter
 
 SUPPORTED_PLATFORMS = frozenset({"auto", "wsl", "windows", "systemd", "launchd"})
 SCHEDULE_ACTIONS = frozenset({"preview", "install", "status", "disable", "remove"})
+
+
+def recurring_profile_summary(config: WatcherConfig) -> dict[str, Any]:
+    """Return non-secret recurring-operation choices for schedule reports."""
+
+    provider = config.advisory.codex_cli
+    return {
+        "repository_count": len(config.repositories),
+        "repositories": [repository.name for repository in config.repositories],
+        "advisory": {
+            "mode": config.advisory.mode,
+            "provider": config.advisory.provider,
+            "triage": (
+                asdict(provider.triage)
+                if provider is not None and provider.triage is not None
+                else None
+            ),
+            "review": (
+                asdict(provider.review)
+                if provider is not None and provider.review is not None
+                else None
+            ),
+            "budget": asdict(config.advisory.budget),
+            "usage_effect": (
+                "no_model_calls_or_provider_usage"
+                if config.advisory.mode == "off"
+                else "may_consume_provider_quota_or_incur_cost"
+            ),
+            "evidence_privacy": (
+                "not_applicable_ai_off"
+                if config.advisory.mode == "off"
+                else "selected_repository_pr_alert_dependency_path_check_and_deterministic_assessment_evidence_may_be_sent_to_provider"
+            ),
+        },
+        "operation": {
+            "autonomy": config.operation.autonomy,
+            "mutation_enabled": config.operation.mutation_enabled,
+            "require_advice_before_execution": (
+                config.operation.require_advice_before_execution
+            ),
+        },
+    }
 
 
 def _current_wsl_user() -> str:
@@ -77,6 +121,19 @@ def inventory_schedules(
     return scheduler_adapter(platform, runner=runner).inventory()
 
 
+def _manual_verification_argv(spec: Any) -> list[str]:
+    argv = [item for item in spec.run_argv if item != "--quiet"]
+    if "--format" in argv:
+        index = argv.index("--format")
+        if index + 1 < len(argv):
+            argv[index + 1] = "text"
+    else:
+        argv.extend(["--format", "text"])
+    if "--notify" not in argv:
+        argv.extend(["--notify", str(spec.notification_mode)])
+    return argv
+
+
 def manage_schedule(
     action: str,
     *,
@@ -114,4 +171,15 @@ def manage_schedule(
     )
     adapter = scheduler_adapter(platform, runner=runner)
     operation = getattr(adapter, action)
-    return operation(spec)
+    report = operation(spec)
+    if action == "install":
+        report["verification"] = {
+            "argv": _manual_verification_argv(spec),
+            "purpose": "manual_read_only_run",
+        }
+        report["next"] = (
+            "Run one read-only reconciliation now to verify collection, saved state, "
+            "and notification behavior; a manual verification run does not prove that "
+            "the native scheduler has fired."
+        )
+    return report

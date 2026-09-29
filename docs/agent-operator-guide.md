@@ -85,6 +85,16 @@ The default `off` mode makes zero model calls. `economy` and `reviewed` are expl
 
 Model review is recommended for grouped, major, transitive, sensitive, ambiguous, or ecosystem-unsupported updates. It can interpret or veto; it cannot clear deterministic blockers, grant GitHub authority, or prove compatibility.
 
+## Recurring operation and verification
+
+Before installing a schedule, present the material recurring choices in plain language: repository scope, cadence, notification mode, advisory mode, provider and exact model/reasoning settings when enabled, maximum provider calls per changed run, quota/cost and private-evidence implications, and whether approval-gated GitHub mutation is enabled. If the user did not specify a choice, recommend one with a short reason and obtain confirmation before installation; do not silently select material recurring behavior.
+
+Use `schedule preview` first and interpret its structured result for the user rather than handing them JSON. After confirmation, install the same definition. Report the exact next native run time when available, whether the native task has ever run, configuration and state locations, missed-run behavior, and the fact that installation alone does not prove execution.
+
+After installation, run the exact manual verification command printed in the install receipt unless the user declined or the approved model-usage boundary does not cover it. Verify the persisted result and notification decision using the same profile, state directory, cadence, and notification mode. Describe this accurately as a manual verification run; do not call it the first scheduled run. Adapter-level notification status proves only that the operating-system adapter accepted the request, not that the user saw or could act on it. Desktop notifications are non-interactive attention signals; clicking them has no defined Watcher action.
+
+When the user asks whether Watcher is working, perform the relevant status and result checks yourself and give a concise human summary. Do not require the user to inspect JSON or operate routine status commands unless they explicitly ask for a self-service procedure.
+
 ## Approval-gated execution
 
 Use a private plan file:

@@ -56,6 +56,14 @@ def _plan_summary(plan: Mapping[str, Any]) -> str:
     return current
 
 
+def _delivery_summary(delivery: Mapping[str, Any]) -> str:
+    mode = _plain(delivery.get("mode") or "off")
+    status = str(delivery.get("status") or "unknown")
+    if status == "delivered" and delivery.get("assurance") == "adapter_accepted_only":
+        return f"{mode} / submitted to the desktop adapter (display not confirmed)"
+    return f"{mode} / {_plain(status)}"
+
+
 def _text(report: Mapping[str, Any]) -> str:
     summary = report.get("summary")
     queue = summary if isinstance(summary, Mapping) else {}
@@ -100,11 +108,7 @@ def _text(report: Mapping[str, Any]) -> str:
             if notice.get("needed")
             else f"Notification: silent ({_plain(notice.get('reason'))})"
         ),
-        (
-            "Delivery: "
-            f"{_plain(delivery.get('mode') or 'off')} / "
-            f"{_plain(delivery.get('status') or 'unknown')}"
-        ),
+        f"Delivery: {_delivery_summary(delivery)}",
         "Mutation authorized: no",
     ]
     if notice.get("message"):
@@ -165,10 +169,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
             if notice.get("needed")
             else f"Notification: **silent** (`{_escape(notice.get('reason'))}`)"
         ),
-        (
-            f"Delivery: `{_escape(delivery.get('mode') or 'off')}` / "
-            f"`{_escape(delivery.get('status') or 'unknown')}`"
-        ),
+        f"Delivery: {_escape(_delivery_summary(delivery))}",
     ]
     if notice.get("message"):
         lines.extend(["", f"Action: {_escape(notice['message'])}"])

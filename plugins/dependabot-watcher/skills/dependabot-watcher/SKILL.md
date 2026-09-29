@@ -1,6 +1,6 @@
 ---
 name: dependabot-watcher
-description: Operate an installed Dependabot Watcher CLI to inspect, prioritize, or automate a queue of Dependabot PRs and security alerts. Use when the user names Watcher or asks for help managing that queue; do not use for GitHub review approvals, generic Dependabot configuration, or unrelated dependency work.
+description: Operate an installed Dependabot Watcher CLI to inspect, prioritize, or automate a queue of Dependabot PRs and security alerts. Use when the user names Watcher, asks about adopting, installing, setting up, scheduling, or removing Watcher, or asks for help managing that queue; do not use for GitHub review approvals, generic Dependabot configuration, or unrelated dependency work.
 ---
 
 # Dependabot Watcher
@@ -28,6 +28,8 @@ When `doctor` is in scope, read its JSON `status`: `attention` reports warnings 
 If the executable or requested profile is missing, stop. Explain which prerequisite is unavailable and offer the documented installation or `setup` path; do not install the CLI or create a profile without authorization.
 
 Use the repository's canonical `docs/agent-operator-guide.md` when the source checkout is available. Otherwise rely on `--help` and the installed command's versioned JSON rather than guessing fields or scraping TTY output.
+
+For recurring setup, follow the operator guide's decision and verification contract. Before installation, make repository scope, cadence, notifications, AI/provider/model/reasoning/call limits, quota or cost exposure, and mutation mode visible in plain language; recommend and confirm unspecified material choices rather than silently selecting them. After installation, use the receipt's exact verification command, report native next-run evidence, and distinguish that manual check from a real scheduled run. Before uninstalling or removing automation, inventory each host context that may have been used (native Windows and WSL are separate) and use only verified recovery commands. Interpret JSON and routine status commands for the user instead of handing them machine output. Treat desktop adapter acceptance as submission evidence only, not proof that the notification was visible or useful.
 
 For complex grouped, major, transitive, sensitive, ambiguous, or ecosystem-unsupported work, recommend configured model review plus the target repository's tests and deployment checks. A model may interpret or veto; it cannot authorize or prove compatibility.
 

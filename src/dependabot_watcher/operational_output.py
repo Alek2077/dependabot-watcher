@@ -36,6 +36,41 @@ def _authentication(value: object) -> str:
     }.get(str(value), _plain(value))
 
 
+def _setup_ai_lines(advisory: dict[str, Any]) -> list[str]:
+    mode = str(advisory.get("mode") or "off")
+    if mode == "off":
+        return ["AI: off (no model calls and no provider quota or cost)"]
+    provider = _plain(advisory.get("provider") or "unknown provider")
+    lines = [
+        f"AI: {mode} via {provider}; recurring runs may consume provider quota or incur cost"
+    ]
+    lines.append(
+        "Private evidence: selected repository, PR, alert, dependency, path, check, "
+        "and deterministic assessment evidence may be sent to the provider"
+    )
+    for label in ("triage", "review"):
+        stage = advisory.get(label)
+        if isinstance(stage, dict):
+            lines.append(
+                f"{label.capitalize()} model: {_plain(stage.get('model'))} "
+                f"({_plain(stage.get('reasoning_effort'))} reasoning)"
+            )
+    budget = advisory.get("budget")
+    if isinstance(budget, dict):
+        call_limit = (
+            f"up to {_plain(budget.get('max_triage_calls', 0))} triage calls"
+        )
+        if mode == "reviewed":
+            call_limit += (
+                f" and {_plain(budget.get('max_review_calls', 0))} review calls"
+            )
+        lines.append(
+            f"Model workload limit per changed run: {call_limit}; "
+            "this is not a financial spending cap"
+        )
+    return lines
+
+
 def _doctor_text(report: dict[str, Any]) -> str:
     configuration = report["configuration"]
     runtime = report["runtime"]
@@ -182,17 +217,29 @@ def _setup_text(report: dict[str, Any]) -> str:
         f"Configuration: {_plain(report['configuration_path'])}{configuration_suffix}",
         f"Profile: {_plain(report['profile_source'])}",
         f"Repositories: {len(report['repositories'])}",
-        f"Advisory mode: {_plain(report['advisory']['mode'])}",
         f"Autonomy: {_plain(report['operation']['autonomy'])}",
+        (
+            "GitHub changes: approval-gated only"
+            if report["operation"].get("mutation_enabled")
+            else "GitHub changes: disabled"
+        ),
         (
             f"Verification: {verification_mode} | GitHub "
             f"{_authentication(report['verification']['github_authentication'])} | provider "
             f"{_authentication(report['verification']['provider_authentication'])}"
         ),
         "Mutation authorized: no",
-        "Next:",
+        "Configured repositories:",
     ]
+    lines.extend(
+        f"  - {_plain(repository['name'])} ({_plain(repository['default_branch'])})"
+        for repository in report["repositories"]
+    )
+    lines.extend(_setup_ai_lines(report["advisory"]))
+    lines.append("Next commands:")
     lines.extend(f"  - {_plain(command)}" for command in report["next_commands"])
+    lines.append("Before recurring operation:")
+    lines.extend(f"  - {_plain(item)}" for item in report["next_decisions"])
     return "\n".join(lines) + "\n"
 
 
@@ -213,8 +260,12 @@ def _setup_markdown(report: dict[str, Any]) -> str:
         f"Status: **{_escape(report['status'])}**  ",
         f"Configuration: `{_escape(report['configuration_path'])}`{configuration_suffix}  ",
         f"Profile: `{_escape(report['profile_source'])}`  ",
-        f"Advisory mode: `{_escape(report['advisory']['mode'])}`  ",
         f"Autonomy: `{_escape(report['operation']['autonomy'])}`  ",
+        (
+            "GitHub changes: **approval-gated only**  "
+            if report["operation"].get("mutation_enabled")
+            else "GitHub changes: **disabled**  "
+        ),
         (
             f"Verification: {_escape(verification_mode)}; GitHub "
             f"{_escape(_authentication(report['verification']['github_authentication']))}; provider "
@@ -222,10 +273,25 @@ def _setup_markdown(report: dict[str, Any]) -> str:
         ),
         "Mutation authorized: **no**",
         "",
-        "## Next commands",
+        "## Configured repositories",
         "",
     ]
+    lines.extend(
+        f"- `{_escape(repository['name'])}` (`{_escape(repository['default_branch'])}`)"
+        for repository in report["repositories"]
+    )
+    lines.extend(["", "## AI", ""])
+    lines.extend(f"- {_escape(item)}" for item in _setup_ai_lines(report["advisory"]))
+    lines.extend(
+        [
+            "",
+            "## Next commands",
+            "",
+        ]
+    )
     lines.extend(f"- `{_escape(command)}`" for command in report["next_commands"])
+    lines.extend(["", "## Before recurring operation", ""])
+    lines.extend(f"- {_escape(item)}" for item in report["next_decisions"])
     return "\n".join(lines) + "\n"
 
 

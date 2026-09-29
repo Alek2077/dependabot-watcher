@@ -30,6 +30,16 @@ class _Runner:
 def _report() -> dict[str, object]:
     return {
         "run_id": "run_example",
+        "state_path": "/private/profile-one/run-state.json",
+        "report_path": "/private/profile-one/latest-run.json",
+        "summary": {
+            "repository_count": 3,
+            "open_pull_request_count": 10,
+            "open_alert_count": 7,
+            "attention_required_count": 1,
+        },
+        "advisory_coverage": {"mode": "off"},
+        "provider_usage": {"call_count": 0},
         "notification": {
             "needed": True,
             "reason": "approval_ready",
@@ -66,9 +76,14 @@ def test_wsl_desktop_notification_uses_bounded_powershell_input(
         "-NonInteractive",
     ]
     payload = json.loads(runner.inputs[0] or "{}")
-    assert payload["title"] == "Dependabot Watcher: action needed"
-    assert "execute --plan-file" in payload["body"]
-    assert "repositories" not in payload["body"]
+    assert payload["title"] == "Dependabot Watcher: approval ready"
+    assert "3 repositories | 10 PRs | 7 alerts | 1 need attention" in payload["body"]
+    assert "Run: run_example" in payload["body"]
+    assert "Profile: state-" in payload["body"]
+    assert "AI: off (no model used)" in payload["body"]
+    assert "Ask your agent" in payload["body"]
+    assert "execute --plan-file" not in payload["body"]
+    assert result["assurance"] == "adapter_accepted_only"
 
 
 def test_desktop_notification_failure_is_sanitized(
@@ -84,6 +99,7 @@ def test_desktop_notification_failure_is_sanitized(
     result = deliver_desktop_notification(_report(), runner=runner)
 
     assert result["status"] == "failed"
+    assert result["assurance"] == "not_accepted"
     assert result["error"] == "desktop_notification_unavailable"
     assert "stderr" not in result
 
@@ -101,4 +117,20 @@ def test_no_action_never_invokes_desktop_adapter(tmp_path: Path) -> None:
     result = deliver_desktop_notification(report, runner=runner)
 
     assert result["status"] == "not_needed"
+    assert result["assurance"] == "not_attempted"
     assert runner.commands == []
+
+
+def test_desktop_notification_profile_identity_differs_across_state_paths() -> None:
+    from dependabot_watcher.notifications import _content
+
+    first = _report()
+    second = _report()
+    second["state_path"] = "/private/profile-two/run-state.json"
+
+    first_body = _content(first)[1]
+    second_body = _content(second)[1]
+
+    first_profile = next(line for line in first_body.splitlines() if line.startswith("Profile:"))
+    second_profile = next(line for line in second_body.splitlines() if line.startswith("Profile:"))
+    assert first_profile != second_profile

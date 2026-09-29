@@ -11,7 +11,12 @@ import dependabot_watcher.setup as setup_implementation
 from dependabot_watcher import diagnostics
 from dependabot_watcher.config import load_config
 from dependabot_watcher.diagnostics import CommandResult
-from dependabot_watcher.setup import SetupError, SetupRequest, setup as create_profile
+from dependabot_watcher.setup import (
+    SetupError,
+    SetupRequest,
+    _shell_quote,
+    setup as create_profile,
+)
 
 
 def _runner(commands: list[tuple[str, ...]]):
@@ -89,8 +94,37 @@ def test_default_configuration_is_reused_without_redundant_flags(
     assert report["configuration_auto_loaded"] is True
     assert report["next_commands"] == [
         "dependabot-watcher doctor",
-        "dependabot-watcher plan",
+        "dependabot-watcher run --notify off",
     ]
+    assert report["advisory"]["usage_effect"] == "no_model_calls_or_provider_usage"
+    assert report["advisory"]["budget"]["max_triage_calls"] == 0
+    assert "Choose a schedule cadence" in report["next_decisions"][1]
+
+
+def test_custom_configuration_command_uses_shell_safe_path(tmp_path: Path) -> None:
+    path = tmp_path / "profile $(touch should-not-run)" / "config.toml"
+    path.parent.mkdir()
+
+    report = create_profile(
+        path,
+        SetupRequest(
+            repositories=("example-org/example-app",),
+            branches={"example-org/example-app": "main"},
+            offline=True,
+        ),
+    )
+
+    assert "--config '" in report["next_commands"][0]
+    assert "$(touch should-not-run)" in report["next_commands"][0]
+
+
+def test_shell_quote_uses_powershell_single_quote_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(setup_implementation.os, "name", "nt")
+    value = r"C:\profiles\founder's $(unsafe)\config.toml"
+
+    assert _shell_quote(value) == "'C:\\profiles\\founder''s $(unsafe)\\config.toml'"
 
 
 def test_setup_requires_separate_acknowledgement_for_approval_gated_execution(
@@ -217,6 +251,19 @@ def test_advanced_setup_checks_provider_auth_but_never_invokes_model(
     assert config.operation.report_verbosity == "detailed"
     assert config.advisory.mode == "reviewed"
     assert report["advisory"]["model_use_acknowledged"] is True
+    assert report["advisory"]["triage"] == {
+        "model": "triage-model",
+        "reasoning_effort": "high",
+        "timeout_seconds": 900,
+    }
+    assert report["advisory"]["review"] == {
+        "model": "review-model",
+        "reasoning_effort": "max",
+        "timeout_seconds": 900,
+    }
+    assert report["advisory"]["budget"]["max_triage_calls"] == 2
+    assert report["advisory"]["budget"]["max_review_calls"] == 1
+    assert report["advisory"]["usage_effect"] == "may_consume_provider_quota_or_incur_cost"
     assert ("codex", "login", "status") in commands
     assert not any("exec" in command for command in commands)
 

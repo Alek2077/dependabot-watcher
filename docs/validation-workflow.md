@@ -98,11 +98,17 @@ Repeat agent-mediated onboarding at milestone boundaries rather than after every
 
 Do not repeat the full multi-agent checkpoint for presentation-only corrections. After the completed Phase 6 checkpoint, the next deliberate private checkpoint should follow material Phase 8 agent-integration work or Phase 9 scheduled-operation work, whichever first changes onboarding, authority, or recurring operation enough to justify it.
 
+Choose the prompting style to match the question being tested. A controlled capability comparison may use the detailed common prompt below so every agent is judged against the same explicit rubric. A natural adoption test should instead begin with short, plausible user language and reveal only information that an ordinary user would supply as the conversation requires it. Do not preload the expected commands, authorization boundaries, model/privacy disclosures, scheduling decisions, recommended defaults, or stopping points; those are part of what the agent and public product surface must discover and explain. Do not manufacture total ignorance either: a developer who already uses Dependabot may reasonably know repository names, authentication state, and their desired outcome without knowing Watcher's architecture or command flow.
+
+Preserve the first attempt, including mistaken assumptions, permission prompts, failed public access, overly broad exploration, excessive output, and ordinary user corrections. When a missing fact blocks progress, answer minimally and naturally rather than replacing the agent's reasoning with an operator runbook. If the user must constrain an uncomfortable or inappropriate action, record that assistance instead of restarting merely to produce a cleaner transcript. Judge the completed session against the same capability, cost, authority, limitation, installation, recurring-operation, and cleanup rubric afterward. This keeps the interaction realistic without treating one model's poor judgment as a product defect or coaching the model into a predetermined success.
+
 For each checkpoint, give the same self-contained prompt independently to one fresh capable Codex session, one fresh Gemini/Antigravity session, and either OpenCode or Hermes as a different harness. Do not show agents one another's answers. Keep the first pass read-only and require each agent to explain current capability, automation limits, mutation authority, model/cost behavior, GitHub authorization, installation, validation, and unclear documentation before it changes anything.
 
 The main implementation agent compares the responses; the founder need only provide or point to the outputs. Compare factual agreement, safety interpretation, installation sequence, and recurring friction. Choose only one agent to perform the actual installation so parallel installers do not contaminate the environment. If all three materially agree, stop. If one differs, determine whether the cause is ambiguous documentation, harness contamination, or weak agent performance before changing the product. Do not expand into a large model leaderboard unless a concrete disagreement requires more evidence.
 
-Use this common first-pass prompt, changing only the repository URL and the private-access paragraph when necessary:
+For a controlled capability comparison only—not for a natural-adoption test—use
+this common first-pass prompt, changing only the repository URL and the
+private-access paragraph when necessary:
 
 > Treat REPOSITORY_URL as a third-party repository I am considering adopting. I have repositories with Dependabot pull requests and security alerts and want to reduce the manual maintenance work.
 >
