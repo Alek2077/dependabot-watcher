@@ -516,11 +516,13 @@ def test_cli_execute_with_token_routes_approved_execution(
         token,
         *,
         state_directory,
+        config_path,
     ):
         observed.update(
             step_id=step_id,
             token=token,
             state_directory=state_directory,
+            config_path=config_path,
         )
         return {
             "schema_version": 1,
@@ -563,6 +565,7 @@ def test_cli_execute_with_token_routes_approved_execution(
         "step_id": "step_exact",
         "token": "approve_exact",
         "state_directory": tmp_path / "custom-state",
+        "config_path": config_path,
     }
     assert json.loads(captured.out)["status"] == "merged"
 

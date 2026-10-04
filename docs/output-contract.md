@@ -83,6 +83,14 @@ Planning never removes ordered steps for concision. Standard planning renders ov
 
 ## Operational output
 
+### Development native review receipts
+
+`review` is a separate WSL/native process-submission entry. Its JSON receipt contains `schema_version`, `status = "submitted"`, native PID, configuration/state paths, `assurance = "process_submission_only"`, and false `model_calls`/`github_mutations`. It does not use the inspection wrapper or prove visibility. Component registration is written before child submission; selecting/opening the component is not supervisor or action consent.
+
+The private development bridge separately exposes scoped queue, action, supervisor-status and permission exchanges. Job status retains failure/retry lineage and distinguishes saved results from independently observed provider completion. Explicit investigation uses ordered bounded JSON-line frames, not a network listener; permission previews are transient, while exact decision identities/digests are journaled. Retry carries an exact `retry_job_id` alongside current repository/context identity and creates a new attempt only after validation. No desktop payload, feedback text or model result is execution authority. These development contracts do not imply normal scheduled-supervisor or cold-notification support.
+
+### Setup and doctor
+
 `dependabot-watcher doctor` emits a separate versioned report with runtime details, sanitized tool readiness, configuration/profile status, configured repository and branch access, bounded Dependabot-alert read readiness, the configuration path actually detected, ecosystems/support depth, findings, and all mutation/model/persistence capabilities explicitly false. A doctor status of `attention` or `blocked` exits with code `4`; the report remains available on stdout.
 
 `dependabot-watcher setup` emits a versioned receipt for the one configuration file it explicitly created, the selected repositories and safe operation settings, verification state, shell-safe next commands, and remaining recurring-operation decisions. Its advisory receipt includes the selected mode/provider/stages, effective call budget, acknowledgement state, evidence-transmission disclosure, and whether later runs can consume provider quota or incur cost. Its `persistent_local_writes` capability is true because setup is explicitly a configuration-writing command; model calls, GitHub mutation, notifications, and scheduling remain false. Operational reports use the same established `persistent_local_writes` and `github_mutations` capability keys as inspection, advice, and planning.

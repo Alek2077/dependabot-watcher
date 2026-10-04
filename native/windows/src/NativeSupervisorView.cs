@@ -1,0 +1,166 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+
+namespace WatcherNativeProof;
+
+// A display-only consumer. Provider text never becomes an executable, approval,
+// queue order or local decision. Backend receipts are the delivery authority.
+internal sealed class NativeSupervisorView
+{
+    private readonly List<JsonObject> _jobs;
+    internal NativeLaunchPolicy? LaunchPolicy { get; }
+    internal string? RetryJobId => _jobs.SingleOrDefault(job => job["retry_available"]?.GetValue<bool>() == true)?["job_id"]?.GetValue<string>();
+
+    private NativeSupervisorView(List<JsonObject> jobs, NativeLaunchPolicy? launchPolicy)
+    { _jobs = jobs; LaunchPolicy = launchPolicy; }
+
+    internal static NativeSupervisorView Parse(JsonObject response, string repository, string expectedContextDigest)
+    {
+        if (response["mode"]?.GetValue<string>() != "supervisor_status"
+            || response["repository"]?.GetValue<string>() != repository
+            || response["capabilities"]?["model_calls"]?.GetValue<bool>() != false
+            || response["capabilities"]?["github_mutations"]?.GetValue<bool>() != false
+            || !Regex.IsMatch(Text(response["context_digest"], 64), "^[a-f0-9]{64}$")
+            || response["context_digest"]!.GetValue<string>() != expectedContextDigest
+            || response["jobs"] is not JsonArray jobs || jobs.Count > 50)
+            throw new InvalidDataException("Agent reply scope or capability contract is invalid.");
+        var parsed = new List<JsonObject>();
+        var ids = new HashSet<string>();
+        foreach (var value in jobs)
+        {
+            var job = value as JsonObject ?? throw new InvalidDataException("Invalid agent job.");
+            var id = Text(job["job_id"], 36);
+            var status = Text(job["status"], 20);
+            if (!Regex.IsMatch(id, "^job_[a-f0-9]{32}$") || !ids.Add(id)
+                || !Regex.IsMatch(Text(job["context_digest"], 64), "^[a-f0-9]{64}$")
+                || status is not ("prepared" or "running" or "completed" or "superseded" or "failed" or "interrupted")
+                || job["current_context"] is not JsonValue current || !current.TryGetValue<bool>(out var isCurrent)
+                || isCurrent != (job["context_digest"]!.GetValue<string>() == expectedContextDigest)
+                || job["provider_completion_observed"] is not JsonValue observed || !observed.TryGetValue<bool>(out var hasCompletion)
+                || job["messages"] is not JsonArray messages || messages.Count > 2000)
+                throw new InvalidDataException("Invalid agent job identity or completion.");
+            if (job["result"] is JsonObject result)
+            {
+                Text(result["summary"], 8192);
+                if (result["recommendations"] is not JsonArray recommendations || recommendations.Count > 1000
+                    || result["replies"] is not JsonArray replies || replies.Count > 2000)
+                    throw new InvalidDataException("Agent result exceeds its display contract.");
+                var proposals = new HashSet<string>();
+                foreach (var recommendation in recommendations)
+                {
+                    var proposal = Text(recommendation?["proposal_id"], 25);
+                    if (!Regex.IsMatch(proposal, "^proposal_[a-f0-9]{16}$") || !proposals.Add(proposal)
+                        || Text(recommendation?["conclusion"], 20) is not ("recommend" or "investigate" or "hold" or "no_action"))
+                        throw new InvalidDataException("Invalid agent recommendation.");
+                    Text(recommendation?["explanation"], 8192);
+                }
+                var answered = new HashSet<string>();
+                foreach (var reply in replies)
+                {
+                    var key = ReplyKey(reply);
+                    if (!answered.Add(key)) throw new InvalidDataException("Repeated agent answer.");
+                    Text(reply?["message"], 8192);
+                }
+                var receipts = new HashSet<string>();
+                foreach (var receipt in messages)
+                {
+                    var key = ReplyKey(receipt);
+                    if (!hasCompletion || !answered.Contains(key) || !receipts.Add(key)
+                        || receipt?["processing"]?.GetValue<string>() != (isCurrent ? "answered_current" : "answered_historical"))
+                        throw new InvalidDataException("Agent answer receipt does not match its result.");
+                }
+                if (hasCompletion && !receipts.SetEquals(answered))
+                    throw new InvalidDataException("Agent answers lack processing receipts.");
+            }
+            else if (job["result"] is not null || messages.Count != 0)
+                throw new InvalidDataException("Agent reply has no recorded result.");
+            if (hasCompletion && job["result"] is not JsonObject)
+                throw new InvalidDataException("Observed agent completion has no saved result.");
+            if (hasCompletion)
+            {
+                var provenance = job["provenance"] as JsonObject
+                    ?? throw new InvalidDataException("Agent completion lacks provenance.");
+                foreach (var name in new[] { "provider", "model", "reasoning_effort", "session_id" }) Text(provenance[name], 128);
+                var usage = provenance["usage"] as JsonObject ?? throw new InvalidDataException("Agent completion lacks usage.");
+                foreach (var name in new[] { "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens" })
+                    if (usage[name] is not JsonValue count || !count.TryGetValue<long>(out var number) || number < 0)
+                        throw new InvalidDataException("Invalid agent usage observation.");
+            }
+            else if (job["provenance"] is not null || messages.Count != 0)
+                throw new InvalidDataException("Agent delivery was not observed.");
+            parsed.Add(job);
+            if (job["retry_available"]?.GetValue<bool>() == true
+                && (!isCurrent || status is not ("failed" or "interrupted")))
+                throw new InvalidDataException("Retry does not belong to a current failed investigation.");
+        }
+        if (parsed.Count(job => job["retry_available"]?.GetValue<bool>() == true) > 1)
+            throw new InvalidDataException("Agent status has ambiguous retry authority.");
+        var launchPolicy = response["configured_launch"] is JsonObject policy ? NativeLaunchPolicy.Parse(policy) : null;
+        return new NativeSupervisorView(parsed, launchPolicy);
+    }
+
+    private static string Text(JsonNode? node, int bytes)
+    {
+        if (node is not JsonValue value || !value.TryGetValue<string>(out var text)
+            || string.IsNullOrWhiteSpace(text) || Encoding.UTF8.GetByteCount(text) > bytes)
+            throw new InvalidDataException("Agent reply contains invalid bounded text.");
+        return text;
+    }
+
+    private static string ReplyKey(JsonNode? reply) => Text(reply?["proposal_id"], 25) + "/" + Text(reply?["request_id"], 128);
+
+    internal string DescribeTerminal(JsonObject terminal)
+    {
+        var job = _jobs.SingleOrDefault(value => value["job_id"]?.GetValue<string>() == terminal["job_id"]?.GetValue<string>());
+        if (job is null || job["context_digest"]?.GetValue<string>() != terminal["context_digest"]?.GetValue<string>())
+            throw new InvalidDataException("The terminal investigation receipt does not match an independently saved job.");
+        var status = job["status"]!.GetValue<string>();
+        var reportedStatus = terminal["job_status"]?.GetValue<string>();
+        if (status != reportedStatus && !(reportedStatus == "completed" && status == "superseded"))
+            throw new InvalidDataException("The investigation stream contradicts its independently saved outcome.");
+        if (job["provider_completion_observed"]!.GetValue<bool>() && (status is "completed" or "superseded"))
+            return (job["current_context"]!.GetValue<bool>() ? "Agent results are saved. Review the answers and recommendations below; each merge still needs its own exact confirmation."
+                : "Agent results are saved for an earlier context. They are historical, not a current merge recommendation.");
+        return $"Investigation is recorded as {status}. No verified completed recommendation is being claimed. Refresh saved state to inspect recovery; nothing is retried automatically.";
+    }
+
+    internal string Describe(QueueProposal item)
+    {
+        var sections = new List<string>();
+        foreach (var failed in _jobs.Where(job => job["current_context"]!.GetValue<bool>()
+                     && job["status"]!.GetValue<string>() is "failed" or "interrupted"))
+            sections.Add($"Investigation {failed["status"]}. No completed recommendation is claimed. "
+                + (failed["retry_available"]?.GetValue<bool>() == true
+                    ? "Use Retry investigation for a fresh checked attempt; the failed record is retained."
+                    : "This earlier attempt is retained; check the newer attempt's outcome."));
+        var questions = item.Evidence["feedback"]!.AsArray()
+            .ToDictionary(message => message!["request_id"]!.GetValue<string>(), message => message!["message"]!.GetValue<string>());
+        foreach (var job in _jobs.Where(job => job["provider_completion_observed"]!.GetValue<bool>()
+                     && job["status"]!.GetValue<string>() is "completed" or "superseded").AsEnumerable().Reverse())
+        {
+            if (job["result"] is not JsonObject result) continue;
+            var recommendations = result["recommendations"]!.AsArray()
+                .Where(value => value?["proposal_id"]?.GetValue<string>() == item.Id).ToList();
+            var replies = result["replies"]!.AsArray().Where(value => value?["proposal_id"]?.GetValue<string>() == item.Id
+                && questions.ContainsKey(value!["request_id"]!.GetValue<string>())).ToList();
+            if (recommendations.Count == 0 && replies.Count == 0) continue;
+            var source = job["provenance"]!;
+            var current = job["current_context"]!.GetValue<bool>();
+            var content = $"{source["model"]} · {source["reasoning_effort"]} · {source["provider"]}\n"
+                + (current ? "Agent answered the saved context. Recheck the PR before any action."
+                    : "Earlier context — retained for reference, not a current approval recommendation.");
+            foreach (var recommendation in recommendations)
+                content += $"\n\nAgent recommendation: {recommendation!["conclusion"]}\n{recommendation["explanation"]}";
+            foreach (var reply in replies)
+                content += $"\n\nYour question: {questions[reply!["request_id"]!.GetValue<string>()]}\nAgent answer: {reply["message"]}";
+            sections.Add(content);
+        }
+        return NativeDisplayText.Escape(sections.Count == 0 ? "No verified agent answer for this item. Saving a message alone does not launch or complete an agent job."
+            : string.Join("\n\n────────\n\n", sections) + "\n\nReading these replies makes no model call or GitHub change.");
+    }
+}

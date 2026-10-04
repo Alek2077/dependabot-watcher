@@ -4,9 +4,10 @@ import copy
 import hashlib
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from .advisory import (
     AdvisoryProvider,
@@ -507,6 +508,34 @@ def _advance_plan_lineage(
     return deduplicated, overflow
 
 
+@contextmanager
+def _collection_window(
+    config: WatcherConfig, client: GitHubClient, state_path: Path, now: datetime,
+) -> Iterator[tuple[dict[str, Any], dict[str, Any] | None]]:
+    """Serialize collectors without blocking interactive journals on network IO.
+
+    The queue lock is held only for baseline capture and commit. An intervening
+    run-state or execution change invalidates this collection, including failed
+    collection: old evidence must not replace or revoke a newer action/plan.
+    The separate refresh lease stays held through commit to prevent collectors
+    publishing snapshots in the reverse order. Advisory work during commit
+    remains unchanged; configured supervisor launches require advice off.
+    """
+    with run_lock(state_path / "reconciliation"):
+        with run_lock(state_path, wait_seconds=2):
+            before = load_run_state(state_path)
+            execution_before = execution_observation(state_path, {})
+        try:
+            inspection = _sanitize_scheduled_inspection(inspect(config, client, clock=lambda: now))
+        except GitHubError:
+            inspection = None
+        with run_lock(state_path, wait_seconds=2):
+            state = load_run_state(state_path)
+            if state != before or execution_observation(state_path, {}) != execution_before:
+                raise ReconciliationError("Run or execution state changed during collection; refresh before saving this evidence.")
+            yield state, inspection
+
+
 def reconcile(
     config: WatcherConfig,
     client: GitHubClient,
@@ -532,17 +561,16 @@ def reconcile(
     completed_at = _timestamp(now)
     advisory_policy_id = str(advisory_action_policy(config)["policy_id"])
     try:
-        with run_lock(state_path):
-            state = load_run_state(state_path)
+        with _collection_window(config, client, state_path, now) as (state, collected):
             schedule = _schedule_observation(
                 state,
                 now=now,
                 expected_interval_minutes=expected_interval_minutes,
             )
             try:
-                inspection = _sanitize_scheduled_inspection(
-                    inspect(config, client, clock=lambda: now)
-                )
+                if collected is None:
+                    raise GitHubError("GitHub collection failed.")
+                inspection = collected
             except GitHubError:
                 inspection = {
                     "schema_version": 1,

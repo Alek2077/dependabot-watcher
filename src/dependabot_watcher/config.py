@@ -56,6 +56,11 @@ def normalize_branch_name(value: object, location: str = "branch") -> str:
     return normalized
 
 
+def repository_names_equal(left: str, right: str) -> bool:
+    """Match GitHub repository scope without rewriting saved evidence identity."""
+    return left.casefold() == right.casefold()
+
+
 @dataclass(frozen=True)
 class PathPolicyOverrides:
     dependency_patterns: tuple[str, ...] = ()
@@ -141,6 +146,32 @@ class ProfileMetadata:
 
 
 @dataclass(frozen=True)
+class SupervisorWorkspaceConfig:
+    repository: str
+    directory: str
+    instruction_sources: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SupervisorConfig:
+    """Explicit host/runtime policy, independent of metadata advice and merging."""
+
+    mode: str = "off"
+    provider: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    expected_account_type: str | None = None
+    access: str = "inherit"
+    permission_profile: str | None = None
+    model_use_acknowledged: bool = False
+    full_access_acknowledged: bool = False
+    validation_authorized: bool = False
+    timeout_seconds: int = 900
+    max_jobs_per_run: int = 1
+    workspaces: tuple[SupervisorWorkspaceConfig, ...] = ()
+
+
+@dataclass(frozen=True)
 class WatcherConfig:
     schema_version: int
     repositories: tuple[RepositoryConfig, ...]
@@ -149,6 +180,7 @@ class WatcherConfig:
     advisory: AdvisoryConfig = field(default_factory=AdvisoryConfig)
     operation: OperationConfig = field(default_factory=OperationConfig)
     profile: ProfileMetadata = field(default_factory=ProfileMetadata)
+    supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
 
 
 def default_config_path() -> Path:
@@ -620,6 +652,86 @@ def _repository(value: object, index: int) -> RepositoryConfig:
     )
 
 
+def _supervisor(value: object, repositories: tuple[RepositoryConfig, ...]) -> SupervisorConfig:
+    data = _require_mapping(value, "supervisor")
+    mode = data.get("mode", "off")
+    if mode == "off":
+        _reject_unknown(data, {"mode"}, "disabled supervisor")
+        return SupervisorConfig()
+    if mode != "approval_first":
+        raise ConfigError("supervisor.mode must be off or approval_first; unattended actions are not supported.")
+    _reject_unknown(data, {"mode", "provider", "model", "reasoning_effort", "expected_account_type", "access",
+                          "permission_profile", "model_use_acknowledged", "full_access_acknowledged",
+                          "validation_authorized", "timeout_seconds", "max_jobs_per_run", "workspaces"}, "supervisor")
+    if data.get("provider") != "codex_app_server":
+        raise ConfigError("supervisor.provider must explicitly select codex_app_server.")
+    model = _optional_string(data.get("model"), "supervisor.model")
+    effort = data.get("reasoning_effort")
+    if (model is None or len(model) > 128 or any(ord(c) < 32 for c in model)
+            or not isinstance(effort, str) or effort not in {"minimal", "low", "medium", "high", "xhigh"}):
+        raise ConfigError("Supervisor requires an explicit bounded model and reasoning_effort.")
+    account = data.get("expected_account_type")
+    if not isinstance(account, str) or account not in {"chatgpt", "apiKey"}:
+        raise ConfigError("supervisor.expected_account_type must explicitly select chatgpt or apiKey.")
+    access = data.get("access")
+    if not isinstance(access, str) or access not in {"inherit", "restricted", "full"}:
+        raise ConfigError("supervisor.access must explicitly select inherit, restricted or full.")
+    for key in ("model_use_acknowledged", "full_access_acknowledged", "validation_authorized"):
+        if type(data.get(key, False)) is not bool:
+            raise ConfigError(f"supervisor.{key} must be a boolean.")
+    if data.get("model_use_acknowledged") is not True:
+        raise ConfigError("Supervisor model use requires acknowledgement of private evidence transmission and provider usage.")
+    full = data.get("full_access_acknowledged", False)
+    if (access == "full") != full:
+        raise ConfigError("Full supervisor access requires deliberate acknowledgement; other modes cannot retain it.")
+    permission = _optional_string(data.get("permission_profile"), "supervisor.permission_profile")
+    if (access == "restricted" and (permission is None or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", permission))
+            or access != "restricted" and permission is not None):
+        raise ConfigError("A named supervisor permission_profile is required only for restricted access.")
+    raw_workspaces = data.get("workspaces")
+    if not isinstance(raw_workspaces, list) or not 1 <= len(raw_workspaces) <= len(repositories):
+        raise ConfigError("Supervisor requires explicitly registered repository workspaces.")
+    configured = {repo.name.casefold(): repo.name for repo in repositories}
+    seen: set[str] = set()
+    directories: set[str] = set()
+    workspaces: list[SupervisorWorkspaceConfig] = []
+    for raw in raw_workspaces:
+        workspace = _require_mapping(raw, "supervisor.workspaces entry")
+        _reject_unknown(workspace, {"repository", "directory", "instruction_sources"}, "supervisor workspace")
+        name = normalize_repository_name(workspace.get("repository"), "supervisor workspace repository")
+        if name.casefold() not in configured or name.casefold() in seen:
+            raise ConfigError("Supervisor workspaces must identify distinct configured repositories.")
+        directory = _supervisor_path(workspace.get("directory"), "supervisor workspace directory")
+        directory_key = os.path.normcase(directory)
+        if directory_key in directories:
+            raise ConfigError("Each supervisor repository requires its own registered workspace.")
+        sources = workspace.get("instruction_sources")
+        if not isinstance(sources, list) or len(sources) > 32:
+            raise ConfigError("Supervisor instruction_sources must explicitly list the expected trusted instruction chain.")
+        instructions = tuple(_supervisor_path(source, "supervisor instruction source") for source in sources)
+        if len(set(instructions)) != len(instructions):
+            raise ConfigError("Supervisor instruction_sources contains duplicates.")
+        seen.add(name.casefold())
+        directories.add(directory_key)
+        workspaces.append(SupervisorWorkspaceConfig(configured[name.casefold()], directory, instructions))
+    return SupervisorConfig(mode=mode, provider="codex_app_server", model=model, reasoning_effort=effort,
+        expected_account_type=account, access=access, permission_profile=permission, model_use_acknowledged=True,
+        full_access_acknowledged=full, validation_authorized=data.get("validation_authorized", False),
+        timeout_seconds=_positive_int(data.get("timeout_seconds", 900), "supervisor.timeout_seconds", maximum=3600),
+        max_jobs_per_run=_positive_int(data.get("max_jobs_per_run", 1), "supervisor.max_jobs_per_run", maximum=20),
+        workspaces=tuple(workspaces))
+
+
+def _supervisor_path(value: object, location: str) -> str:
+    if (not isinstance(value, str) or not value or len(value) > 4096
+            or any(ord(char) < 32 for char in value) or not Path(value).is_absolute()
+            or ".." in Path(value).parts):
+        raise ConfigError(f"{location} must be a bounded absolute host path without traversal.")
+    # Parse without reading repository files or resolving symlinks. Runtime
+    # launch must separately establish ownership, repository identity and harness.
+    return str(Path(value))
+
+
 def parse_config(data: Mapping[str, Any]) -> WatcherConfig:
     _reject_unknown(
         data,
@@ -631,6 +743,7 @@ def parse_config(data: Mapping[str, Any]) -> WatcherConfig:
             "advisory",
             "operation",
             "profile",
+            "supervisor",
         },
         "top-level",
     )
@@ -658,6 +771,7 @@ def parse_config(data: Mapping[str, Any]) -> WatcherConfig:
         advisory=advisory,
         operation=operation,
         profile=_profile(data.get("profile", {})),
+        supervisor=_supervisor(data.get("supervisor", {}), repositories),
     )
 
 

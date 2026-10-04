@@ -1,0 +1,6 @@
+# Optional native source, not build outputs, cached runtimes or private state.
+include native/windows/README.md
+include native/windows/src/*.cs
+include native/windows/src/*.csproj
+include native/windows/src/*.xaml
+include native/windows/src/*.manifest

@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+/artifacts/
+/packages/
+/dotnet-home/
+backend-launch.json
+events.*.jsonl
+notification-status.json
+synthetic-queue.json

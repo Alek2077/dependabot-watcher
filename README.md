@@ -358,6 +358,21 @@ The run-once reconciler remains scheduler-independent. GitHub Actions or another
 
 ## Development
 
+### Development supervisor and optional Windows review
+
+Unreleased source adds a tool-capable Codex supervisor and one optional aggregate Windows review window. Python owns the saved context, messages, attempts, permissions and exact-action recovery; the window is an interaction channel, not a browser page or a second policy engine. AI-supervised maintenance is the intended primary automation path; the existing deterministic/manual and bounded metadata-advice modes remain available.
+
+The development WSL entry can open an already built, deliberately selected component:
+
+```bash
+dependabot-watcher review --native-component /absolute/windows-mounted/path/WatcherNativeProof.exe
+dependabot-watcher review
+```
+
+Opening it makes no model call or GitHub change. Its receipt confirms process submission only, not visible UI. Saved messages do not themselves launch an agent; the explicit investigation control uses the separately acknowledged [supervisor configuration](docs/configuration.md#development-supervisor-configuration). Failed investigations have a deliberate, context-checked retry; previous attempts and outcomes remain saved. Tool access does not grant an exact merge, and broad agent access cannot claim isolation from ambient credentials or direct remote operations.
+
+The development queue, feedback, permissions and installed read-only entry have controlled Windows/WSL evidence. Ordinary companion installation/update, supervisor setup/workspace provisioning, scheduled supervisor initiation, reliable cold notification activation, live-agent/harness acceptance and an exact supervised merge remain open gates. The existing `schedule` command still invokes reconciliation—not this complete supervisor loop. This is a private development checkpoint, not an unattended-maintenance release. See [architecture](docs/architecture.md#planned-supervisor-access-and-approval-boundary) and [native component source](native/windows/README.md).
+
 ```bash
 python -m pip install -e '.[dev]'
 pytest

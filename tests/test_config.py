@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
+from typing import Any
 
 import pytest
 
@@ -21,6 +23,102 @@ def valid_config() -> dict[str, object]:
             }
         ],
     }
+
+
+def configured_supervisor(**changes: Any) -> dict[str, Any]:
+    return {"mode": "approval_first", "provider": "codex_app_server", "model": "fixture-model",
+            "reasoning_effort": "low", "expected_account_type": "chatgpt", "access": "inherit",
+            "model_use_acknowledged": True, "workspaces": [{"repository": "example-org/example-app",
+                "directory": str(Path(tempfile.gettempdir()) / "watcher-fixture-workspace"),
+                "instruction_sources": [str(Path(tempfile.gettempdir()) / "trusted-fixture" / "AGENTS.md")]}], **changes}
+
+
+def test_supervisor_defaults_off_without_changing_advice_or_merge_policy() -> None:
+    config = parse_config(valid_config())
+    assert config.supervisor.mode == "off" and config.supervisor.workspaces == ()
+    assert config.supervisor.model is None
+
+
+@pytest.mark.parametrize("access", ["inherit", "restricted", "full"])
+def test_explicit_supervisor_access_and_privacy_are_saved_separately_from_mutation(access: str) -> None:
+    data = valid_config()
+    options: dict[str, Any] = {"access": access}
+    if access == "restricted":
+        options["permission_profile"] = "fixture-restrictions"
+    if access == "full":
+        options["full_access_acknowledged"] = True
+    data["supervisor"] = configured_supervisor(**options)
+    config = parse_config(data)
+    assert config.supervisor.access == access
+    assert config.supervisor.model_use_acknowledged is True
+    assert config.supervisor.max_jobs_per_run == 1 and config.supervisor.timeout_seconds == 900
+    assert config.supervisor.workspaces[0].instruction_sources == (
+        str(Path(tempfile.gettempdir()) / "trusted-fixture" / "AGENTS.md"),)
+    assert config.advisory.mode == "off" and config.operation.mutation_enabled is False
+
+
+@pytest.mark.parametrize("changes", [
+    {"mode": "autonomous"}, {"provider": "other"}, {"model": None}, {"model": "bad\nmodel"},
+    {"reasoning_effort": []}, {"reasoning_effort": "unknown"}, {"expected_account_type": {}},
+    {"access": []}, {"access": "full"}, {"full_access_acknowledged": True},
+    {"access": "restricted"}, {"permission_profile": "unexpected"}, {"model_use_acknowledged": False},
+    {"model_use_acknowledged": 1}, {"validation_authorized": "yes"}, {"timeout_seconds": 3601},
+    {"max_jobs_per_run": 0}, {"max_jobs_per_run": True}, {"max_jobs_per_run": 21},
+    {"config_profile": "cannot-preserve"}, {"workspaces": []},
+])
+def test_supervisor_cannot_silently_select_missing_or_broader_authority(changes: dict[str, Any]) -> None:
+    data = valid_config()
+    data["supervisor"] = configured_supervisor(**changes)
+    with pytest.raises(ConfigError):
+        parse_config(data)
+
+
+@pytest.mark.parametrize("workspace", [
+    {"repository": "other/repository", "directory": "/owned", "instruction_sources": []},
+    {"repository": "example-org/example-app", "directory": "relative", "instruction_sources": []},
+    {"repository": "example-org/example-app", "directory": "/owned/../outside", "instruction_sources": []},
+    {"repository": "example-org/example-app", "directory": "/owned\n", "instruction_sources": []},
+    {"repository": "example-org/example-app", "directory": "/owned"},
+    {"repository": "example-org/example-app", "directory": "/owned", "instruction_sources": "wrong"},
+    {"repository": "example-org/example-app", "directory": "/owned", "instruction_sources": ["relative"]},
+    {"repository": "example-org/example-app", "directory": "/owned", "instruction_sources": ["/same", "/same"]},
+])
+def test_supervisor_workspace_scope_and_instruction_chain_must_be_explicit(workspace: dict[str, Any]) -> None:
+    data = valid_config()
+    data["supervisor"] = configured_supervisor(workspaces=[workspace])
+    with pytest.raises(ConfigError):
+        parse_config(data)
+
+
+def test_supervisor_does_not_read_or_modify_registered_workspace_when_parsing(tmp_path: Path) -> None:
+    data = valid_config()
+    absent = tmp_path / "not-created"
+    data["supervisor"] = configured_supervisor(workspaces=[{"repository": "example-org/example-app",
+        "directory": str(absent), "instruction_sources": []}])
+    parsed = parse_config(data)
+    assert parsed.supervisor.workspaces[0].directory == str(absent)
+    assert not absent.exists()  # Actual launch must check identity/ownership/harness.
+
+
+def test_supervisor_repository_binding_is_canonical_and_workspaces_do_not_alias() -> None:
+    data = valid_config()
+    data["repositories"] = [{"name": "example-org/example-app"}, {"name": "example-org/other-app"}]
+    first = str(Path(tempfile.gettempdir()) / "watcher-fixture-first")
+    second = str(Path(tempfile.gettempdir()) / "watcher-fixture-second")
+    entries = [{"repository": "EXAMPLE-ORG/EXAMPLE-APP", "directory": first, "instruction_sources": []},
+               {"repository": "example-org/other-app", "directory": second, "instruction_sources": []}]
+    data["supervisor"] = configured_supervisor(workspaces=entries)
+    assert parse_config(data).supervisor.workspaces[0].repository == "example-org/example-app"
+    entries[1]["directory"] = first
+    with pytest.raises(ConfigError, match="own registered workspace"):
+        parse_config(data)
+
+
+def test_disabled_supervisor_does_not_ignore_active_settings() -> None:
+    data = valid_config()
+    data["supervisor"] = configured_supervisor(mode="off")
+    with pytest.raises(ConfigError, match="disabled supervisor"):
+        parse_config(data)
 
 
 def test_parse_config_accepts_generic_repository() -> None:
