@@ -1,0 +1,60 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Text.Json.Nodes;
+using System.Threading.Tasks;
+
+namespace WatcherNativeProof;
+
+internal static class NativeSupervisorProbe
+{
+    internal static async Task RunAsync(string launchFile)
+    {
+        var client = BackendClient.FromLaunchFile(launchFile);
+        JsonObject Request(string operation) => new() { ["schema_version"] = 1,
+            ["request_id"] = "read_" + Guid.NewGuid().ToString("N"), ["operation"] = operation };
+        var snapshot = await client.SendAsync(Request("snapshot"));
+        var item = QueueProposal.Parse(snapshot["proposals"]!.AsArray().First(), snapshot["plan_id"]!.GetValue<string>());
+        var request = Request("supervisor_status");
+        var repository = item.Evidence["repository"]!.GetValue<string>();
+        var digest = snapshot["supervisor_context_digests"]![repository]!.GetValue<string>();
+        request["repository"] = repository;
+        var response = await client.SendAsync(request);
+        var view = NativeSupervisorView.Parse(response, repository, digest);
+        var text = view.Describe(item);
+        var observed = response["jobs"]!.AsArray().Last(job => job!["provider_completion_observed"]!.GetValue<bool>());
+        var reply = observed!["result"]!["replies"]!.AsArray().First(reply => reply!["proposal_id"]!.GetValue<string>() == item.Id);
+        var question = item.Evidence["feedback"]!.AsArray().First()
+            ?? throw new InvalidDataException("The probe requires a saved question.");
+        if (!text.Contains(reply!["message"]!.GetValue<string>())
+            || !text.Contains(observed["provenance"]!["model"]!.GetValue<string>())
+            || !text.Contains(question["message"]!.GetValue<string>()))
+            throw new InvalidDataException("The actual backend reply, question or model did not reach the native display model.");
+        foreach (var fault in new[] { "repository", "receipt", "provenance", "completion", "current_flag", "snapshot_digest" })
+        {
+            var invalid = (JsonObject)response.DeepClone();
+            var job = invalid["jobs"]!.AsArray().Last(value => value!["provider_completion_observed"]!.GetValue<bool>())!;
+            switch (fault)
+            {
+                case "repository": invalid["repository"] = "another/repository"; break;
+                case "receipt": job["messages"]!.AsArray()[0]!["request_id"] = "decision_unknown"; break;
+                case "provenance": job["provenance"]!["model"] = null; break;
+                case "completion": job["provider_completion_observed"] = false; break;
+                case "current_flag": job["current_context"] = !job["current_context"]!.GetValue<bool>(); break;
+                case "snapshot_digest": invalid["context_digest"] = new string('f',64); break;
+            }
+            var rejected = false;
+            try { NativeSupervisorView.Parse(invalid, repository, digest); }
+            catch (InvalidDataException) { rejected = true; }
+            if (!rejected) throw new InvalidDataException($"Malformed agent frame was displayed: {fault}");
+        }
+        var other = (JsonObject)item.Evidence.DeepClone();
+        other["proposal_id"] = "proposal_ffffffffffffffff";
+        var unrelated = view.Describe(new QueueProposal { Evidence = other });
+        if (unrelated.Contains(reply!["message"]!.GetValue<string>()))
+            throw new InvalidDataException("Agent reply leaked to a different proposal.");
+        App.Record("supervisor_native_probe_passed", new { model = observed["provenance"]!["model"]!.GetValue<string>(),
+            exact_question_reply_proposal = true, malformed_frames_rejected = 6, no_new_model_call = true,
+            visible_window_acceptance = false });
+    }
+}

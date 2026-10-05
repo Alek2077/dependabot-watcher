@@ -4,12 +4,80 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from dependabot_watcher import runtime_state
+
+
+@pytest.mark.parametrize("payload", [
+    '{"workspace_evidence":{"PRIVATE_MARKER":1},"workspace_evidence":{}}',
+    '{"history":[{"handling":"rejected","handling":"pending"}]}',
+    '{"key":1,"\\u006bey":2}',
+])
+def test_private_json_rejects_duplicate_keys_at_every_level_without_rewriting(
+    tmp_path: Path, payload: str,
+) -> None:
+    directory = runtime_state.ensure_private_directory(tmp_path / "state")
+    path = directory / "journal.json"
+    path.write_text(payload, encoding="utf-8")
+    runtime_state.secure_private_file(path)
+    before = path.read_bytes()
+    with pytest.raises(runtime_state.RuntimeStateError, match="duplicate") as failure:
+        runtime_state.load_private_json(directory, Path("journal.json"))
+    assert "PRIVATE_MARKER" not in str(failure.value)
+    assert path.read_bytes() == before
+
+
+def test_repeated_key_names_in_distinct_json_objects_are_not_ambiguous(tmp_path: Path) -> None:
+    value = {"first": {"status": "pending"}, "second": {"status": "rejected"}}
+    runtime_state.save_private_json(tmp_path / "state", Path("journal.json"), value)
+    assert runtime_state.load_private_json(tmp_path / "state", Path("journal.json")) == value
+
+
+def test_opt_in_lock_wait_acquires_after_short_transaction_and_default_still_refuses(tmp_path: Path) -> None:
+    ready = threading.Event()
+    release = threading.Event()
+    def holder() -> None:
+        with runtime_state.run_lock(tmp_path / "state"):
+            ready.set()
+            release.wait(2)
+    owner = threading.Thread(target=holder)
+    owner.start()
+    assert ready.wait(2)
+    try:
+        with pytest.raises(runtime_state.RuntimeStateError, match="already active"):
+            with runtime_state.run_lock(tmp_path / "state"):
+                pytest.fail("Default locking must remain fail-fast")
+        timer = threading.Timer(.05, release.set)
+        timer.start()
+        with runtime_state.run_lock(tmp_path / "state", wait_seconds=1):
+            assert release.is_set()
+        timer.join()
+    finally:
+        release.set()
+        owner.join(timeout=3)
+    assert not owner.is_alive()
+
+
+def test_opt_in_lock_wait_times_out_without_taking_other_owner_lock(tmp_path: Path) -> None:
+    with runtime_state.run_lock(tmp_path / "state"):
+        started = time.monotonic()
+        with pytest.raises(runtime_state.RuntimeStateError, match="already active"):
+            with runtime_state.run_lock(tmp_path / "state", wait_seconds=.05):
+                pytest.fail("A held lock cannot be taken")
+        assert time.monotonic() - started < 1
+
+
+@pytest.mark.parametrize("wait", [-1, 6, True, float("nan"), float("inf")])
+def test_lock_wait_must_be_explicitly_bounded(tmp_path: Path, wait: float) -> None:
+    with pytest.raises(runtime_state.RuntimeStateError, match="bounded"):
+        with runtime_state.run_lock(tmp_path / "state", wait_seconds=wait):
+            pytest.fail("Invalid wait must not acquire the lock")
 
 
 def test_windows_private_state_applies_and_rechecks_current_user_acl(

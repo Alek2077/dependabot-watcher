@@ -25,6 +25,7 @@ from .reconciliation import (
     record_notification_delivery,
 )
 from .reconciliation_output import render_reconciliation
+from .native_review import NativeReviewError, open_native_review
 from .runtime_state import default_state_directory
 from .schedulers.common import ScheduleError
 from .scheduling import inventory_schedules, manage_schedule, recurring_profile_summary
@@ -170,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
         "execute",
         help="Preflight or perform one exact approval-gated plan action.",
     )
+    review_parser = commands.add_parser(
+        "review",
+        help="Open the optional aggregate Windows review window (WSL).",
+    )
+    review_parser.set_defaults(output_format="text")
     run_parser = commands.add_parser(
         "run",
         help="Run one durable non-mutating reconciliation for scheduling.",
@@ -210,6 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
         doctor_parser,
         setup_parser,
         execute_parser,
+        review_parser,
         run_parser,
     ):
         command_parser.add_argument(
@@ -369,6 +376,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("text", "json", "markdown"),
         default="text",
         dest="output_format",
+    )
+    review_parser.add_argument("--config", type=Path, default=default_config_path())
+    review_parser.add_argument("--state-dir", type=Path, default=default_state_directory())
+    review_parser.add_argument(
+        "--native-component", type=Path,
+        help="Select an installed Windows review executable; later opens reuse its saved fingerprint.",
     )
     run_parser.add_argument(
         "--config",
@@ -535,6 +548,17 @@ def _required_check_overrides(values: list[str]) -> dict[str, tuple[str, ...]]:
     return {repository: tuple(checks) for repository, checks in grouped.items()}
 
 
+def _run_review(args: argparse.Namespace, presentation: TerminalPresentation) -> int:
+    receipt = open_native_review(args.config, args.state_dir, component=args.native_component)
+    _write_report(
+        "Windows accepted the review launch. This does not confirm that the window is visible.\n"
+        f"Configuration: {receipt['configuration_path']}\nState: {receipt['state_directory']}\n"
+        "Opening the saved queue makes no model call or GitHub change. Investigation and each exact action need their own decisions.",
+        presentation,
+    )
+    return ExitCode.SUCCESS
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -603,6 +627,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             _write_report(render_operational(report, args.output_format), presentation)
             return ExitCode.SUCCESS
+        if args.command == "review":
+            return _run_review(args, presentation)
         if args.command == "execute":
             config = load_config(args.config)
             client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
@@ -620,6 +646,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.step_id,
                         args.approval_token,
                         state_directory=args.state_dir,
+                        config_path=args.config,
                     )
                 else:
                     report = preflight_execution(
@@ -770,6 +797,9 @@ def main(argv: list[str] | None = None) -> int:
         return ExitCode.CONFIGURATION_ERROR
     except ExecutionError as exc:
         _write_error("Execution", exc, presentation)
+        return ExitCode.EXECUTION_ERROR
+    except NativeReviewError as exc:
+        _write_error("Review", exc, presentation)
         return ExitCode.EXECUTION_ERROR
     except ReconciliationError as exc:
         _write_error("Reconciliation", exc, presentation)

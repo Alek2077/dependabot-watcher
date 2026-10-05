@@ -11,10 +11,10 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping, cast
+from typing import Any, Callable, Iterator, Mapping, cast
 
 from .advisory import advisory_action_policy
-from .config import AdvisoryConfig, RepositoryConfig, WatcherConfig
+from .config import AdvisoryConfig, ConfigError, RepositoryConfig, WatcherConfig, load_config, repository_names_equal
 from .github import (
     ExecutionGitHubClient,
     GitHubClient,
@@ -128,7 +128,7 @@ def _find_target_step(
 
 
 def _repository_config(config: WatcherConfig, name: str) -> RepositoryConfig:
-    matches = [item for item in config.repositories if item.name == name]
+    matches = [item for item in config.repositories if repository_names_equal(item.name, name)]
     if len(matches) != 1:
         raise ExecutionError(f"Repository {name!r} is not uniquely configured.")
     return matches[0]
@@ -187,7 +187,7 @@ def _binding(
     if not isinstance(identity, Mapping) or not isinstance(freshness, Mapping):
         raise ExecutionError("Execution step has malformed identity or freshness evidence.")
     repository = _required_text(identity.get("repository"), "repository identity")
-    if repository != repository_config.name or repository_plan.get("repository") != repository:
+    if not repository_names_equal(repository, repository_config.name) or repository_plan.get("repository") != repository:
         raise ExecutionError("Execution repository identity does not match configuration.")
     number = identity.get("number")
     if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
@@ -910,6 +910,20 @@ def validate_audit_history(state_directory: Path) -> None:
     _read_audit_events(state_directory)
 
 
+def exact_action_audit(state_directory: Path, binding: Mapping[str, Any]) -> dict[str, Any]:
+    """Read validated audit evidence for one exact binding without acting.
+
+    Unlike the bounded overview, this lookup never drops an older action merely
+    because other actions were recorded afterward.
+    """
+    matching = [event for event in _read_audit_events(state_directory)
+                if event["action_id"] == _action_id(binding) and event["binding"] == dict(binding)]
+    return {
+        "latest_event": matching[-1]["event_type"] if matching else None,
+        "success_recorded": any(event["event_type"] == "execution_succeeded" for event in matching),
+    }
+
+
 def execution_observation(
     state_directory: Path,
     inspection: Mapping[str, Any],
@@ -1076,6 +1090,19 @@ def _sanitized_merge_result(result: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _require_unchanged_configuration(config: WatcherConfig, path: Path | None) -> None:
+    """Revoke a file-backed action when its authoritative policy changes."""
+    if path is None:
+        # Programmatic callers may own an immutable policy without a profile file.
+        return
+    try:
+        current = load_config(path)
+    except ConfigError as exc:
+        raise ExecutionError("Configuration is unavailable; request a fresh review.") from exc
+    if current != config:
+        raise ExecutionError("Configuration changed; request a fresh review.")
+
+
 def execute_approved(
     config: WatcherConfig,
     client: ExecutionGitHubClient,
@@ -1084,6 +1111,8 @@ def execute_approved(
     supplied_approval_token: str,
     *,
     state_directory: Path | None = None,
+    config_path: Path | None = None,
+    before_execution: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     if config.operation.autonomy != "approval_required" or not config.operation.mutation_enabled:
         raise ExecutionError(
@@ -1108,8 +1137,14 @@ def execute_approved(
 
     state_path = _prepare_state_directory(state_directory or default_state_directory())
     with _operation_locks(state_path):
+        _require_unchanged_configuration(config, config_path)
         _require_current_reconciled_plan(state_path, saved_plan)
         validate_audit_history(state_path)
+        # A trusted local controller may consume its exact confirmation here.
+        # Queue choices/reconciliation share this lock; do not invoke a guard
+        # outside it or allow the guard to recursively acquire run_lock.
+        if before_execution is not None:
+            before_execution()
         try:
             binding, _, current = _fresh_preflight(config, client, saved_plan, step_id)
         except GitHubError as exc:
@@ -1149,6 +1184,9 @@ def execute_approved(
         if not hmac.compare_digest(supplied_approval_token, expected_token):
             raise ExecutionError("Action changed during the final recheck; approval is invalid.")
 
+        # Live collection can take time. Reload again before recording/issuing
+        # the action so a policy revoked during that collection fails closed.
+        _require_unchanged_configuration(config, config_path)
         audit_path = _append_audit(
             state_path,
             _audit_event("execution_started", binding, outcome="pending"),

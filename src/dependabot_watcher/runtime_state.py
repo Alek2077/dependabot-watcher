@@ -7,6 +7,8 @@ import socket
 import stat
 import subprocess
 import tempfile
+import time
+import errno
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping
@@ -26,6 +28,10 @@ _PLAN_ARTIFACT = re.compile(r"^plan_[a-f0-9]+\.json$")
 
 class RuntimeStateError(RuntimeError):
     """Raised when private reconciler state cannot be trusted or updated safely."""
+
+
+class RuntimeLockBusyError(RuntimeStateError):
+    """An actual exclusive-lock holder, not a filesystem/validation error."""
 
 
 def _windows_platform() -> bool:
@@ -257,6 +263,16 @@ def _empty_state() -> dict[str, Any]:
     }
 
 
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous keys at every nesting level without exposing values."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise RuntimeStateError("Runtime artifact contains ambiguous duplicate keys.")
+        result[key] = value
+    return result
+
+
 def _read_private_json_object(path: Path, *, maximum_bytes: int) -> dict[str, Any]:
     inspected = _validate_regular_private_file(path, maximum_bytes=maximum_bytes)
     descriptor = -1
@@ -287,7 +303,7 @@ def _read_private_json_object(path: Path, *, maximum_bytes: int) -> dict[str, An
         payload = b"".join(chunks)
         if len(payload) > maximum_bytes:
             raise RuntimeStateError("Runtime artifact reached its configured safety ceiling.")
-        value = json.loads(payload.decode("utf-8"))
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=_unique_json_object)
     except RuntimeStateError:
         raise
     except (OSError, UnicodeError, ValueError, RecursionError) as exc:
@@ -493,7 +509,15 @@ def append_run_record(
 
 
 @contextmanager
-def run_lock(state_directory: Path) -> Iterator[Path]:
+def run_lock(state_directory: Path, *, wait_seconds: float = 0) -> Iterator[Path]:
+    """Exclusive state lock; scheduled/action callers remain fail-fast by default.
+
+    Small interactive journal exchanges may explicitly wait a bounded interval
+    for another short read/write transaction, never for external model work.
+    """
+    if type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 5:
+        raise RuntimeStateError("Runtime lock wait must be bounded between zero and five seconds.")
+    deadline = time.monotonic() + wait_seconds
     directory = _ensure_private_directory(state_directory)
     path = directory / _RUN_LOCK_FILE
     existed = _path_exists(path)
@@ -534,17 +558,29 @@ def run_lock(state_directory: Path) -> Iterator[Path]:
             if os.fstat(descriptor).st_size == 0:
                 os.write(descriptor, b"0")
             os.lseek(descriptor, 0, os.SEEK_SET)
-            try:
-                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-            except OSError as exc:
-                raise RuntimeStateError("Another scheduled reconciliation is already active.") from exc
+            while True:
+                try:
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise RuntimeStateError("Runtime lock could not be acquired.") from exc
+                    if time.monotonic() >= deadline:
+                        raise RuntimeLockBusyError("Another scheduled reconciliation is already active.") from exc
+                    time.sleep(min(.01, max(0, deadline - time.monotonic())))
         else:
             import fcntl
 
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as exc:
-                raise RuntimeStateError("Another scheduled reconciliation is already active.") from exc
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise RuntimeStateError("Runtime lock could not be acquired.") from exc
+                    if time.monotonic() >= deadline:
+                        raise RuntimeLockBusyError("Another scheduled reconciliation is already active.") from exc
+                    time.sleep(min(.01, max(0, deadline - time.monotonic())))
         metadata = json.dumps(
             {"pid": os.getpid(), "host": socket.gethostname()},
             sort_keys=True,

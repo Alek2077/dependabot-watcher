@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from threading import Event
+from typing import Any, cast
 
 import pytest
 
 from dependabot_watcher.advisory import AdvisoryRequest, ProviderResponse
 from dependabot_watcher.config import parse_config
-from dependabot_watcher.github import GitHubError
+from dependabot_watcher.github import GitHubClient, GitHubError
 from dependabot_watcher.reconciliation import (
     ReconciliationError,
     _suppressed_notification,
@@ -26,6 +28,11 @@ from dependabot_watcher.runtime_state import (
     save_run_state,
 )
 from dependabot_watcher.reconciliation_output import render_reconciliation
+from dependabot_watcher.review_queue import ReviewQueue
+from dependabot_watcher.supervision import SupervisorJobs
+from dependabot_watcher.supervisor_permissions import SupervisorPermissions
+from dependabot_watcher.supervisor_status import supervision_status
+from test_review_queue import decision, queue_case
 
 
 def _config(
@@ -1037,3 +1044,83 @@ def test_runtime_state_rejects_malformed_state_and_overlapping_lock(tmp_path: Pa
     state_path.chmod(0o600)
     with pytest.raises(RuntimeStateError, match="malformed or unreadable"):
         load_run_state(state_directory)
+
+
+def test_remote_refresh_leaves_feedback_status_and_permission_decisions_usable(
+    queue_case: tuple[ReviewQueue, dict[str, Any]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue, _ = queue_case
+    jobs = SupervisorJobs(queue)
+    job = jobs.prepare("example-org/example-app")
+    jobs.start(job["job_id"])
+    jobs.attach_session(job["job_id"], "session1")
+    permissions = SupervisorPermissions(jobs)
+    collecting, release = Event(), Event()
+
+    def collect(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        collecting.set()
+        assert release.wait(10), "Test did not release the controlled collection boundary"
+        return _inspection()
+
+    monkeypatch.setattr("dependabot_watcher.reconciliation.inspect", collect)
+    try:
+        with permissions.live_connection(job["job_id"], "session1") as connection:
+            permissions.bind_turn(connection, "turn1")
+            pending = permissions.request(connection, provider_request_id=1, turn_id="turn1", item_id="item1",
+                digest="a" * 64, description="Synthetic scoped read", choices=["deny"])
+            with ThreadPoolExecutor(max_workers=1) as worker:
+                future = worker.submit(reconcile, queue.config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml",
+                                       state_directory=queue.directory)
+                try:
+                    assert collecting.wait(3)
+                    permissions.decide(connection, pending["permission_id"], pending["digest"], "deny")
+                    status = supervision_status(queue, {"schema_version": 1, "request_id": "read_during_refresh",
+                        "operation": "supervisor_status", "repository": job["repository"]})
+                    assert status["jobs"][0]["status"] == "running"
+                    queue.handle(decision(queue, "feedback", message="Saved while remote collection was paused."))
+                    assert permissions._load()["connections"][connection]["requests"][pending["permission_id"]]["decision"] == "deny"
+                    assert not future.done()
+                finally:
+                    release.set()
+                assert future.result(timeout=5)["status"] == "complete"
+    finally:
+        jobs.fail(job["job_id"], interrupted=True)
+        jobs.release_owner(job["job_id"])
+
+
+@pytest.mark.parametrize("changed", ["run_state", "execution"])
+@pytest.mark.parametrize("failed_collection", [False, True])
+def test_intervening_state_or_action_prevents_stale_collection_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str, failed_collection: bool,
+) -> None:
+    directory = tmp_path / "state"
+    monkeypatch.setattr("dependabot_watcher.reconciliation.inspect", lambda *args, **kwargs: _inspection())
+    reconcile(_config(), object(), config_path=tmp_path / "config.toml", state_directory=directory)  # type: ignore[arg-type]
+
+    def collect(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        # Simulate another valid journal transaction while network collection
+        # is outside its lock. No GitHub action actually occurs in this test.
+        with run_lock(directory):
+            if changed == "run_state":
+                state = load_run_state(directory)
+                state["latest_plan"]["recorded_at"] = "2026-09-28T10:00:00Z"
+                save_run_state(directory, state)
+            else:
+                event = {"schema_version": 1, "event_id": "event_started", "event_type": "execution_started",
+                    "occurred_at": "2026-09-28T10:00:00Z", "action_id": "action_started",
+                    "binding": {"repository": "example-org/example-app", "pull_request": 42, "head_sha": "a" * 40},
+                    "outcome": "pending"}
+                audit = directory / "execution-audit.jsonl"
+                audit.write_text(json.dumps(event) + "\n", encoding="utf-8")
+                audit.chmod(0o600)
+        if failed_collection:
+            raise GitHubError("PRIVATE_TEST_ONLY")
+        return _inspection()
+
+    monkeypatch.setattr("dependabot_watcher.reconciliation.inspect", collect)
+    before_report = (directory / "latest-run.json").read_bytes()
+    with pytest.raises(ReconciliationError, match="changed during collection"):
+        reconcile(_config(), object(), config_path=tmp_path / "config.toml", state_directory=directory)  # type: ignore[arg-type]
+    assert (directory / "latest-run.json").read_bytes() == before_report
+    assert load_run_state(directory)["latest_plan"]["plan_id"] is not None
+    assert len(load_run_state(directory)["history"]) == 1

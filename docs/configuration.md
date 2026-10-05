@@ -95,7 +95,7 @@ Manifest collection is bounded separately by file count, bytes per file, and inc
 
 ## Advisory configuration
 
-Model advice is opt-in. A configuration without `[advisory]`, or with `mode = "off"`, makes no provider calls.
+Metadata advice is opt-in. A configuration without `[advisory]`, or with `mode = "off"`, makes no metadata-advice provider calls. The separate development supervisor below can still invoke a model when explicitly selected and launched.
 
 Supported modes are:
 
@@ -138,6 +138,42 @@ The current budget is global to the selected multi-repository run, not a per-rep
 Codex authentication stays with the user's Codex installation. Do not put API keys, ChatGPT credentials, or auth files in this TOML file. The adapter ignores the Codex user `config.toml` while retaining Codex authentication. It also ignores user/project exec-policy `.rules`, runs from an isolated temporary directory, disables web search, shell execution, unified execution, apps/connectors, dependency-install tools, and subagents, and gives any model-launched command surface an empty inherited environment. This prevents personal hooks, MCP servers, notifications, telemetry exporters, unrelated project instructions, local files, or shell secrets from becoming implicit advisory behavior.
 
 These flags do not disable Codex's platform safety. The watcher supplies its own provider-neutral triage/review prompt and output schema, and its deterministic Python validator remains authoritative after the model returns. User-specific operating preferences enter through the watcher's explicit operational profile rather than through an ambient Codex harness; see the [roadmap](roadmap.md).
+
+## Development supervisor configuration
+
+This unreleased configuration is separate from metadata advice and defaults to `mode = "off"`. Ordinary `setup` does not yet configure it, and `schedule` does not launch it. The development native investigation control accepts only the trusted saved profile; messages cannot choose executable commands, workspace paths, models or access.
+
+```toml
+[supervisor]
+mode = "approval_first"
+provider = "codex_app_server"
+model = "selected-model-id"
+reasoning_effort = "high"
+expected_account_type = "chatgpt"
+access = "inherit"
+model_use_acknowledged = true
+validation_authorized = false
+timeout_seconds = 900
+max_jobs_per_run = 1
+workspaces = [{ repository = "example-org/example-app", directory = "/absolute/isolated/worktree", instruction_sources = ["/absolute/isolated/worktree/AGENTS.md"] }]
+```
+
+The registered repository must already be in `[[repositories]]`. This first launcher requires metadata advice off, an owned POSIX/WSL linked worktree at the freshly collected base, and an explicitly selected ordered instruction-source list. It does not create worktrees or synchronize primary checkouts. Model acknowledgement permits transmitting repository evidence and saved questions to the selected provider; turns consume subscription or API usage. Configuration parsing is not live account, harness, isolation or spend-enforcement evidence.
+
+| Choice | Accepted values / effect |
+|---|---|
+| `mode`, `provider` | `off`, or acknowledged `approval_first` with `codex_app_server` |
+| `reasoning_effort` | `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `expected_account_type` | `chatgpt` or `apiKey`, checked before a turn |
+| `access` | `inherit`, `restricted`, `full` |
+| Restricted access | Requires `permission_profile`, naming an existing Codex permission profile; returned selection is checked |
+| Full access | Requires `full_access_acknowledged = true`; this acknowledgement must be false in other modes |
+| Validation | `validation_authorized` is distinct from exact merge authority |
+| Limits | Timeout 1–3,600 seconds; configured job limit 1–20; actual operating budget acceptance remains a gate |
+
+Inherited mode uses base Codex settings, not a named CLI configuration preset. The current app-server route refuses a preset it cannot preserve. Inherited/restricted launch needs a connected permission consumer; the current native client offers allow-once, deny and cancel, not session-wide or persistent rule grants. Filesystem restrictions do not establish isolation from credentials, connectors or remote actions; broad access has explicitly weaker enforcement. No access choice substitutes for Watcher's exact-action consent.
+
+Failure and interruption are durable outcomes, not permission to replay. A deliberate retry names the failed current job, passes fresh preflight and records a new attempt linked to the preserved failure. Changing evidence, policy or messages invalidates the old retry selection. This does not retry an uncertain merge.
 
 ## Scheduling and notifications
 

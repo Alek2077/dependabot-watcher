@@ -21,8 +21,27 @@ The post-Gitflow fresh-clone exercise is agent-owned validation, not optional fo
 - Install through the documented user path in an isolated tool environment.
 - Point `DEPENDABOT_WATCHER_CONFIG` at a file inside the temporary validation directory, or pass that same temporary `--config` path to every applicable command. Do not let validation create or reuse the operator's real default profile.
 - Prefer a synthetic fixture or approved read-only live target. Never broaden repository scope or authorize mutation merely to complete validation.
+- For live Dependabot dogfood, use approved read-only targets that actually expose the evidence the workflow is meant to process. Include at least one target with usable open-PR and alert evidence when alert correlation is in scope; a target whose alert collection is unavailable may document a negative case, but cannot be the sole target for declaring the end-to-end pass complete.
 - Do not inspect secret files, print credentials, or capture screenshots containing tokens or unnecessary private data.
 - Remove temporary checkouts, tool installations, test profiles, screenshots, and other state after evidence has been recorded, unless the operator explicitly keeps them for a follow-up test.
+
+## Canonical local release-candidate build
+
+The CI and release workflows run their bare `python` commands only after selecting Python 3.14. Local validation must preserve that context explicitly rather than inheriting whichever virtual environment happens to be active. Python 3.14 is the maintainer release-build environment; Watcher's supported user runtime remains Python 3.11 through 3.14.
+
+Before treating artifacts as a release candidate, verify that the checkout is at the intended merged commit and clean. Then create a fresh external output directory and build with a stable Python 3.14 selected by `uv`:
+
+```bash
+candidate_dir="$(mktemp -d /tmp/dependabot-watcher-candidate.XXXXXX)"
+uv run --no-project --python 3.14 --with build --with twine \
+  python -c 'import sys; print(sys.version); print(sys.executable)'
+uv run --no-project --python 3.14 --with build --with twine \
+  python -m build --outdir "$candidate_dir"
+uv run --no-project --python 3.14 --with build --with twine \
+  python -m twine check --strict "$candidate_dir"/*
+```
+
+Record the resolved interpreter, commit, artifact paths, and hashes. Install the wheel and sdist separately into clean Python 3.14 environments for installed-path smoke checks. If a build accidentally uses an ambient interpreter or unintended virtual environment, mark those artifacts superseded and rebuild; a successful build alone does not make them release authority.
 
 ## Validation sequence
 

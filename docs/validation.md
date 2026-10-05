@@ -122,4 +122,176 @@ The founder then supplied a natural clarification asking the agent to investigat
 
 The bounded correction adds explicit setup and schedule receipts for repository scope, cadence, notification mode, AI/provider/model/reasoning settings, call limits, quota/cost implications, and mutation mode; native next/last-run evidence; a required manual verification step that is explicitly distinguished from a native scheduled run; useful queue and AI-status notification content without internal commands; adapter-acceptance wording that does not claim the user saw the notification; and matching operator-guide, setup, output-contract, README, and skill guidance. It does not add a dashboard, interactive wizard, click action, provider, or mutation capability.
 
-The correction passed 400 deterministic tests with 2 expected platform skips, full Pyright with zero diagnostics, compilation and diff checks, strict wheel/sdist checks, and separate installed wheel/sdist smoke. A fresh installed-artifact WSL lifecycle also passed preview, install, status, inventory, disable, remove, exact native-task absence, and final empty inventory. No GitHub mutation, model call, notification, or retained scheduler was left by that technical pass. This correction must still be exercised by a fresh Luna XHigh onboarding session after it is merged; later public-surface comparisons should use additional agents and harnesses.
+The correction passed 400 deterministic tests with 2 expected platform skips, full Pyright with zero diagnostics, compilation and diff checks, strict wheel/sdist checks, and separate installed wheel/sdist smoke. A fresh installed-artifact WSL lifecycle also passed preview, install, status, inventory, disable, remove, exact native-task absence, and final empty inventory. No GitHub mutation, model call, notification, or retained scheduler was left by that technical pass. The subsequent post-merge onboarding exercise is recorded below; later public-surface comparisons should use additional agents and harnesses.
+
+## Phase 10 repeated private onboarding and timed notification acceptance — 2026-09-30
+
+A second Luna XHigh session assessed the merged source using the same ordinary discovery and setup conversation. Private-repository access required the same natural clarification. The agent correctly resolved three authorized repositories and their branches, created a model-off/read-only profile, and eventually installed the source checkout as a user-level CLI. Initial setup, doctor, and reconciliation ran from source before installation; later installed-executable doctor and reconciliation succeeded. This is source-install onboarding evidence, not proof that the separate candidate wheel was installed in this session.
+
+The improved receipts guided the agent to explain its daily recommendation, report the exact next native run and AI/mutation settings, perform a profile-matched manual verification, and distinguish notification-adapter acceptance from confirmed visibility. Restricted host-scheduler access caused unsuccessful probes before an explicitly authorized host-level WSL preview and installation recovered. The transcript alone does not determine whether initial platform interpretation, sandbox behavior, or error presentation caused that friction.
+
+The operator did not initially observe a notification. An explicitly requested diagnostic directly invoked the source desktop adapter with the saved report, bypassing normal duplicate suppression without changing production run state. The operator then saw a notification only briefly and found no retained Notification Center entry. Source inspection showed a legacy balloon request followed by tray-icon disposal after 1.2 seconds; that is a plausible explanation for short visibility, not a confirmed causal experiment or evidence that another application interrupted it.
+
+Two further native exercises separated the enforcing boundaries. Manually launching the exact installed task completed with native result `0` and a new complete saved run; unchanged evidence correctly suppressed another notification. A separately approved one-time timer then launched the installed executable with the same profile and isolated diagnostic state, completed with native result `0`, and made a fresh notification attempt. This proves real timed host execution for the diagnostic definition, not that the original daily time trigger fired. The operator again observed an unwanted console window and a notification lasting roughly half a second. The run reported 11 open PRs, 17 alerts, and one attention-required item, with AI off and zero GitHub mutations.
+
+The one-time diagnostic task/state and the retained daily task/tool/profile/state were removed after evidence capture. Canonical source and the saved agent conversation were preserved. No merge or mutation authorization was tested. The session did not present a clickable approval interaction; the current background command only produced a plan and an attention signal.
+
+Disposition: installed collection and native execution succeeded, but user-facing notification/background-operation acceptance did not pass. Do not equate this with a successful background maintainer setup. The [roadmap](roadmap.md#current-acceptance-priority-approval-first-background-maintenance) now prioritizes a complete approval-first agent workflow while retaining the separate publication gates and later unattended-policy boundary.
+
+## Native review queue communication — development checkpoint, 2026-09-30
+
+An isolated Windows-native aggregate queue now communicates with the Python-owned review backend through bounded structured child-process requests. Actual Windows-to-WSL-to-Python exercises saved feedback and local reject/defer/resume decisions, fully exited and restarted the window, and checked that the persisted decisions and messages reappeared. Independent review found and drove fixes for incomplete-evidence proposal invalidation, reused request identities after receipt pruning, and malformed stored metadata. Subsequent native integration reviews reported no confirmed medium/high findings in their bounded local-handling scope.
+
+The founder exercised the window against real read-only evidence from three authorized repositories and supplied screenshots. The first collection was explicitly partial because one recent-merge-history surface failed; a bounded retry completed, with the partial result retained. All 24 native-bound proposals were compared with their complete saved plan steps and configured repository scope. Independent GitHub readbacks matched the displayed identities and selected check evidence. Messages remained attached to the chosen repository and PR or alert, including across a selection change; saved local feedback was not reported as agent delivery.
+
+Native transport diagnostics rejected wrong request IDs, wrong schema versions, malformed or oversized output, oversized stderr, unsuccessful child exits, timeout and unavailable configuration. A separate real-window diagnostic verified visible stale-state errors, disabled decisions after failure, complete-frame rejection and restored controls following a successful refresh. The reviewed source and additional selection-warning refinement received scoped native builds and operational checks. The complete Python suite passed 478 tests with two expected native-platform skips; full and diagnostic-script type checks reported zero diagnostics.
+
+The founder accepted a clearer presentation with visible within-repository recommended order, prominent local decisions, expandable technical evidence and explicit draft/saved-versus-submitted message status. This remains a development-path integration, not an installed candidate acceptance pass or publication readiness claim. Exact native approval/execution, tool-capable investigator context and results, production companion packaging, quiet scheduled integration and the separately authorized real-action gate remain open. No model job or GitHub mutation was performed in these exercises.
+
+The subsequent read-only action-preparation boundary (2026-10-01) resolves a selected proposal and local version from Python-owned current evidence, delegates fresh eligibility to the existing executor, and rejects configuration or selection changes during collection. It returns exact display context without an approval token or mutation authority; it is not yet connected to the native window. The targeted preparation/queue/executor suite passed 111 tests, and the full suite passed 500 tests with two expected platform skips; scoped and full type checks were clean. Luna reported no confirmed medium/high finding in this bounded preparation scope; AGY was unavailable at provider quota, not a clean second review. Durable confirmation, native execution lifecycle and live action acceptance remain separate unfinished gates.
+
+## Resumable supervisor and access decisions — development checkpoint, 2026-10-02
+
+The development supervisor now connects the existing job runner to Codex CLI 0.160.0 app-server over bounded local stdio. Effective account, model, effort, workspace, instruction-source chain and selected access settings are checked before inference and saved with the exact job/session. Provider-neutral permission records bind job/context/session/turn/request and the original payload digest. Access decisions are single-use and do not authorize merges; unsupported requests fail visibly. Named CLI configuration presets that this route cannot preserve remain explicitly unsupported. Instruction paths and setting receipts alone are not proof of harness content, command-rule or remote-credential isolation.
+
+Matched actual Luna 5.6 XHigh and Sol 6.1 Low exercises each completed investigation and a feedback continuation in the same owned session through production jobs, runner, provider, saved observations and the status bridge. Both recognized the synthetic dependency-compatibility question and compile-only validation gap; neither performed repository maintenance or established compatibility. An earlier Luna response transposed its job identity and was correctly rejected. Per-turn structured output subsequently constrained identity generation without weakening independent backend validation. These bounded observations do not support a general model ranking.
+
+Luna Max independently found six medium lifecycle/contract defects across the review and its first fix check: consumed-but-unresolved grants could precede completion; orphan requests remained actionable; an explicit empty decision list broadened access; stale requests appeared as no pending work; startup/legacy crashes could strand attempts before connection ownership existed; and an invalidated acknowledgement could look successful. Verified corrections added whole-job OS ownership before running is published, owner-loss recovery, strict advertised choices, completion/resolution checks and exact native acknowledgement states. The same-author second fix check reported no remaining medium/high findings. AGY was intentionally excluded under the founder's current model allowance, not reported as quota-unavailable or a clean independent pass.
+
+Latest deterministic validation passed 154 targeted tests and 713 full-suite tests with two expected platform skips; expanded scoped type checking reported zero diagnostics. Actual process-kill regressions cover eventful startup before session connection, the legacy provider, outstanding permission states and owner death between decision save and response readback. Actual Windows buttons previously completed Allow/Deny/Cancel through WSL, the production bridge/journal and a controlled protocol child, with exact durable receipts and no model or GitHub call. That full-window pass predates the final startup/acknowledgement changes. The latest shared C# consumer compiled and executed independently, rejecting ten unsafe frames and checking four acknowledgement states and redirected receipts; the latest full WPF rebuild and human acceptance remain open.
+
+The subsequent saved-policy slice added explicit supervisor model/access/privacy/workspace choices, defaulting off, and included them in repository-scoped context freshness. The reviewer identified case-sensitive repository lookup and cross-repository orphan recovery. Corrections preserve exact saved evidence identities while resolving name aliases, retaining local handling/messages and scoping owner recovery to the requested repository. The same-author second fix check reported no remaining medium/high findings in that slice; 223 targeted and 761 full-suite tests passed with two expected platform skips and zero scoped type diagnostics. Workspace ownership, instruction integrity, path-dialect portability and enforced operating budgets are not established by configuration parsing.
+
+A further file-freshness extension binds the real bridge to its trusted configuration path and checks safely reloaded settings before launch, context/permission delivery and during active-turn polling. On-disk changes are not silently applied to an existing job. Tests cover changed/disabled/missing/malformed/untrusted settings, unchanged semantic configuration, zero-call prelaunch rejection, pending-access invalidation through an actual controlled protocol child, and a received observation retained without promotion after revocation. Validation passed 234 targeted and 772 full-suite tests with two expected platform skips and zero expanded scoped type diagnostics. The first review attempt returned a usage-limit error with no output; after the founder lifted that limit, the same Luna Max reviewer inspected the frozen extension and reported no confirmed medium/high findings. Configuration checkpoints do not promise rollback of already-started commands or confirmed remote cancellation.
+
+The registered-workspace preflight separately verifies an owned POSIX/WSL linked worktree against its configured GitHub origin and exact collected base commit, preserves the primary checkout, and fingerprints explicitly selected trusted instruction files. Actual local Git fixtures cover stale/dirty/unbound/nonisolated workspaces, remote identity, symlinks, instruction changes and malicious clean-filter suppression. Submodules and direct native-Windows or standalone-clone admission are unsupported in this initial route. Validation passed 265 targeted and 803 full-suite tests with two expected platform skips and zero scoped type diagnostics; the same Luna Max reviewer reported no confirmed medium/high findings. A linked worktree is work isolation, not credential or Git-configuration isolation; a fingerprint is not proof that Codex discovered or interpreted the instructions.
+
+Workspace receipts now flow through private queue migration into repository-scoped jobs and the existing native context digest. Tests verify exact source/policy/base binding, feedback preservation, stale preparation and permission refusal, historical late results, and actual local Git preflight-to-job propagation. Luna identified one medium ambiguity: duplicate JSON object keys were silently collapsed before journal validation and rewrite. The shared reader now rejects duplicates at every level, including escaped-equivalent names, without overwriting malformed files; legitimate same-named fields in separate objects remain accepted. The same-author fix check reported no remaining medium/high findings; 314 targeted and 840 full-suite tests passed with two expected platform skips and zero scoped type diagnostics. This establishes saved-context binding, not ordinary launch or live instruction monitoring.
+
+The live selected-instruction extension forces bounded fingerprint checks before inference, grant transmission and result acceptance, with metadata-triggered checks during provider polling. An actual controlled protocol child stopped on configuration or instruction revocation while awaiting access; a separate consumption-to-send race invalidated the saved grant before any response was sent. The reviewer found a medium workspace mismatch between checked receipts and independently selected launch settings. Corrections bind launch and returned runtime to saved workspace/source/model/access choices; subsequent generic-runner checks reject legacy adapters, missing connection receipts and mismatched observations for receipt-backed jobs. Same-author checks reported no remaining medium/high findings. Validation passed 348 targeted and 874 full-suite tests with two expected platform skips and zero scoped type diagnostics. These controlled-provider tests do not prove a real model obeyed instructions or that concurrent writers are frozen.
+
+All temporary Windows and parser-test SDK/cache/build files were removed after preserving small private evidence and canonical development source. No system-wide runtime was installed. Normal setup, feedback-triggered invocation, scheduling, capability-specific production presentation, permission notifications, installed packaging, real validation/local integration and a separately authorized supervised merge remain unfinished operating gates. This checkpoint is not a ready background-maintainer installation or a publication go/no-go.
+
+The configured single-repository backend entry point subsequently passed actual local Git/worktree, private configuration, queue/job/receipt and controlled provider-process tests. It derives launch settings from saved policy, preserves exact feedback/session ownership, reuses completed work and refuses automatic failed-attempt replay. Review found that the shared reconciler blocked interactive journals during remote collection; the correction uses a separate collector lease and rejects intervening run-state/execution changes before saving. Tests keep feedback, status and permission decisions usable during paused collection and preserve newer state even when collection fails. Command observations now retain the documented `declined` outcome after a controlled Deny roundtrip without persisting raw commands/output. Same-author fix check reported no remaining medium/high findings; 378 targeted and 883 full-suite tests passed with two expected platform skips and zero scoped type diagnostics. Ordinary native/scheduler invocation, live model acceptance and worktree provisioning remain separate gates; a changed configuration during collection aborts the launch rather than authorizing inference from the stale local record.
+
+The subsequent live-launch bridge tests exercise journal-first transient permission previews, a separate checked Deny reply, persisted declined outcome and the absence of raw previews in JSON journals. Actual POSIX pipes cover frame limits, blocking-mode restoration, disconnect and full/nonreading output. Review found that streaming errors could escape to the ordinary blocking writer; the corrected streaming-specific error path now includes startup/refusal and pending-preview failures. Actual bridge regressions verify bounded failure and invalidated consent without grants or replay. The same-author fix check reported no remaining medium/high findings; 300 targeted and 906 full-suite tests passed with two expected platform skips and zero scoped type diagnostics. The C# streaming consumer, live providers, actual GitHub operation, native and installed/scheduled acceptance remain untested for this new route; no build tools were restored or installed during this backend checkpoint.
+
+### Native configured-supervisor connection — 2026-10-03
+
+This increment connects the development window to the configured launcher; it is not yet the ordinary installed or scheduled path. The Python suite passed 914 tests with two expected skips, and the new launch/status tests passed 32 with zero scoped type diagnostics. A separate consumer-lifetime review reported no confirmed medium/high findings. Native review identified abandoned independent requests during Exit, invisible-character display spoofing and an unhandled-UI-error shutdown bypass. All three were verified, corrected and validated; the same-author recheck reported no remaining confirmed medium/high findings.
+
+| Boundary exercised | Observed result |
+|---|---|
+| Native parser, policy and saved-result contracts | Rejected 22 invalid/incomplete streams, nine invalid launch policies, four contradictory completion receipts and 11 unsafe permission frames; preserved fragmented Unicode and exact identities. |
+| Actual Windows → WSL → configured backend | Allow, deny, cancel, disconnect, stale feedback and owned-session continuation passed; independent durable-job/permission checks and provider-process exit checks passed. |
+| Actual native window controls | Saved feedback, started investigation, displayed exact access, hid/reopened the same owner, denied access, read the saved answer, invalidated stale requests and stopped the investigation. |
+| Shutdown with outstanding backend work | Actual UI tests held independent permission and collection requests open, verified Exit waited, then verified drain and process exit; deny/disconnect regressions also passed. Cancellation is not instant rollback: an earlier test released already-approved access before investigation cleanup, and the provider completed. A separate held-until-cleanup test verified no late grant afterward. |
+| Untrusted displayed text | Model answers and saved questions visibly escaped control/bidirectional formatting characters while preserving ordinary Unicode, newlines and the original saved JSON. |
+| UI failure during active work | Deliberate dispatcher failures during held permission, collection and synthetic exact-action execution drained owned work before unsuccessful exit. The synthetic action completed exactly once with saved review and start/success audit; no real repository changed. |
+
+These exercises use a controlled provider process and collection boundary, with real linked worktrees, instruction receipts, controller, transport and private journals. They made no model call or GitHub mutation and do not establish that an actual model followed the harness. Native builds and diagnostic type checks were clean. Screenshot inspection covered the owned synthetic window only; automation is not founder usability acceptance.
+
+Reusable isolated development tools were restored and are retained; no system-wide runtime was installed. Live-provider/rule checks, ordinary companion installation and scheduled routing, notifications, workspace provisioning/integration and the separately authorized supervised merge remain operating gates. Passing the development connection does not complete publication or personal background-maintenance readiness.
+
+The reviewed native source is now repository-owned under `native/windows/src`; the migration preserves the tested bytes. Development assembly/diagnostic names remain until ordinary companion integration. Neither source promotion nor a clean code-review result establishes installed readiness.
+
+### Installed WSL review entry, 2026-10-03
+
+A fresh wheel was built and installed into an isolated Python 3.14 environment;
+the normal CLI opened the existing native component using the installed backend,
+not a source/test import path or a synthetic transport. Two saved synthetic
+repository plans exercised message isolation, rejection, deferral and undo,
+hiding/reopening the same owner, full process restart and clean backend drain.
+An independent installed-module check verified exact messages, repository/PR/base
+identities and saved handling afterward. The profile was read-only with both AI
+modes off; no GitHub request, model call or mutation was needed for these checks.
+
+Independent review exposed launch-definition rereading, component updates
+activating an older owner, implicit diagnostic startup and unbound error logging.
+All four findings were verified and corrected; same-author fix checks reported
+no remaining medium/high findings in their bounded scopes. Parent assessment
+also identified current-directory package shadowing. A real negative control
+intercepted the unisolated command; the normal isolated command instead reached
+the installed bridge and preserved the exact scoped feedback. Native entry probes
+rejected 21 malformed or misbound launches. Actual stale-diagnostic and invalid
+normal startups exited unsuccessfully without unbound event writes.
+
+The Python suite passed 928 tests with two expected skips, scoped source and
+diagnostic type checks were clean, and the cached Windows build had no warnings
+or errors. Offline source-package and wheel checks remain development evidence,
+not final candidate provenance. Earlier test-helper quoting, process-exit
+observation and wrong-path failures were preserved and corrected without changing
+production behavior to manufacture a pass. This establishes installed read-only
+entry/data flow, not human visual acceptance, component installation/update,
+cold notifications, scheduled supervision or a real supervised merge.
+
+### Development checkpoint integrity review, 2026-10-03
+
+The full working-tree review covered native queue/action handling, provider and
+permission lifecycle, configured launch/context/recovery, packaging and public
+claims. The rejected browser/server/assets and their obsolete tests were
+retired; the native CLI regression remains covered. No browser assets or native
+runtimes are included in the Python wheel.
+
+Three separately scoped Codex reviewers inspected the implementation. Findings
+were checked against source before correction; authoring reviewers then checked
+their fixes and subsequent regressions. All three closed with no remaining
+confirmed medium/high finding in their assigned scopes. Two initial broad-access
+criticisms were withdrawn after checking the deliberately weaker enforcement
+contract; remote-action isolation remains an explicit acceptance gap, not an
+assumed guarantee. This was not a cross-provider comparison or publication audit.
+
+| Corrected boundary | Regression evidence |
+|---|---|
+| Case-only repository aliases | Historical exact bindings stay unchanged; uncertain-action guards and live outcome recovery still associate with the configured repository. |
+| Native submission and disk failure | Component selection is persisted before child submission; a failed required write cannot start a child and then report no launch. Selection is not activation evidence. |
+| Permission delivery and completion | Unanswered clear fails the turn; consumed direct deny/cancel cannot become successful execution. Destination-specific network denial can still permit a cached/local command to finish. Earlier resolved delivery remains historical if later execution contradicts it. |
+| Effective settings and grants | Checked settings fields exclude unknown nested configuration; new session-wide grants are refused, while legacy records remain readable without renewed consumption. |
+| Failed investigation recovery | Explicit exact-context retry retains the failed parent, records a new attempt and rejects stale, wrong or consumed retry selections. Crash recovery does not automatically replay inference or merge authority. |
+
+The corrected tree passed 920 Python tests with two expected platform skips,
+49 targeted retry tests and zero type diagnostics across 39 changed Python files.
+The lower full-suite count than the earlier checkpoint reflects retired browser
+coverage and new regressions, not a suppressed failure. Cached Windows build
+completed with no warnings or errors. Hidden native probes checked exact retry,
+stale/duplicate retry rejection and case alias association, alongside the
+existing launch, policy, permission and completion contracts.
+
+Follow-up review caught retry resuming a failed continuation's earlier session,
+the native client rejecting the new retry field, and old asynchronous replies
+remaining displayable during a new attempt. Corrections require a fresh retry
+session at both launch and journal boundaries, validate the optional retry field
+at the actual native client, and invalidate/clear earlier reply reads during
+active investigation. A real hidden Windows → WSL → configured backend retry
+roundtrip disconnected its first attempt, selected that exact saved failure,
+launched a new session, resolved fresh allow-once consent and recorded completion.
+Independent readback verified two jobs, preserved failure lineage, invalidated
+old consent and controlled-provider process exit. No live model or GitHub action
+was involved.
+
+A fresh offline wheel installed into a separate Python 3.14 environment passed
+actual normal Windows/WSL entry, two-repository exact feedback/local decisions,
+same-owner hiding/reopen, full restart and clean Exit/drain. An independent
+installed-module readback confirmed scoped messages and state. These tests made
+no model call or GitHub change. They are development checkpoint evidence, not
+the final release-candidate artifacts or complete scheduled-maintenance proof.
+
+A current-code restart rerun initially failed to find rendered controls. The
+preserved automation-root capture showed zero descendants in the retained
+startup object, but a fresh lookup of the same window handle/process exposed
+86 controls, including the expected two-item summary. The test now reacquires
+that exact window and verifies its identity before reading controls; visible
+assertions and timeouts remain unchanged. Backend logs were not substituted
+for interface evidence, and production code was not changed to obtain a pass.
+Two fresh fixtures subsequently passed the complete installed-window sequence
+and independent installed-module/state checks, retaining exact repository-scoped
+feedback and decisions through hiding, same-owner reopening and new-owner restart.
+Package inspection also matched all 49 Python/prompt files and 20 native source
+and README files to the current tree; rejected browser files and bundled native
+runtimes were absent from the distributions.
+
+Reusable build tools and earlier evidence remain retained. Ordinary supervisor
+setup, worktree provisioning, reliable cold notifications, scheduled supervision,
+live provider/harness enforcement, AI-bound action eligibility and a separately
+authorized real supervised merge remain open. No global Codex settings,
+repository visibility, tags or published package were changed.
