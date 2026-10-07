@@ -44,7 +44,11 @@ internal sealed class NativeSupervisorView
                 || job["provider_completion_observed"] is not JsonValue observed || !observed.TryGetValue<bool>(out var hasCompletion)
                 || job["messages"] is not JsonArray messages || messages.Count > 2000)
                 throw new InvalidDataException("Invalid agent job identity or completion.");
-            if (job["result"] is JsonObject result)
+            var observationOnly = ObservationOnly(job);
+            if (job["observed_result"] is not null && (!hasCompletion || !observationOnly
+                || status is not ("running" or "failed" or "interrupted")))
+                throw new InvalidDataException("Observation-only data contradicts job acceptance or provider evidence.");
+            if (Result(job) is JsonObject result)
             {
                 Text(result["summary"], 8192);
                 if (result["recommendations"] is not JsonArray recommendations || recommendations.Count > 1000
@@ -71,15 +75,17 @@ internal sealed class NativeSupervisorView
                 {
                     var key = ReplyKey(receipt);
                     if (!hasCompletion || !answered.Contains(key) || !receipts.Add(key)
-                        || receipt?["processing"]?.GetValue<string>() != (isCurrent ? "answered_current" : "answered_historical"))
+                        || receipt?["processing"]?.GetValue<string>() != (isCurrent && status == "completed" && !observationOnly
+                            ? "answered_current" : "answered_historical"))
                         throw new InvalidDataException("Agent answer receipt does not match its result.");
+                    ValidateReceipt(receipt!.AsObject(), repository);
                 }
                 if (hasCompletion && !receipts.SetEquals(answered))
                     throw new InvalidDataException("Agent answers lack processing receipts.");
             }
             else if (job["result"] is not null || messages.Count != 0)
                 throw new InvalidDataException("Agent reply has no recorded result.");
-            if (hasCompletion && job["result"] is not JsonObject)
+            if (hasCompletion && Result(job) is not JsonObject)
                 throw new InvalidDataException("Observed agent completion has no saved result.");
             if (hasCompletion)
             {
@@ -113,6 +119,34 @@ internal sealed class NativeSupervisorView
     }
 
     private static string ReplyKey(JsonNode? reply) => Text(reply?["proposal_id"], 25) + "/" + Text(reply?["request_id"], 128);
+    private static bool ObservationOnly(JsonObject job) => job["result"] is null && job["observed_result"] is JsonObject;
+    internal static JsonObject? Result(JsonObject job) => job["result"] as JsonObject ?? job["observed_result"] as JsonObject;
+
+    private static void ValidateReceipt(JsonObject receipt, string repository)
+    {
+        var keys = new HashSet<string> { "proposal_id", "request_id", "question", "created_at", "item", "processing" };
+        if (!keys.SetEquals(receipt.Select(entry => entry.Key))
+            || !Regex.IsMatch(Text(receipt["proposal_id"], 25), "^proposal_[a-f0-9]{16}$")
+            || !Regex.IsMatch(Text(receipt["request_id"], 128), "^decision_[1-9][0-9]{0,18}_[A-Za-z0-9_-]{1,32}$")
+            || receipt["item"] is not JsonObject item
+            || !new HashSet<string> { "repository", "kind", "number", "head_sha", "expected_base", "observed_base" }
+                .SetEquals(item.Select(entry => entry.Key))
+            || !string.Equals(Text(item["repository"], 255), repository, StringComparison.OrdinalIgnoreCase)
+            || Text(item["kind"], 20) is not ("pull_request" or "alert")
+            || item["number"] is not JsonValue number || !number.TryGetValue<int>(out var value) || value <= 0)
+            throw new InvalidDataException("Saved question has invalid conversation identity.");
+        Text(receipt["question"], 8192);
+        var at = Text(receipt["created_at"], 128);
+        if (!Regex.IsMatch(at, "(Z|[+-][0-9]{2}:[0-9]{2})$") || !DateTimeOffset.TryParse(at, out _))
+            throw new InvalidDataException("Saved question lacks an explicit timestamp.");
+        if (item["head_sha"] is not null && !Regex.IsMatch(Text(item["head_sha"], 64), "^([a-fA-F0-9]{40}|[a-fA-F0-9]{64})$"))
+            throw new InvalidDataException("Saved question has invalid revision evidence.");
+        foreach (var name in new[] { "expected_base", "observed_base" })
+            if (item[name] is not null) Text(item[name], 1024);
+        if (item["kind"]!.GetValue<string>() == "alert"
+            && new[] { "head_sha", "expected_base", "observed_base" }.Any(name => item[name] is not null))
+            throw new InvalidDataException("An alert question cannot claim PR revision evidence.");
+    }
 
     internal string DescribeTerminal(JsonObject terminal)
     {
@@ -141,26 +175,59 @@ internal sealed class NativeSupervisorView
         var questions = item.Evidence["feedback"]!.AsArray()
             .ToDictionary(message => message!["request_id"]!.GetValue<string>(), message => message!["message"]!.GetValue<string>());
         foreach (var job in _jobs.Where(job => job["provider_completion_observed"]!.GetValue<bool>()
-                     && job["status"]!.GetValue<string>() is "completed" or "superseded").AsEnumerable().Reverse())
+                     && job["status"]!.GetValue<string>() is "completed" or "superseded" or "failed" or "interrupted").AsEnumerable().Reverse())
         {
-            if (job["result"] is not JsonObject result) continue;
+            if (Result(job) is not JsonObject result) continue;
+            var observationOnly = ObservationOnly(job);
             var recommendations = result["recommendations"]!.AsArray()
-                .Where(value => value?["proposal_id"]?.GetValue<string>() == item.Id).ToList();
-            var replies = result["replies"]!.AsArray().Where(value => value?["proposal_id"]?.GetValue<string>() == item.Id
-                && questions.ContainsKey(value!["request_id"]!.GetValue<string>())).ToList();
+                .Where(value => !observationOnly && value?["proposal_id"]?.GetValue<string>() == item.Id).ToList();
+            var receipts = job["messages"]!.AsArray().ToDictionary(ReplyKey, value => value!.AsObject());
+            var replies = result["replies"]!.AsArray()
+                .Where(value => item.SameItem(receipts[ReplyKey(value)]["item"]!.AsObject())).ToList();
             if (recommendations.Count == 0 && replies.Count == 0) continue;
             var source = job["provenance"]!;
-            var current = job["current_context"]!.GetValue<bool>();
+            var current = job["current_context"]!.GetValue<bool>() && job["status"]!.GetValue<string>() == "completed" && !observationOnly;
             var content = $"{source["model"]} · {source["reasoning_effort"]} · {source["provider"]}\n"
-                + (current ? "Agent answered the saved context. Recheck the PR before any action."
+                + (observationOnly ? "Provider answer was received, but final job acceptance was not recorded. Historical conversation only; no current recommendation."
+                    : current ? "Agent answered the saved context. Recheck the PR before any action."
                     : "Earlier context — retained for reference, not a current approval recommendation.");
             foreach (var recommendation in recommendations)
                 content += $"\n\nAgent recommendation: {recommendation!["conclusion"]}\n{recommendation["explanation"]}";
             foreach (var reply in replies)
-                content += $"\n\nYour question: {questions[reply!["request_id"]!.GetValue<string>()]}\nAgent answer: {reply["message"]}";
+            {
+                var receipt = receipts[ReplyKey(reply)];
+                var sameRevision = receipt["proposal_id"]!.GetValue<string>() == item.Id;
+                if (sameRevision && (!questions.TryGetValue(receipt["request_id"]!.GetValue<string>(), out var original)
+                    || original != receipt["question"]!.GetValue<string>()))
+                    throw new InvalidDataException("Saved question contradicts the selected proposal's feedback.");
+                content += $"\n\nYour question: {receipt["question"]}\nAgent answer: {reply!["message"]}";
+                if (!sameRevision)
+                    content += $"\nAnswered question from an earlier recommendation revision ({receipt["created_at"]}). "
+                        + "This reply is retained for this same item; it does not approve the current recommendation.";
+            }
             sections.Add(content);
         }
         return NativeDisplayText.Escape(sections.Count == 0 ? "No verified agent answer for this item. Saving a message alone does not launch or complete an agent job."
             : string.Join("\n\n────────\n\n", sections) + "\n\nReading these replies makes no model call or GitHub change.");
+    }
+
+    internal string? LatestAnswer(QueueProposal item)
+    {
+        foreach (var job in _jobs.AsEnumerable().Reverse().Where(job => job["provider_completion_observed"]!.GetValue<bool>()
+                     && job["status"]!.GetValue<string>() is "completed" or "superseded" or "failed" or "interrupted"))
+        {
+            var receipts = job["messages"]!.AsArray().ToDictionary(ReplyKey, value => value!.AsObject());
+            var reply = Result(job)!["replies"]!.AsArray().Reverse()
+                .FirstOrDefault(value => item.SameItem(receipts[ReplyKey(value)]["item"]!.AsObject()));
+            if (reply is null) continue;
+            var receipt = receipts[ReplyKey(reply)];
+            var revision = receipt["proposal_id"]!.GetValue<string>() == item.Id;
+            var source = job["provenance"]!;
+            return NativeDisplayText.Escape($"{source["model"]} · {source["reasoning_effort"]}\n\nYour question: {receipt["question"]}\n\nAgent: {reply["message"]}\n\n"
+                + (ObservationOnly(job) ? "Provider answer received; final job acceptance was not recorded. Historical conversation only, not a current recommendation or approval."
+                    : revision && job["current_context"]!.GetValue<bool>() && job["status"]!.GetValue<string>() == "completed" ? "Verified answer to the saved current context. No merge approval."
+                    : "Verified answer to an earlier saved context for this same item. Not a current merge recommendation or approval."));
+        }
+        return null;
     }
 }

@@ -22,7 +22,9 @@ from dependabot_watcher.scheduling import (
     detect_schedule_platform,
     inventory_schedules,
     manage_schedule,
+    recurring_profile_summary,
 )
+from dependabot_watcher.config import parse_config
 from dependabot_watcher.scheduling_output import render_schedule
 from dependabot_watcher import scheduling_output
 from dependabot_watcher.runtime_state import save_private_json
@@ -1699,6 +1701,24 @@ def test_schedule_human_output_exposes_authority_and_no_github_mutation(
     assert "Output: Watcher runtime state" in text
     assert "GitHub mutation authorized: **no**" in markdown
     assert structured["definition"]["authority"] == "DESKTOP\\alex"
+
+
+def test_schedule_supervisor_disclosure_does_not_claim_all_ai_is_off(tmp_path: Path) -> None:
+    config = parse_config({"schema_version": 1, "repositories": [{"name": "example-org/example-app"}],
+        "supervisor": {"mode": "approval_first", "provider": "codex_app_server", "model": "chosen-model",
+            "reasoning_effort": "low", "expected_account_type": "chatgpt", "access": "inherit",
+            "model_use_acknowledged": True, "workspaces": [{"repository": "example-org/example-app",
+                "directory": str(tmp_path / "maintenance"), "instruction_sources": []}]}})
+    profile = recurring_profile_summary(config)
+    assert profile["advisory"]["mode"] == "off"
+    assert profile["supervisor"]["assurance"] == "saved_policy_only"
+    assert profile["supervisor"]["github_mutations_authorized"] is False
+    lines = "\n".join(scheduling_output._profile_text(profile))
+    assert "chosen-model" in lines and "low" in lines and "access inherit" in lines
+    assert "subscription/API usage" in lines and "Saved policy only" in lines
+    assert "AI during scheduled runs: off" not in lines
+    assert "GitHub changes: disabled" in lines
+    assert not (tmp_path / "maintenance").exists()
 
 
 def test_schedule_install_output_exposes_recurring_choices_and_native_timing(

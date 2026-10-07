@@ -295,3 +295,204 @@ setup, worktree provisioning, reliable cold notifications, scheduled supervision
 live provider/harness enforcement, AI-bound action eligibility and a separately
 authorized real supervised merge remain open. No global Codex settings,
 repository visibility, tags or published package were changed.
+
+### Installed notification activation, 2026-10-05
+
+A fresh clone and isolated ordinary tool installation of merged commit
+`3168f21cc79a191610cdfff20d0767a4ca4ed4a1` repeated the installed two-repository
+queue, exact feedback/local decisions, hide/reopen, full restart and backend-drain
+checks. Package checks matched source and excluded rejected browser assets and
+bundled native runtimes. The disposable clone/tool installation was removed after
+preserving its evidence; reusable Windows build tools remain retained.
+
+The subsequent development notification increment uses a separately selected
+native component and an installed Python backend. Its test command bypasses
+production reminder suppression without changing run delivery or merge consent.
+Real SDK readback confirmed a persisted notice after the sender exited. Founder
+testing then exercised these distinct paths:
+
+| Boundary | Observed result |
+|---|---|
+| Cold click after all review processes exited | The corrected component opened the bound two-item queue in a new owner. |
+| Click while the queue was hidden to the tray | The same owner reopened; no second queue instance was created. |
+| Feedback across hiding and full process restart | The exact message remained on PR #42 only; the other repository's PR #43 had no feedback. Native display retained the saved-message count. |
+| Foreground focus | Two cold starts opened behind VS Code with a flashing taskbar icon. The tray reopen appeared to come forward; reliable foreground activation is not established. |
+
+Initial cold clicks failed despite visible, durable notifications. Operating
+diagnostics exposed two incorrect assumptions: COM adds `-Embedding` to the
+notification launch, and the installed SDK builder serializes arguments with
+semicolons rather than ampersands. Strict intake now accepts the documented COM
+forms and the two valid orders of exactly the known open/profile fields, without
+collapsing duplicates or admitting commands. A separate test host loads the
+component's registration-free SDK manifest and round-trips both actual SDK-built
+toast and button XML arguments through production intake. Its initial missing
+activation-context failure is preserved, not counted as a successful SDK test.
+
+Independent review drove seven verified lifecycle/state corrections: sender
+timeout ownership, structured helper failures, retryable partial notice removal,
+acceptance surviving diagnostic-log failure, historical delivery attribution,
+receipt/shutdown deadline races, and advice-bound historical deduplication.
+Same-author checks reported no remaining confirmed medium/high findings in those
+bounded corrections, the cold diagnostic and the SDK format fix. The diagnostic
+stores only a fixed generic stage, error code and argument count in private
+current-user storage; it does not record activation payloads or exception text.
+
+Python validation passed 167 targeted tests and 950 full-suite tests with two
+expected platform skips; scoped type checks were clean. The cached native build
+and separate actual-SDK contract test passed, including 16 rejected malformed
+inputs. These results precede the later activation-result telemetry refinement.
+An unidentified brief flicker was reported around test-window shutdown; normal
+drain/exit was recorded and its cause is not established. UI action hierarchy
+and the misleading empty access-request heading remain tracked refinements.
+
+This is installed notification/opening and local feedback evidence, not a ready
+scheduled supervisor installation. The test profile has both AI modes off and
+merging disabled. No model call, GitHub mutation or scheduler run occurred.
+Foreground focus, component provisioning/distribution, scheduled supervision,
+live harness/model operation and exact supervised action acceptance remain open.
+
+### Installed supervisor attribution and continuation, 2026-10-05
+
+A later development candidate was built and installed offline from its exact
+wheel. The full suite passed 958 tests with two expected skips; 185 targeted
+supervisor tests and scoped type checks passed. The operating probe used the
+installed backend, real read-only repository evidence, one registered isolated
+worktree and ordinary saved-question/status operations—not a fabricated model
+answer. No merge, push, installation in the target repository or access grant
+was performed.
+
+| Boundary | Evidence and limitation |
+|---|---|
+| Runtime setup, both selected models | No-model checks verified the ChatGPT account type, selected model/effort, effective inherited settings and exact trusted instruction-source path. Command-rule enforcement and remote-mutation isolation were not established. |
+| Initial Luna investigation | The runtime completed an answer, but two recommendation identifiers did not belong to the saved job. Backend validation refused the result rather than attributing it to guessed PRs. |
+| Generation correction | The output schema constrains current proposal identifiers and exact question/proposal pairs, including historical feedback. Empty namespaces and provider schema limits have deterministic coverage. The existing independent result validator remains authoritative. |
+| Corrected Luna retry | A fresh session produced an accepted current answer to the original question with valid proposal attribution; its failed parent remained unchanged. This trial also used private metadata-only diagnostic instrumentation. |
+| Initial Sol investigation | The recorded turn was interrupted before a final answer. Its cause remains unresolved; a subsequent successful retry is not proof that the interruption was fixed. |
+| Explicit Sol retry | A fresh session produced an accepted current answer to the original saved question. The failed parent stayed failed. This diagnostic trial used the installed backend with private metadata-only exception instrumentation. |
+| Unchanged reuse | The ordinary, unmodified installed bridge returned the same completed job with no new job or inference. |
+| Saved follow-up | The ordinary, unmodified installed bridge continued the successful session in a new job, answered the exact new question and marked the prior completion historical. The narrower question was not treated as action consent. |
+
+The answers identified repository-specific validation and security gaps rather
+than treating a passing check as proof of merge readiness. These are observed
+agent recommendations, not independently established eligibility for an action.
+The native window loaded the real queue and consumed saved supervisor status.
+A founder screenshot after tray reopening showed the correct PR, model, both
+saved questions and answers, and the earlier result explicitly marked
+historical. On October 6, a third question submitted from that window reached
+the same Sol Low session through the ordinary installed bridge. Its exact saved
+question/reply pair and provider observation passed independent backend checks;
+the native client separately checked the terminal receipt. No merge was made.
+Fresh alerts changed proposal revisions and exposed a display gap: answers were
+preserved but filtered out of the replacement proposal's view. The founder also
+reported that uniform styling made an answer difficult to identify. Do not treat
+receipt verification alone as rendered-answer acceptance.
+
+The conversation-continuity correction projects original item/question evidence
+into status receipts and restores selection by repository, item kind and number
+without migrating authority. Backend regressions cover changed heads, bases and
+recommendation evidence. Actual compiled native contracts cover historical reply
+visibility, scope isolation and malformed receipts. The full Python suite passed
+962 tests with two expected platform skips; scoped type checks were clean. Two
+actual Windows-to-WSL controlled-provider runs exercised primary Send, exact
+saved questions and receipts, same-session continuation, scoped access handling,
+latest-answer rendering, tray reopening and normal Exit. Independent readback
+checked the persisted context and answers. These runs used no live model or
+GitHub mutation. A separate ordinary installed-window check rendered the preserved
+real Sol answer on the refreshed item; the owned-window screenshot showed its
+question, model and explicit earlier-context warning. No additional inference was
+needed for that display check.
+
+Independent review exposed received-but-unaccepted observation handling and two
+diagnostic regressions. Corrections preserve null accepted results, display
+separately validated observations as historical only, and check escaped text
+against the actual native presentation helper. Actual-assembly contracts cover
+observation-only recovery, control/bidirectional text, multiple-item selection,
+12 malformed receipt/state cases and SDK payload roundtrip. The same-author
+recheck reported no remaining confirmed medium/high finding in this bounded
+slice. Native builds had no warnings or errors. This closes the tested
+conversation/display correction, not final candidate provenance, human usability
+acceptance or the complete background maintainer.
+
+The two models agreed on the broad security priority and validation gaps but
+used different conclusion labels. One called a candidate a conditional
+recommendation despite missing validation. Accepted attribution must therefore
+not be confused with affirmative merge readiness; action-gate integration needs
+an explicit readiness contract, not interpretation of explanatory prose.
+
+The subsequent usage correction was grounded in two small real, same-session
+Codex turns. They demonstrated that `last` measures one model request while
+`total` includes the earlier thread: neither is directly the current turn's
+usage. The adapter now accumulates verified current-turn request deltas, ignores
+identical duplicate snapshots and refuses missing, regressed, contradictory or
+unsupported accounting. Historical observations are not rewritten. These are
+token counts, not monetary billing evidence. The corrected tree passed 977
+Python tests with two expected platform skips and zero scoped type diagnostics;
+the same-author recheck reported no confirmed medium/high findings.
+
+An application-update check then found that the self-contained Windows launcher
+can remain byte-identical while its application DLL changes. Component identity
+now binds both files in Python registration and native normal startup; legacy
+registrations require deliberate reselection, preserving old immutable profiles.
+Python regressions and actual-assembly contracts cover code-only updates,
+missing/linked files, legacy refusal and 23 invalid launch profiles. The cached
+native build had no warnings/errors and its hidden full-stream probe passed.
+The corrected tree passed 981 Python tests with two expected skips and zero
+scoped type diagnostics; independent review reported no confirmed medium/high
+finding. A fresh offline wheel installation opened the ordinary real saved queue,
+rendered the retained question/reply with its historical warning, and drained on
+normal Exit. No new inference or GitHub action was required. This is application
+file identity and installed startup evidence, not signing or final release provenance.
+
+Ordinary supervisor setup now saves the explicit model/account/access/workspace
+policy through the existing configuration parser. Tests cover real TOML output,
+case aliases, acknowledgements and refusal of settings that inactive modes would
+discard. Independent review identified three such setup defects; their verified
+fixes received a same-author recheck with no confirmed medium/high findings.
+Latest affected tests passed 186 with zero scoped type diagnostics. This is
+configuration authoring, not runtime or scheduled-operation attestation.
+
+Scheduled WSL initiation is now connected to the existing quiet native owner.
+Controlled Windows/WSL checks verified hidden startup, same-owner reopening,
+changed-feedback completion, duplicate silence and disabled actions after failed
+snapshot refresh. Supervised execution now requires current affirmative agent
+reasoning, exact runtime/completion receipts and fresh workspace verification;
+its audit retains supervising-agent attribution. Independent review findings
+were source-verified, fixed and rechecked cleanly. The frozen Python suite passed
+1,146 tests with two expected skips; affected Python type checks were clean
+in the maintainer environment. These are controlled-provider/code checks, not
+complete installed scheduled/live-agent or real-merge acceptance. Workspace
+provisioning, installed refresh/permission-interaction acceptance, foreground activation
+and an exact supervised action remain open.
+
+An isolated offline wheel installation exercised actual Windows Task Scheduler
+initiation, quiet unchanged runs and native-window feedback resumed in the same
+Sol 6.1 Low session. Independently checked saved context and completion evidence
+matched the exact question and rendered reply. The temporary task ran successfully
+and was removed with absence verified. A separate Luna 5.6 XHigh investigation
+exposed ambiguous candidate-versus-action advice: generation now requires explicit
+`ready_for_action`, and absent/false readiness cannot pass the action gate. That
+correction passed bounded review and regression tests. A subsequent updated wheel
+resumed the same Sol session, delivered an exact item-bound test question and saved
+its matching reply with explicit false action readiness. The installed execution
+gate independently refused that proposal for lacking affirmative readiness. The
+founder verified earlier window reply retention across tray reopening and absence
+of cross-PR message leakage. Inputs differed between model runs, so these are
+operating observations, not a controlled model ranking or real-action acceptance.
+
+The updated installed bridge also exercised separate-process deny, cancel and
+consumer-disconnect paths against a controlled protocol executable. Wrong request
+digests and completed-decision replay were refused; disconnect invalidated pending
+access without delivering a grant. Real read-only collection and installed backend
+code were retained, but the provider did not run commands or make model calls.
+The cached Windows consumer rejected 11 unsafe permission frames and verified four
+acknowledgement states. These checks do not replace full installed native-window
+permission interaction or real-provider permission acceptance.
+
+Optional maintenance-worktree refresh now has real temporary-Git regressions
+for preserving developer files/branches, refusing changed maintenance work,
+recovering a not-applied or completed local checkout and coordinating profiles.
+Review identified case-alias session churn, stuck pending intent and legacy
+scheduled-policy incompatibility; verified fixes received a clean same-author
+recheck. Disabled refresh preserves prior context and reservation identities;
+enabled refresh changes authority. This does not establish live fetch/checkout,
+workspace provisioning or developer-branch synchronization.

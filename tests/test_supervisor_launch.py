@@ -98,6 +98,24 @@ def test_saved_feedback_continues_only_the_owned_matching_session_and_answers_ex
     assert len(case["launches"]) == 2
 
 
+def test_refresh_enabled_case_aliases_reuse_exact_job_and_owned_session(launch_case: dict[str, Any]) -> None:
+    case = launch_case
+    path = case["path"]
+    path.write_text(path.read_text().replace(", instruction_sources = [", ", refresh_authorized = true, instruction_sources = ["))
+    case["queue"].config = load_config(path)
+    first = invoke(case)
+    assert first["job"]["status"] == "completed"
+    again = run_configured_supervisor(case["queue"], cast(GitHubClient, object()), "example-org/example-app",
+        permission_presentation=lambda params: ("Synthetic permission", ["allow_once", "deny", "cancel"]))
+    last = invoke(case)
+    for result in (again, last):
+        assert result["reused"] is True
+        assert result["job"]["job_id"] == first["job"]["job_id"]
+        assert result["job"]["session_id"] == first["job"]["session_id"]
+        assert result["job"]["context_digest"] == first["job"]["context_digest"]
+    assert len(case["launches"]) == 1
+
+
 def test_failed_same_context_is_not_automatically_replayed(launch_case: dict[str, Any]) -> None:
     case = launch_case
     case["program"].write_text(case["program"].read_text().replace("FAULT=''", "FAULT='failed_turn'"))

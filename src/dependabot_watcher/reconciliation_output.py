@@ -28,6 +28,13 @@ def _command(notification: Mapping[str, Any]) -> str | None:
 
 
 def _ai_summary(report: Mapping[str, Any]) -> str:
+    supervisor = report.get("supervisor")
+    if isinstance(supervisor, Mapping) and supervisor.get("mode") == "approval_first":
+        dispatch = report.get("supervisor_dispatch")
+        stage = ("background investigation requested; completion/usage not yet verified"
+                 if isinstance(dispatch, Mapping) and dispatch.get("status") == "submitted"
+                 else "configured; check saved jobs for actual execution and usage")
+        return f"{_plain(supervisor.get('model'))} / {_plain(supervisor.get('reasoning_effort'))} | {stage}"
     coverage = report.get("advisory_coverage")
     data = coverage if isinstance(coverage, Mapping) else {}
     mode = data.get("mode") or "off"

@@ -8,13 +8,44 @@ from types import SimpleNamespace
 import pytest
 
 from dependabot_watcher import cli
-from dependabot_watcher.config import ConfigError, load_config
+from dependabot_watcher.config import ConfigError, SupervisorConfig, load_config
 from dependabot_watcher.operational_output import render_operational
 
 
 class _TtyBuffer(StringIO):
     def isatty(self) -> bool:
         return True
+
+
+@pytest.mark.parametrize("notify", ["off", "desktop"])
+def test_cli_run_submits_configured_supervisor_without_premature_desktop_notice(
+    tmp_path: Path, monkeypatch, capsys, notify: str,
+) -> None:
+    policy = SupervisorConfig(mode="approval_first", model="gpt-5.6-luna", reasoning_effort="xhigh")
+    config = SimpleNamespace(supervisor=policy, collection=SimpleNamespace(command_timeout_seconds=120),
+        repositories=(SimpleNamespace(name="example-org/example-app"),))
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
+    observed = {}
+    run_id = "run_" + "a" * 20
+
+    def reconcile(*args, **kwargs):
+        observed["collection_mode"] = kwargs["notification_mode"]
+        return {"status": "complete", "run_id": run_id, "notification": {"needed": True},
+            "supervisor": {"mode": policy.mode, "model": policy.model, "reasoning_effort": policy.reasoning_effort}}
+
+    def submit(config_path, state_path, actual_run, **kwargs):
+        observed["run_id"] = actual_run
+        observed["notification_mode"] = kwargs["notification_mode"]
+        return {"status": "submitted", "assurance": "process_submission_only", "model_calls": "not_observed"}
+
+    monkeypatch.setattr(cli, "reconcile", reconcile)
+    monkeypatch.setattr(cli, "submit_scheduled_supervisor", submit)
+    monkeypatch.setattr(cli, "deliver_desktop_notification", lambda *args, **kwargs: pytest.fail("Premature notice before agent reasoning"))
+    assert cli.main(["run", "--config", str(tmp_path / "config.toml"), "--state-dir", str(tmp_path / "state"),
+        "--notify", notify, "--format", "json"]) == cli.ExitCode.SUCCESS
+    assert observed == {"collection_mode": "off", "run_id": run_id, "notification_mode": notify}
+    assert json.loads(capsys.readouterr().out)["supervisor_dispatch"]["model_calls"] == "not_observed"
 
 
 def test_cli_help_explains_doctor_profile_scope() -> None:
@@ -32,6 +63,7 @@ def test_cli_run_quiet_suppresses_all_private_report_output(
     capsys,
 ) -> None:
     config = SimpleNamespace(
+        supervisor=SupervisorConfig(),
         collection=SimpleNamespace(command_timeout_seconds=120),
         repositories=(SimpleNamespace(name="example-org/example-app"),),
     )
@@ -77,6 +109,7 @@ def test_cli_run_delivers_and_records_desktop_notification(
     capsys,
 ) -> None:
     config = SimpleNamespace(
+        supervisor=SupervisorConfig(),
         collection=SimpleNamespace(command_timeout_seconds=120),
         repositories=(SimpleNamespace(name="example-org/example-app"),),
     )
@@ -92,10 +125,10 @@ def test_cli_run_delivers_and_records_desktop_notification(
     monkeypatch.setattr(
         cli,
         "deliver_desktop_notification",
-        lambda value: {"mode": "desktop", "status": "delivered"},
+        lambda value, **kwargs: {"mode": "desktop", "status": "delivered"},
     )
 
-    def record(state_directory, run_id, delivery):
+    def record(state_directory, run_id, delivery, **kwargs):
         return {
             **report,
             "notification": {
@@ -132,6 +165,7 @@ def test_cli_run_notification_failure_is_actionable_and_nonzero(
     capsys,
 ) -> None:
     config = SimpleNamespace(
+        supervisor=SupervisorConfig(),
         collection=SimpleNamespace(command_timeout_seconds=120),
         repositories=(SimpleNamespace(name="example-org/example-app"),),
     )
@@ -145,7 +179,7 @@ def test_cli_run_notification_failure_is_actionable_and_nonzero(
     monkeypatch.setattr(cli, "load_config", lambda path: config)
     monkeypatch.setattr(cli, "GhCliClient", lambda timeout_seconds: object())
     monkeypatch.setattr(cli, "reconcile", lambda *args, **kwargs: report)
-    monkeypatch.setattr(cli, "deliver_desktop_notification", lambda value: failed)
+    monkeypatch.setattr(cli, "deliver_desktop_notification", lambda value, **kwargs: failed)
     monkeypatch.setattr(
         cli,
         "record_notification_delivery",
@@ -369,6 +403,91 @@ def test_cli_offline_setup_creates_safe_profile_without_external_calls(
     assert "Verification: offline; GitHub access was not verified" in render_operational(
         report, "markdown"
     )
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_cli_supervisor_setup_preserves_explicit_context_and_truthful_disclosure(tmp_path: Path, capsys, refresh: bool) -> None:
+    path = tmp_path / "config.toml"
+    workspace = str(tmp_path / "work=tree")
+    instruction = str(tmp_path / "trusted instructions" / "AGENTS.md")
+    code = cli.main(["setup", "--config", str(path), "--repo", "example-org/example-app",
+        "--offline", "--format", "json", "--supervisor-mode", "approval_first",
+        "--supervisor-model", "chosen-model", "--supervisor-reasoning", "low",
+        "--supervisor-account", "chatgpt", "--supervisor-access", "inherit",
+        "--acknowledge-supervisor-use", "--supervisor-workspace", f"example-org/example-app={workspace}",
+        "--supervisor-instruction", f"EXAMPLE-ORG/EXAMPLE-APP={instruction}",
+        *(["--supervisor-refresh-workspace", "EXAMPLE-ORG/EXAMPLE-APP"] if refresh else [])])
+    captured = capsys.readouterr()
+    assert code == cli.ExitCode.SUCCESS
+    assert captured.err == ""
+    report = json.loads(captured.out)
+    saved = load_config(path)
+    assert saved.supervisor.workspaces[0].directory == workspace
+    assert saved.supervisor.workspaces[0].instruction_sources == (instruction,)
+    assert saved.supervisor.workspaces[0].refresh_authorized is refresh
+    assert saved.operation.mutation_enabled is False
+    for output in ("text", "markdown"):
+        rendered = render_operational(report, output)
+        assert "chosen-model" in rendered
+        assert "Agent access: inherit" in rendered
+        assert "subscription/API usage" in rendered
+        assert "No agent or merge was launched" in rendered
+        assert "AI: off" not in rendered
+    assert not Path(workspace).exists()
+
+
+@pytest.mark.parametrize("extra", [
+    ["--supervisor-model", "chosen-model"],
+    ["--supervisor-timeout-seconds", "0"],
+    ["--supervisor-mode", "approval_first", "--supervisor-workspace", "invalid"],
+    ["--supervisor-mode", "approval_first", "--supervisor-access", "inherit",
+     "--supervisor-instruction", "example-org/example-app=/instructions"],
+    ["--supervisor-mode", "approval_first", "--supervisor-access", "inherit",
+     "--supervisor-workspace", "example-org/example-app=/one",
+     "--supervisor-workspace", "EXAMPLE-ORG/EXAMPLE-APP=/two"],
+])
+def test_cli_supervisor_setup_refuses_ambiguous_or_inactive_choices(tmp_path: Path, capsys, extra: list[str]) -> None:
+    path = tmp_path / "config.toml"
+    code = cli.main(["setup", "--config", str(path), "--repo", "example-org/example-app",
+                     "--offline", *extra])
+    assert code == cli.ExitCode.CONFIGURATION_ERROR
+    assert not path.exists()
+    assert capsys.readouterr().err
+
+
+def test_cli_ordinary_setup_accepts_case_alias_branch_and_preserves_repository(tmp_path: Path, capsys) -> None:
+    path = tmp_path / "config.toml"
+    code = cli.main(["setup", "--config", str(path), "--repo", "EXAMPLE-ORG/Example-App",
+                    "--branch", "example-org/example-app=develop", "--offline", "--format", "json"])
+    assert code == cli.ExitCode.SUCCESS
+    report = json.loads(capsys.readouterr().out)
+    assert report["repositories"][0] == {"name": "EXAMPLE-ORG/Example-App", "default_branch": "develop"}
+
+
+@pytest.mark.parametrize("extra", [
+    ["--triage-model", "ignored"], ["--acknowledge-model-use"],
+    ["--advisory-mode", "economy", "--triage-model", "triage", "--triage-reasoning", "low",
+     "--acknowledge-model-use", "--review-model", "ignored"],
+])
+def test_cli_refuses_advice_flags_that_would_be_discarded(tmp_path: Path, capsys, extra: list[str]) -> None:
+    path = tmp_path / "config.toml"
+    code = cli.main(["setup", "--config", str(path), "--repo", "example-org/example-app", "--offline", *extra])
+    assert code == cli.ExitCode.CONFIGURATION_ERROR
+    assert not path.exists()
+    assert capsys.readouterr().err
+
+
+@pytest.mark.parametrize("extra", [
+    ["--acknowledge-mutation"],
+    ["--merge-method", "example-org/example-app=squash"],
+    ["--required-check", "example-org/example-app=CI"],
+])
+def test_cli_read_only_setup_refuses_discarded_workflow_choices(tmp_path: Path, capsys, extra: list[str]) -> None:
+    path = tmp_path / "config.toml"
+    code = cli.main(["setup", "--config", str(path), "--repo", "example-org/example-app", "--offline", *extra])
+    assert code == cli.ExitCode.CONFIGURATION_ERROR
+    assert not path.exists()
+    assert "require autonomy approval_required" in capsys.readouterr().err
 
 
 def test_cli_execute_without_token_runs_read_only_preflight(
@@ -636,6 +755,7 @@ def test_cli_reports_new_operational_exit_codes(
 ) -> None:
     if command[0] == "run":
         config = SimpleNamespace(
+            supervisor=SupervisorConfig(),
             collection=SimpleNamespace(command_timeout_seconds=120),
             repositories=(SimpleNamespace(name="example-org/example-app"),),
         )

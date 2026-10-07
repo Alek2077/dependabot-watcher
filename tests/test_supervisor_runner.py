@@ -228,8 +228,14 @@ def test_completed_provider_observation_is_retained_but_not_promoted_after_file_
     status = supervision_status(refreshed, {"schema_version": 1, "request_id": "read_revoked",
         "operation": "supervisor_status", "repository": job["repository"]})
     assert status["jobs"][0]["current_context"] is False
-    assert status["jobs"][0]["messages"] == []
+    record = status["jobs"][0]
+    assert record["result"] is None
+    assert record["observed_result"] == observed["analysis"]
+    assert record["messages"][0]["question"] == "An exact question before revocation."
+    assert record["messages"][0]["processing"] == "answered_historical"
     assert status["jobs"][0]["provider_completion_observed"] is True
+    # Reading historical display data does not accept or rewrite the attempt.
+    assert jobs.read(job["job_id"])["result"] is None
 
 
 @pytest.mark.parametrize("fault", ["no_completion", "redirected_reply", "extra_authority", "session_space", "not_mapping"])

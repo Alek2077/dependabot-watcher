@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import pytest
 
 from dependabot_watcher.notifications import deliver_desktop_notification
+from dependabot_watcher.native_review import NativeReviewError
 
 
 class _Runner:
@@ -134,3 +135,38 @@ def test_desktop_notification_profile_identity_differs_across_state_paths() -> N
     first_profile = next(line for line in first_body.splitlines() if line.startswith("Profile:"))
     second_profile = next(line for line in second_body.splitlines() if line.startswith("Profile:"))
     assert first_profile != second_profile
+
+
+def test_bound_wsl_delivery_uses_registered_component_not_legacy_balloon(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Fixture-Ubuntu")
+    calls: list[tuple[Path, Path, dict[str, Any]]] = []
+
+    def notify(config: Path, state: Path, **kwargs: Any) -> dict[str, Any]:
+        calls.append((config, state, kwargs))
+        return {"status": "accepted"}
+
+    monkeypatch.setattr("dependabot_watcher.notifications.native_notification", notify)
+    runner = _Runner()
+    report = _report()
+    report["run_id"] = "run_" + "a" * 20
+    result = deliver_desktop_notification(report, runner=runner,
+        config_path=Path("/private/config.toml"), state_directory=Path("/private/state"))
+    assert result["status"] == "delivered" and result["assurance"] == "adapter_accepted_only"
+    assert calls == [(Path("/private/config.toml"), Path("/private/state"),
+                      {"operation": "run", "run_id": report["run_id"]})]
+    assert runner.commands == []
+
+
+def test_bound_wsl_component_failure_does_not_fall_back_or_expose_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Fixture-Ubuntu")
+
+    def fail(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise NativeReviewError("private diagnostic marker")
+
+    monkeypatch.setattr("dependabot_watcher.notifications.native_notification", fail)
+    runner = _Runner()
+    result = deliver_desktop_notification(_report(), runner=runner,
+        config_path=Path("/private/config.toml"), state_directory=Path("/private/state"))
+    assert result["status"] == "failed" and result["assurance"] == "not_accepted"
+    assert "private diagnostic marker" not in json.dumps(result)
+    assert runner.commands == []

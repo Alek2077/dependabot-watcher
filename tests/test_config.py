@@ -100,6 +100,19 @@ def test_supervisor_does_not_read_or_modify_registered_workspace_when_parsing(tm
     assert not absent.exists()  # Actual launch must check identity/ownership/harness.
 
 
+@pytest.mark.parametrize("value", [True, False, "true", 1, None])
+def test_workspace_refresh_requires_explicit_boolean_permission(value: object) -> None:
+    data = valid_config()
+    policy = configured_supervisor()
+    policy["workspaces"][0]["refresh_authorized"] = value
+    data["supervisor"] = policy
+    if type(value) is bool:
+        assert parse_config(data).supervisor.workspaces[0].refresh_authorized is value
+    else:
+        with pytest.raises(ConfigError, match="must be a boolean"):
+            parse_config(data)
+
+
 def test_supervisor_repository_binding_is_canonical_and_workspaces_do_not_alias() -> None:
     data = valid_config()
     data["repositories"] = [{"name": "example-org/example-app"}, {"name": "example-org/other-app"}]

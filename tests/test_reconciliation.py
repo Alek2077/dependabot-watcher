@@ -207,6 +207,7 @@ def _no_work_inspection() -> dict[str, Any]:
 class _Provider:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
+        self.summary = "Synthetic safe candidate."
         self.requests: list[AdvisoryRequest] = []
 
     def analyze(self, request: AdvisoryRequest, *, stage: str) -> ProviderResponse:
@@ -224,7 +225,7 @@ class _Provider:
                         "risk_level": "low",
                         "confidence": "high",
                         "requires_review": False,
-                        "summary": "Synthetic safe candidate.",
+                        "summary": self.summary,
                         "rationale": "Synthetic evidence is complete.",
                         "evidence": ["Synthetic evidence."],
                         "unresolved_questions": [],
@@ -946,6 +947,72 @@ def test_notification_delivery_validates_latest_report_before_updating_state(
 
     state = load_run_state(state_directory)
     assert state["last_attempt"]["notification_delivery"]["status"] == "pending"
+
+
+@pytest.mark.parametrize("provide_original", [False, True])
+def test_late_accepted_delivery_preserves_newer_report_and_suppresses_equivalent_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provide_original: bool,
+) -> None:
+    monkeypatch.setattr("dependabot_watcher.reconciliation.inspect", lambda *args, **kwargs: _inspection())
+    config, state = _config(), tmp_path / "state"
+    now = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
+    first = reconcile(config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml",
+        state_directory=state, notification_mode="desktop", clock=lambda: now)
+    second = reconcile(config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml",
+        state_directory=state, notification_mode="desktop", clock=lambda: now + timedelta(minutes=1))
+    latest = (state / "latest-run.json").read_bytes()
+    delivery = {"mode": "desktop", "adapter": "windows", "status": "delivered",
+                "assurance": "adapter_accepted_only"}
+    result = record_notification_delivery(state, first["run_id"], delivery,
+        original_report=first if provide_original else None)
+    assert result["run_id"] == first["run_id"]
+    assert result["mode"] == ("run" if provide_original else "notification_delivery")
+    assert (state / "latest-run.json").read_bytes() == latest
+    history = {item["run_id"]: item for item in load_run_state(state)["history"]}
+    assert history[first["run_id"]]["notification_delivery"] == delivery
+    assert history[second["run_id"]]["notification_delivery"]["status"] == "pending"
+    third = reconcile(config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml",
+        state_directory=state, notification_mode="desktop", clock=lambda: now + timedelta(minutes=2))
+    assert third["notification"]["needed"] is False
+
+
+def test_late_delivery_does_not_suppress_changed_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inspection = _inspection()
+    monkeypatch.setattr("dependabot_watcher.reconciliation.inspect", lambda *args, **kwargs: inspection)
+    config, state = _config(), tmp_path / "state"
+    now = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
+    first = reconcile(config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml",
+        state_directory=state, notification_mode="desktop", clock=lambda: now)
+    inspection = json.loads(json.dumps(inspection))
+    inspection["repositories"][0]["pull_requests"][0]["candidate_identity"]["head_sha"] = "c" * 40
+    reconcile(config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml",
+        state_directory=state, notification_mode="desktop", clock=lambda: now + timedelta(minutes=1))
+    record_notification_delivery(state, first["run_id"], {"mode": "desktop", "status": "delivered"}, original_report=first)
+    third = reconcile(config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml",
+        state_directory=state, notification_mode="desktop", clock=lambda: now + timedelta(minutes=2))
+    assert third["notification"]["needed"] is True
+
+
+def test_late_delivery_does_not_acknowledge_changed_advice_on_same_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inspection = _inspection()
+    inspection["status"] = "partial"
+    monkeypatch.setattr("dependabot_watcher.reconciliation.inspect", lambda *args, **kwargs: inspection)
+    config, state, provider = _config("economy"), tmp_path / "state", _Provider()
+    now = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
+    first = reconcile(config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml",
+        state_directory=state, notification_mode="desktop", provider=provider, clock=lambda: now)
+    provider.summary = "Changed recommendation after further investigation."
+    second = reconcile(config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml",
+        state_directory=state, notification_mode="desktop", provider=provider, clock=lambda: now + timedelta(hours=1))
+    assert first["evidence_revision"] == second["evidence_revision"]
+    assert first["notification"]["reason"] == second["notification"]["reason"]
+    assert first["plan"]["plan_id"] != second["plan"]["plan_id"]
+    record_notification_delivery(state, first["run_id"], {"mode": "desktop", "status": "delivered"}, original_report=first)
+    third = reconcile(config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml",
+        state_directory=state, notification_mode="desktop", provider=provider, clock=lambda: now + timedelta(hours=1, minutes=1))
+    assert third["notification"]["needed"] is True
 
 
 def test_failed_execution_routes_one_deduplicated_recovery_notification(

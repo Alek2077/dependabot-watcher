@@ -3,14 +3,16 @@ from __future__ import annotations
 import json
 import hashlib
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from dependabot_watcher import cli, native_review
-from dependabot_watcher.native_review import NativeReviewError, open_native_review
-from dependabot_watcher.runtime_state import RuntimeStateError, load_private_json
+from dependabot_watcher.native_review import NativeReviewError, native_notification, open_native_review, submit_scheduled_supervisor
+from dependabot_watcher.runtime_state import RuntimeStateError, load_private_json, load_run_state, save_run_state
+from dependabot_watcher.windows_helpers import WindowsHelperError
 
 
 @pytest.fixture
@@ -20,6 +22,7 @@ def native_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, An
     config.chmod(0o600)
     component = tmp_path / "Watcher.exe"
     component.write_bytes(b"Owned synthetic executable, never executed.")
+    component.with_suffix(".dll").write_bytes(b"Owned synthetic application code, never loaded.")
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(native_review, "_wsl_identity", lambda: ("Fixture-Ubuntu", "fixture-user"))
     monkeypatch.setattr(native_review, "windows_host_path", lambda path: "C:\\Fixture\\" + path.name)
@@ -43,10 +46,11 @@ def test_launcher_binds_installed_interpreter_scope_without_model_or_merge(nativ
     launch_files = list((case["state"] / "native-review/profiles").glob("*/backend-launch.json"))
     assert len(launch_files) == 1
     launch = load_private_json(launch_files[0].parent, Path("backend-launch.json"))
-    assert launch["diagnostic_transport"] is False and launch["schema_version"] == 2
+    assert launch["diagnostic_transport"] is False and launch["schema_version"] == 3
     assert launch_files[0].parent.name == hashlib.sha256(launch_files[0].read_bytes()).hexdigest()
     assert launch["component"] == {"path": "C:\\Fixture\\Watcher.exe",
-                                  "sha256": hashlib.sha256(case["component"].read_bytes()).hexdigest()}
+                                  "sha256": hashlib.sha256(case["component"].read_bytes()).hexdigest(),
+                                  "assembly_sha256": hashlib.sha256(case["component"].with_suffix(".dll").read_bytes()).hexdigest()}
     arguments = launch["arguments"]
     assert arguments[:6] == ["--distribution", "Fixture-Ubuntu", "--user", "fixture-user", "--exec", "/usr/bin/env"]
     assert ["-u", "PYTHONPATH"] == arguments[6:8]
@@ -68,6 +72,97 @@ def test_saved_component_and_identical_profile_reopen_without_overwrite(native_c
     assert len(native_case["calls"]) == 2
 
 
+def configure_scheduled(case: dict[str, Any]) -> str:
+    invoke(case)
+    case["calls"].clear()
+    case["config"].write_text(case["config"].read_text() + '\n[supervisor]\nmode = "approval_first"\n'
+        'provider = "codex_app_server"\nmodel = "gpt-5.6-luna"\nreasoning_effort = "xhigh"\n'
+        'expected_account_type = "chatgpt"\naccess = "inherit"\nmodel_use_acknowledged = true\n'
+        'workspaces = [{repository = "example-org/example-app", directory = '
+        + json.dumps(str(case["config"].parent / "maintenance")) + ', instruction_sources = []}]\n')
+    run_id = "run_" + "a" * 20
+    state = load_run_state(case["state"])
+    state["last_attempt"] = {"run_id": run_id}
+    save_run_state(case["state"], state)
+    return run_id
+
+
+@pytest.mark.parametrize("mode", ["off", "desktop"])
+def test_scheduled_submission_is_bound_durable_and_not_agent_completion(native_case: dict[str, Any], mode: str) -> None:
+    case = native_case
+    run_id = configure_scheduled(case)
+    result = submit_scheduled_supervisor(case["config"], case["state"], run_id, notification_mode=mode)
+    payload = json.loads(case["calls"][0]["input"])
+    assert payload["arguments"].endswith(f"--scheduled-run {run_id} --notify-mode {mode}")
+    assert result["assurance"] == "process_submission_only"
+    assert result["model_launch_requested"] is True and result["model_calls"] == "not_observed"
+    assert result["github_mutations"] is False
+    saved = list((case["state"] / "native-review/profiles").glob(f"*/scheduled-submissions/{run_id}.json"))
+    assert len(saved) == 1 and load_private_json(saved[0].parent, Path(saved[0].name)) == result
+
+
+@pytest.mark.parametrize("fault", ["stale", "disabled", "invalid_run", "invalid_notification"])
+def test_scheduled_submission_refuses_wrong_run_or_policy_before_process(native_case: dict[str, Any], fault: str) -> None:
+    case = native_case
+    run_id = configure_scheduled(case)
+    mode = "off"
+    if fault == "stale": run_id = "run_" + "b" * 20
+    elif fault == "disabled": case["config"].write_text('schema_version = 1\n[[repositories]]\nname = "example-org/example-app"\n')
+    elif fault == "invalid_run": run_id = "../other"
+    else: mode = "unexpected"
+    with pytest.raises(NativeReviewError):
+        submit_scheduled_supervisor(case["config"], case["state"], run_id, notification_mode=mode)
+    assert case["calls"] == []
+
+
+def test_uncertain_scheduled_submission_records_uncertainty_not_no_agent_claim(
+    native_case: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = native_case
+    run_id = configure_scheduled(case)
+    monkeypatch.setattr(native_review.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("Fixture failure")))
+    with pytest.raises(NativeReviewError, match="no automatic retry"):
+        submit_scheduled_supervisor(case["config"], case["state"], run_id)
+    saved = next((case["state"] / "native-review/profiles").glob(f"*/scheduled-submissions/{run_id}.json"))
+    assert load_private_json(saved.parent, Path(saved.name))["status"] == "submission_unconfirmed"
+
+
+@pytest.mark.parametrize("persist_fault", [OSError, RuntimeStateError])
+def test_post_launch_receipt_failure_blocks_repeat_without_false_no_agent_claim(
+    native_case: dict[str, Any], monkeypatch: pytest.MonkeyPatch, persist_fault: type[Exception],
+) -> None:
+    case = native_case
+    run_id = configure_scheduled(case)
+    original = native_review.save_private_json
+    def write(directory: Path, relative: Path, value: dict[str, Any], **kwargs: Any) -> Path:
+        if relative.parts[0] == "scheduled-submissions" and value["status"] != "submission_pending":
+            raise persist_fault("Private disk diagnostic must not escape")
+        return original(directory, relative, value, **kwargs)
+    monkeypatch.setattr(native_review, "save_private_json", write)
+    with pytest.raises(NativeReviewError, match="accepted background submission") as failure:
+        submit_scheduled_supervisor(case["config"], case["state"], run_id)
+    assert "Private disk diagnostic" not in str(failure.value)
+    saved = next((case["state"] / "native-review/profiles").glob(f"*/scheduled-submissions/{run_id}.json"))
+    assert load_private_json(saved.parent, Path(saved.name))["status"] == "submission_pending"
+    with pytest.raises(NativeReviewError, match="already has a submission"):
+        submit_scheduled_supervisor(case["config"], case["state"], run_id)
+    assert len(case["calls"]) == 1
+
+
+def test_same_run_concurrent_submission_creates_only_one_process(native_case: dict[str, Any]) -> None:
+    case = native_case
+    run_id = configure_scheduled(case)
+    def submit(unused: int) -> str:
+        try:
+            return submit_scheduled_supervisor(case["config"], case["state"], run_id)["status"]
+        except NativeReviewError as error:
+            assert "already has a submission" in str(error)
+            return "refused"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(submit, range(2))) == ["refused", "submitted"]
+    assert len(case["calls"]) == 1
+
+
 def test_replaced_component_is_not_silently_launched(native_case: dict[str, Any]) -> None:
     invoke(native_case)
     native_case["component"].write_bytes(b"Different executable")
@@ -84,9 +179,65 @@ def test_changed_component_location_gets_distinct_owner(native_case: dict[str, A
     invoke(native_case)
     replacement = native_case["component"].with_name("OtherWatcher.exe")
     replacement.write_bytes(native_case["component"].read_bytes())
+    replacement.with_suffix(".dll").write_bytes(native_case["component"].with_suffix(".dll").read_bytes())
     native_case["component"] = replacement
     invoke(native_case)
     assert len(list((native_case["state"] / "native-review/profiles").glob("*/backend-launch.json"))) == 2
+
+
+def test_application_update_with_unchanged_apphost_requires_new_selection(native_case: dict[str, Any]) -> None:
+    invoke(native_case)
+    original = next((native_case["state"] / "native-review/profiles").glob("*/backend-launch.json"))
+    before = original.read_bytes()
+    executable_bytes = native_case["component"].read_bytes()
+    native_case["component"].with_suffix(".dll").write_bytes(b"New managed application; identical apphost.")
+    with pytest.raises(NativeReviewError, match="changed"):
+        invoke(native_case, select=False)
+    assert len(native_case["calls"]) == 1 and native_case["component"].read_bytes() == executable_bytes
+    assert original.read_bytes() == before
+    invoke(native_case)
+    profiles = list(original.parent.parent.glob("*/backend-launch.json"))
+    components = [load_private_json(path.parent, Path("backend-launch.json"))["component"] for path in profiles]
+    assert len(profiles) == 2
+    assert len({item["sha256"] for item in components}) == 1
+    assert len({item["assembly_sha256"] for item in components}) == 2
+
+
+def test_incomplete_component_cannot_register_or_submit(native_case: dict[str, Any]) -> None:
+    native_case["component"].with_suffix(".dll").unlink()
+    with pytest.raises(NativeReviewError, match="complete"):
+        invoke(native_case)
+    assert not native_case["calls"]
+    assert not (native_case["state"] / "native-review/component.json").exists()
+    assert not (native_case["state"] / "native-review/profiles").exists()
+
+
+def test_linked_application_dll_is_not_selected(native_case: dict[str, Any]) -> None:
+    assembly = native_case["component"].with_suffix(".dll")
+    target = assembly.with_name("other-application.dll")
+    assembly.rename(target)
+    try:
+        assembly.symlink_to(target)
+    except OSError:
+        pytest.skip("This host cannot create a symlink for the negative control.")
+    with pytest.raises(NativeReviewError, match="complete"):
+        invoke(native_case)
+    assert not native_case["calls"]
+
+
+def test_legacy_executable_only_registration_requires_deliberate_reselection(native_case: dict[str, Any]) -> None:
+    invoke(native_case)
+    registration = native_case["state"] / "native-review/component.json"
+    legacy = json.loads(registration.read_bytes())
+    legacy["schema_version"] = 1
+    legacy.pop("assembly_sha256")
+    registration.write_text(json.dumps(legacy))
+    before = registration.read_bytes()
+    with pytest.raises(NativeReviewError, match="native-component"):
+        invoke(native_case, select=False)
+    assert len(native_case["calls"]) == 1 and registration.read_bytes() == before
+    invoke(native_case)
+    assert load_private_json(registration.parent, Path(registration.name))["schema_version"] == 2
 
 
 def test_modified_profile_is_refused_without_child(native_case: dict[str, Any]) -> None:
@@ -126,7 +277,7 @@ def test_ambiguous_submission_keeps_selection_without_claiming_launch(native_cas
     with pytest.raises(NativeReviewError, match="confirm"):
         invoke(native_case)
     registration = load_private_json(native_case["state"] / "native-review", Path("component.json"))
-    assert set(registration) == {"schema_version", "path", "sha256"}
+    assert set(registration) == {"schema_version", "path", "sha256", "assembly_sha256"}
     assert registration["path"] == str(native_case["component"])
 
 
@@ -175,3 +326,67 @@ def test_cli_review_opens_aggregate_without_plan_or_inference(native_case: dict[
                      "--native-component", str(native_case["component"]), "--plain"]) == 0
     output = capsys.readouterr().out
     assert "does not confirm" in output and "no model call or GitHub change" in output
+
+
+def notification_submit(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> None:
+    def submit(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        case["calls"].append({"argv": arguments, **kwargs})
+        profile = next((case["state"] / "native-review/profiles").iterdir()).name
+        receipt = {"schema_version": 1, "status": "accepted", "profile_id": profile,
+                   "notification_id": 42, "assurance": "adapter_accepted_only", **overrides}
+        return subprocess.CompletedProcess(arguments, 0, json.dumps(receipt), "")
+    monkeypatch.setattr(native_review.subprocess, "run", submit)
+
+
+def test_notification_test_uses_hidden_bound_component_without_run_state(
+    native_case: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notification_submit(native_case, monkeypatch)
+    receipt = native_notification(native_case["config"], native_case["state"],
+                                  operation="test", component=native_case["component"])
+    assert receipt["status"] == "accepted"
+    payload = json.loads(native_case["calls"][0]["input"])
+    assert "--notification-test" in payload["arguments"] and "--launch-file" in payload["arguments"]
+    assert "$start.CreateNoWindow = $true" in native_case["calls"][0]["argv"][-1]
+    assert not (native_case["state"] / "run-state.json").exists()
+    assert not (native_case["state"] / "review-queue.json").exists()
+
+
+@pytest.mark.parametrize("overrides", [{"notification_id": True}, {"notification_id": 0},
+    {"profile_id": "a" * 64}, {"status": "registered"}, {"assurance": "user_saw_it"}, {"unexpected": "field"}])
+def test_notification_receipt_is_bound_and_does_not_claim_visibility(
+    native_case: dict[str, Any], monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any],
+) -> None:
+    notification_submit(native_case, monkeypatch, **overrides)
+    with pytest.raises(NativeReviewError, match="receipt|acceptance"):
+        native_notification(native_case["config"], native_case["state"], operation="test", component=native_case["component"])
+
+
+@pytest.mark.parametrize("operation", ["status", "remove"])
+def test_notification_status_and_removal_do_not_invent_registration(native_case: dict[str, Any], operation: str) -> None:
+    with pytest.raises(NativeReviewError, match="existing"):
+        native_notification(native_case["config"], native_case["state"], operation=operation)
+    assert native_case["calls"] == [] and not native_case["state"].exists()
+
+
+def test_notification_test_cli_clearly_requests_user_observation(
+    native_case: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    notification_submit(native_case, monkeypatch)
+    assert cli.main(["notification", "test", "--config", str(native_case["config"]),
+        "--state-dir", str(native_case["state"]), "--native-component", str(native_case["component"]), "--plain"]) == 0
+    text = capsys.readouterr().out
+    assert "Please check its visibility" in text and "does not prove display" in text
+
+
+@pytest.mark.parametrize("helper", ["windows_host_path", "trusted_windows_executable"])
+def test_notification_helper_failure_is_expected_and_sanitized(
+    native_case: dict[str, Any], monkeypatch: pytest.MonkeyPatch, helper: str,
+) -> None:
+    def unavailable(*args: Any, **kwargs: Any) -> str:
+        raise WindowsHelperError("private mount diagnostic")
+    monkeypatch.setattr(native_review, helper, unavailable)
+    with pytest.raises(NativeReviewError) as failure:
+        native_notification(native_case["config"], native_case["state"], operation="test", component=native_case["component"])
+    assert "private mount diagnostic" not in str(failure.value)
+    assert native_case["calls"] == []

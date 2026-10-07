@@ -29,6 +29,17 @@ def recurring_profile_summary(config: WatcherConfig) -> dict[str, Any]:
     return {
         "repository_count": len(config.repositories),
         "repositories": [repository.name for repository in config.repositories],
+        "supervisor": {
+            "mode": config.supervisor.mode,
+            "provider": config.supervisor.provider,
+            "model": config.supervisor.model,
+            "reasoning_effort": config.supervisor.reasoning_effort,
+            "access": config.supervisor.access,
+            "max_jobs_per_run": config.supervisor.max_jobs_per_run,
+            "timeout_seconds": config.supervisor.timeout_seconds,
+            "assurance": "saved_policy_only",
+            "github_mutations_authorized": False,
+        },
         "advisory": {
             "mode": config.advisory.mode,
             "provider": config.advisory.provider,

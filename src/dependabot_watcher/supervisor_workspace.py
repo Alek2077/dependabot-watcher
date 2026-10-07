@@ -31,7 +31,8 @@ _MAX_INSTRUCTION = 1_000_000
 _SHA = re.compile(r"[a-fA-F0-9]{40}|[a-fA-F0-9]{64}")
 
 
-def _git(workspace: Path, *arguments: str, overrides: tuple[str, ...] = (), empty_ok: bool = False) -> str:
+def _git(workspace: Path, *arguments: str, overrides: tuple[str, ...] = (), empty_ok: bool = False,
+         timeout_seconds: int = 15) -> str:
     """Bound both pipes and lifetime; discard diagnostics and remote URLs."""
     executable = shutil.which("git")
     if executable is None:
@@ -50,7 +51,7 @@ def _git(workspace: Path, *arguments: str, overrides: tuple[str, ...] = (), empt
         assert process.stdout is not None and process.stderr is not None
         output = bytearray()
         totals = {"stdout": 0, "stderr": 0}
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + timeout_seconds
         with selectors.DefaultSelector() as selector:
             for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
                 os.set_blocking(stream.fileno(), False)

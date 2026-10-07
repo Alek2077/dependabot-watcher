@@ -36,6 +36,8 @@ from .runtime_state import (
     secure_private_file,
     validate_private_file,
 )
+from .review_queue import ReviewQueueError
+from .supervisor_action import require_supervisor_recommendation
 
 
 EXECUTION_SCHEMA_VERSION = 1
@@ -437,7 +439,8 @@ def _fresh_preflight(
 
 
 def _decision_context(
-    step: Mapping[str, Any], repository_config: RepositoryConfig
+    step: Mapping[str, Any], repository_config: RepositoryConfig,
+    supervisor: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     identity_value = step.get("identity")
     identity = identity_value if isinstance(identity_value, Mapping) else {}
@@ -456,9 +459,10 @@ def _decision_context(
         "classification": str(
             step.get("deterministic_classification") or "unknown"
         ),
-        "decision_source": "model_informed_policy" if advice else "deterministic_policy",
-        "model_used": advice is not None,
+        "decision_source": "supervised_policy" if supervisor else "model_informed_policy" if advice else "deterministic_policy",
+        "model_used": advice is not None or supervisor is not None,
         "advice_assurance": advice.get("assurance") if advice else None,
+        **({"supervisor": dict(supervisor)} if supervisor else {}),
         "required_checks": [
             {
                 "name": name,
@@ -570,6 +574,9 @@ def preflight_execution(
     except GitHubError as exc:
         raise GitHubError(public_github_error_message("execution preflight")) from exc
     already_applied = bool(fresh_step.get("already_applied"))
+    supervisor = None
+    if not already_applied and config.supervisor.mode != "off":
+        supervisor = _require_supervised_action(config, (state_directory or default_state_directory()).expanduser(), saved_plan, step_id)
     _, saved_step = _find_step(saved_plan, step_id)
     repository_config = _repository_config(config, str(binding["repository"]))
     return {
@@ -586,7 +593,7 @@ def preflight_execution(
             "notifications": False,
         },
         "binding": binding,
-        "decision": _decision_context(saved_step, repository_config),
+        "decision": _decision_context(saved_step, repository_config, supervisor),
         "action_id": _action_id(binding),
         "approval_token": None if already_applied else approval_token(binding),
         "next": (
@@ -595,6 +602,15 @@ def preflight_execution(
             else "Repeat execute with the displayed approval confirmation token to authorize this exact action."
         ),
     }
+
+
+def _require_supervised_action(
+    config: WatcherConfig, directory: Path, saved_plan: Mapping[str, Any], step_id: str,
+) -> dict[str, Any] | None:
+    try:
+        return require_supervisor_recommendation(config, directory, saved_plan, step_id)
+    except (ReviewQueueError, RuntimeStateError) as exc:
+        raise ExecutionError(str(exc)) from exc
 
 
 def _timestamp() -> str:
@@ -1059,18 +1075,21 @@ def _audit_event(event_type: str, binding: Mapping[str, Any], **extra: Any) -> d
     }
 
 
-def _terminal_audit_reserve(binding: Mapping[str, Any]) -> int:
+def _terminal_audit_reserve(binding: Mapping[str, Any], supervisor: Mapping[str, Any] | None = None) -> int:
+    provenance = {"supervisor": dict(supervisor)} if supervisor else {}
     success = _audit_event(
         "execution_succeeded",
         binding,
         outcome="merged",
         merge_commit_sha="f" * 64,
+        **provenance,
     )
     failure = _audit_event(
         "execution_failed",
         binding,
         outcome="github_error",
         recovery="Reinspect GitHub state and create a fresh plan before retrying.",
+        **provenance,
     )
     return max(len(_audit_payload(success)), len(_audit_payload(failure)))
 
@@ -1187,11 +1206,20 @@ def execute_approved(
         # Live collection can take time. Reload again before recording/issuing
         # the action so a policy revoked during that collection fails closed.
         _require_unchanged_configuration(config, config_path)
+        supervisor = _require_supervised_action(config, state_path, saved_plan, step_id)
+        _require_unchanged_configuration(config, config_path)
+        provenance = {"supervisor": dict(supervisor)} if supervisor else {}
         audit_path = _append_audit(
             state_path,
-            _audit_event("execution_started", binding, outcome="pending"),
-            reserve_bytes=_terminal_audit_reserve(binding),
+            _audit_event("execution_started", binding, outcome="pending", **provenance),
+            reserve_bytes=_terminal_audit_reserve(binding, supervisor),
         )
+        try:
+            _require_unchanged_configuration(config, config_path)
+        except ExecutionError:
+            _append_audit(state_path, _audit_event("execution_failed", binding,
+                outcome="configuration_revoked", **provenance))
+            raise
         try:
             raw_result = client.merge_pull_request(
                 str(binding["repository"]),
@@ -1207,6 +1235,7 @@ def execute_approved(
                     binding,
                     outcome="github_error",
                     recovery="Reinspect GitHub state and create a fresh plan before retrying.",
+                    **provenance,
                 ),
             )
             raise GitHubError(public_github_error_message("merge operation")) from exc
@@ -1219,6 +1248,7 @@ def execute_approved(
                     binding,
                     outcome="merge_not_confirmed",
                     recovery="Reinspect GitHub state and create a fresh plan before retrying.",
+                    **provenance,
                 ),
             )
             raise ExecutionError(
@@ -1231,6 +1261,7 @@ def execute_approved(
                 binding,
                 outcome="merged",
                 merge_commit_sha=result.get("merge_commit_sha"),
+                **provenance,
             ),
         )
         post_action_state = _post_action_state(config, client, repository_config)
@@ -1248,7 +1279,7 @@ def execute_approved(
                 "notifications": False,
             },
             "binding": binding,
-            "decision": _decision_context(saved_step, repository_config),
+            "decision": _decision_context(saved_step, repository_config, supervisor),
             "action_id": _action_id(binding),
             "result": result,
             "post_action_state": post_action_state,

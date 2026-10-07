@@ -87,7 +87,36 @@ Planning never removes ordered steps for concision. Standard planning renders ov
 
 `review` is a separate WSL/native process-submission entry. Its JSON receipt contains `schema_version`, `status = "submitted"`, native PID, configuration/state paths, `assurance = "process_submission_only"`, and false `model_calls`/`github_mutations`. It does not use the inspection wrapper or prove visibility. Component registration is written before child submission; selecting/opening the component is not supervisor or action consent.
 
-The private development bridge separately exposes scoped queue, action, supervisor-status and permission exchanges. Job status retains failure/retry lineage and distinguishes saved results from independently observed provider completion. Explicit investigation uses ordered bounded JSON-line frames, not a network listener; permission previews are transient, while exact decision identities/digests are journaled. Retry carries an exact `retry_job_id` alongside current repository/context identity and creates a new attempt only after validation. No desktop payload, feedback text or model result is execution authority. These development contracts do not imply normal scheduled-supervisor or cold-notification support.
+The private development bridge separately exposes scoped queue, action, supervisor-status and permission exchanges. Job status retains failure/retry lineage and distinguishes saved results from independently observed provider completion. Explicit investigation uses ordered bounded JSON-line frames, not a network listener; permission previews are transient, while exact decision identities/digests are journaled. Retry carries an exact `retry_job_id` alongside current repository/context identity and creates a new attempt only after validation. No desktop payload, feedback text or model result is execution authority. These development contracts do not imply normal scheduled-supervisor support or completed cold-notification acceptance.
+
+Supervisor status orders attempts by creation time, not random job identifier. Each observed answer receipt includes its original question, timestamp and item identity (repository, kind, number and saved PR revision/base evidence), projected from the validated immutable job context. This allows the native view to show conversations for the same item after recommendation IDs change. Original proposal/request identities and historical processing labels remain intact; conversation continuity never transfers a rejection, deferral, approval or current merge recommendation to a replacement proposal.
+
+If an independently validated provider observation exists but final job acceptance did not complete, status keeps journal `result = null` and exposes `observed_result` separately. Its answer receipts are always historical, even if the context later matches again. The native view can retain a failed/interrupted attempt's received conversation with an explicit non-acceptance notice, never its recommendations as current advice. Running observations are not displayed as terminal answers.
+
+For the current Codex supervisor adapter, completed-turn usage sums the observed
+requests in that turn; it neither copies the cumulative usage of an earlier
+session nor repeats identical snapshots. Inconsistent, incomplete or unsupported
+counter layouts fail visibly instead of being guessed. The normalized four token
+counts are provider observations, not currency costs or enforced financial limits.
+Earlier development observations recorded only the last request; their saved
+values remain unchanged and must not be relabelled whole-turn totals.
+
+`notification test|status|remove` is a separate development WSL/native receipt,
+with text or JSON output. It contains `schema_version = 1`, the opaque
+`profile_id`, and an operation-specific `status`. Test returns `accepted` or
+`unavailable`, plus `notification_id` and `assurance = adapter_accepted_only`;
+it never marks a production run delivered or changes reminder deduplication.
+Status returns `registered`, Windows `setting`, `review_count` and `test_count`.
+Those counts are history readback, not proof of display. Remove returns `removed`
+for that profile's lookup and notices, not removal of its queue or schedule.
+These receipts contain no commands or action authority.
+
+The native sender's `notification_attention` exchange accepts only a read request
+ID and exact run ID. It independently checks the current durable attempt and
+report, and returns bounded content or `needed = false` without collection,
+model calls or queue decisions. The Windows activation payload contains only
+`action=open_review` and an opaque registered profile key; it is not this backend
+request and cannot choose a report path, execute an action or grant access.
 
 ### Setup and doctor
 

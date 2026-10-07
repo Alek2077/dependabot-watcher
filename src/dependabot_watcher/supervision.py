@@ -49,11 +49,14 @@ def _validate_result(result: object, context: Mapping[str, Any]) -> None:
                 for message in item["feedback"]}
     seen: set[str] = set()
     for item in result["recommendations"]:
-        if (not isinstance(item, dict) or set(item) != {"proposal_id", "conclusion", "explanation"}
+        if (not isinstance(item, dict) or set(item) not in ({"proposal_id", "conclusion", "explanation"},
+                {"proposal_id", "conclusion", "explanation", "ready_for_action"})
                 or not isinstance(item["proposal_id"], str) or item["proposal_id"] not in proposals
                 or item["proposal_id"] in seen
                 or not isinstance(item["conclusion"], str)
                 or item["conclusion"] not in {"recommend", "investigate", "hold", "no_action"}
+                or ("ready_for_action" in item and type(item["ready_for_action"]) is not bool)
+                or (item.get("ready_for_action") is True and item["conclusion"] != "recommend")
                 or not isinstance(item["explanation"], str) or not item["explanation"].strip()
                 or len(item["explanation"].encode()) > 8192):
             raise ReviewQueueError("Supervisor recommendation does not match its saved context.")

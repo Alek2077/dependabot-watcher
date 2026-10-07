@@ -6,7 +6,8 @@ using System.Text.Json.Nodes;
 
 namespace WatcherNativeProof;
 
-internal sealed record NativeLaunchPolicy(bool Configured, string Description)
+internal sealed record NativeLaunchPolicy(bool Configured, string Description,
+    string AgentLabel = "No agent configured", string UsageSummary = "Sending is unavailable.")
 {
     internal static NativeLaunchPolicy Parse(JsonObject policy)
     {
@@ -48,7 +49,9 @@ internal sealed record NativeLaunchPolicy(bool Configured, string Description)
         return new NativeLaunchPolicy(true, NativeDisplayText.Escape($"Agent: {policy["model"]} · {policy["reasoning_effort"]}\nAccess: {accessText}\n"
             + (validation ? "Inspection and appropriate local tests are authorized." : "Inspection/research only; local tests are not authorized.")
             + $"\nOwned workspace: {policy["workspace"]}\nPrivate repository evidence and saved questions go to your selected Codex account. Uses subscription/API allowance."
-            + $"\nAgent timeout: {timeout} seconds. Investigation does not authorize a merge. Workspace, instructions and runtime are checked again when starting."));
+            + $"\nAgent timeout: {timeout} seconds. Investigation does not authorize a merge. Workspace, instructions and runtime are checked again when starting."),
+            NativeDisplayText.Escape($"{policy["model"]} · {policy["reasoning_effort"]}"),
+            NativeDisplayText.Escape($"{accessText}. Sending shares repository context/questions with your selected Codex account and uses its allowance. No merge is authorized."));
     }
 
     private static string Text(JsonNode? node)

@@ -20,6 +20,7 @@ from .github import GitHubClient
 from .providers.codex_app_server_supervisor import _available_decisions
 from .review_queue import ReviewQueue, ReviewQueueError, supervisor_context_digest
 from .supervisor_launch import run_configured_supervisor
+from .scheduled_triggers import consume_slot, finish_slot
 
 
 class _Frames:
@@ -190,7 +191,10 @@ def launch_exchange(queue: ReviewQueue, client: GitHubClient | None, request: Ma
 
 def _launch(queue: ReviewQueue, client: GitHubClient | None, request: Mapping[str, Any], frames: _Frames) -> int:
     required = {"schema_version", "request_id", "operation", "repository", "context_digest"}
-    if (not required <= set(request) or set(request) - required - {"retry_job_id"}
+    if (not required <= set(request) or set(request) - required - {"retry_job_id", "scheduled_run_id"}
+            or ("scheduled_run_id" in request and ("retry_job_id" in request
+                or not isinstance(request["scheduled_run_id"], str)
+                or re.fullmatch(r"run_[a-f0-9]{20}", request["scheduled_run_id"]) is None))
             or ("retry_job_id" in request and (not isinstance(request["retry_job_id"], str)
                 or re.fullmatch(r"job_[a-f0-9]{32}", request["retry_job_id"]) is None))
             or type(request.get("schema_version")) is not int or request["schema_version"] != 1
@@ -217,10 +221,21 @@ def _launch(queue: ReviewQueue, client: GitHubClient | None, request: Mapping[st
             ("job_id", "context_digest", "connection_id", "permission_id", "thread_id", "turn_id", "item_id", "digest")},
             preview=_preview(params))
 
-    frames.emit("starting", status="ok")
-    result = run_configured_supervisor(queue, client, request["repository"],
-        permission_presentation=present, permission_notice=notice, consumer_check=frames.require_consumer,
-        retry_job_id=request.get("retry_job_id"))
+    scheduled_run_id = request.get("scheduled_run_id")
+    frames.require_consumer()
+    if scheduled_run_id is not None:
+        consume_slot(queue, scheduled_run_id, request["repository"], request["context_digest"])
+    try:
+        frames.emit("starting", status="ok")
+        result = run_configured_supervisor(queue, client, request["repository"],
+            permission_presentation=present, permission_notice=notice, consumer_check=frames.require_consumer,
+            retry_job_id=request.get("retry_job_id"))
+        if scheduled_run_id is not None:
+            finish_slot(queue, scheduled_run_id, request["repository"], job_id=result["job"]["job_id"])
+    except Exception:
+        if scheduled_run_id is not None:
+            finish_slot(queue, scheduled_run_id, request["repository"])
+        raise
     frames.emit("finished", status="ok", job_id=result["job"]["job_id"],
                 context_digest=result["job"]["context_digest"], job_status=result["job"]["status"],
                 reused=result["reused"])
