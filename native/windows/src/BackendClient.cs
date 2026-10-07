@@ -84,7 +84,8 @@ internal sealed class BackendClient
         var operation = request["operation"]?.GetValue<string>();
         if (operation is not ("snapshot" or "reject" or "defer" or "resume" or "feedback"
             or "prepare_action" or "confirm_action" or "check_action" or "action_history" or "collect_queue" or "supervisor_status"
-            or "supervisor_permissions" or "supervisor_permission_decide"))
+            or "supervisor_permissions" or "supervisor_permission_decide" or "notification_attention"
+            or "scheduled_supervisor_claim"))
             throw new InvalidOperationException("Unsupported backend operation.");
         var mutating = operation == "confirm_action";
         var liveOperation = operation is "prepare_action" or "confirm_action" or "check_action" or "collect_queue";
@@ -197,14 +198,17 @@ internal sealed class BackendClient
     {
         var required = new[] { "schema_version", "request_id", "operation", "repository", "context_digest" };
         if (required.Any(key => !request.ContainsKey(key))
-            || request.Any(field => !required.Contains(field.Key) && field.Key != "retry_job_id")
+            || request.Any(field => !required.Contains(field.Key) && field.Key is not ("retry_job_id" or "scheduled_run_id"))
             || request["schema_version"]?.GetValue<int>() != 1
             || request["operation"]?.GetValue<string>() != "supervisor_start"
             || request["context_digest"]?.GetValue<string>() is not string digest
             || !System.Text.RegularExpressions.Regex.IsMatch(digest, "^[a-f0-9]{64}$")
             || (request.ContainsKey("retry_job_id") && (request["retry_job_id"] is not JsonValue retry
                 || !retry.TryGetValue<string>(out var retryId)
-                || !System.Text.RegularExpressions.Regex.IsMatch(retryId, "^job_[a-f0-9]{32}$"))))
+                || !System.Text.RegularExpressions.Regex.IsMatch(retryId, "^job_[a-f0-9]{32}$")))
+            || (request.ContainsKey("scheduled_run_id") && (request.ContainsKey("retry_job_id")
+                || request["scheduled_run_id"] is not JsonValue scheduled || !scheduled.TryGetValue<string>(out var runId)
+                || !System.Text.RegularExpressions.Regex.IsMatch(runId, "\\Arun_[a-f0-9]{20}\\z"))))
             throw new InvalidDataException("Investigation requires the saved exact context, not launch overrides.");
         return new NativeLaunchStream(request["request_id"]!.GetValue<string>(), request["repository"]!.GetValue<string>());
     }

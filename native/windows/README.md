@@ -12,12 +12,21 @@ diagnostics. The development CLI can select an existing component with
 It launches the installed Python module in isolated mode with the chosen private
 WSL profile. The window validates and retains one exact launch definition;
 different launch bindings or component fingerprints cannot overwrite a live
-window's manifest or silently activate an older binary. Process submission is
+window's manifest or silently activate an older binary. Component identity binds
+both the executable launcher and its sibling application DLL: self-contained
+.NET launchers can remain byte-identical when application code changes. Legacy
+EXE-only registrations require deliberate reselection with `--native-component`;
+old immutable profiles remain historical and are not rewritten. This is not
+code signing or a guarantee about every bundled dependency. Process submission is
 not proof of a visible window. Normal startup does not fall back to synthetic
 recommendations. Installed-wheel read-only queue/feedback/decision/reopen plumbing
-has been exercised on Windows/WSL; component distribution/setup, cold notification
-activation, scheduled supervision and live-action acceptance remain open.
-Synthetic notification controls are not offered in a normal profile.
+has been exercised on Windows/WSL. Installed development checks also cover cold
+notification opening, quiet scheduled initiation and same-session live feedback;
+reliable foreground focus, component distribution/setup and live-action acceptance
+remain open. See validation for the exact snapshot boundaries.
+Synthetic notification controls are not offered in a normal profile. The
+development `notification test` command instead exercises the normal selected
+component without changing queue decisions or production reminder state.
 
 Deliberate component registration is saved before process submission. If that
 write fails, no native child starts; a saved selection is not evidence that a
@@ -38,12 +47,62 @@ not application runtime requirements.
 
 ## Communication and lifetime
 
+### Notification link and diagnostics
+
+The development notification route uses Windows App SDK toasts, not the
+short-lived balloon adapter. A private current-user Windows lookup resolves an
+opaque profile ID to a saved normal launch definition. A click revalidates that
+definition and executable before opening the aggregate queue; it carries no
+paths, commands, permission decision or merge authority. A different profile
+cannot replace a live window's backend. The sender can exit without requiring
+the review window to stay open.
+
+With a deliberately selected component, use the same configuration and state
+arguments as `review`:
+
+```bash
+dependabot-watcher notification test --config CONFIG --state-dir STATE
+dependabot-watcher notification status --config CONFIG --state-dir STATE
+dependabot-watcher notification remove --config CONFIG --state-dir STATE
+```
+
+The first test may select `--native-component PATH`. Test uses no model or GitHub
+access and does not reset notification deduplication. Status reports Windows
+settings/history, not human receipt. Remove clears only this profile's lookup
+and notices, leaving the saved queue, component selection and schedules intact;
+a later explicitly configured desktop run can register it again. Turn desktop
+delivery off or disable/remove the schedule to stop later notices.
+
+Configured WSL desktop delivery uses the selected component and refuses to
+silently fall back to the transient balloon when it is unavailable or changed.
+Production notice content comes from the exact current saved run through the
+bound backend, not a caller-selected report path or notification payload.
+Installed development tests have exercised visible durable notices, cold queue
+opening and same-owner tray reopening with saved feedback. Cold starts have also
+opened behind another application; reliable foreground focus remains an open
+operating issue. This is not component distribution or scheduled-supervisor
+acceptance. Contract tests live separately under `tests/` and load the built
+assembly and its registration-free SDK context without starting the application.
+They round-trip actual SDK-generated toast/button arguments, but do not publish
+notifications and do not replace human click evidence.
+
+### Backend operations
+
 The current native transport launches owned hidden Windows-to-WSL processes.
 The trusted backend launch file determines the executable arguments, profile
 and state. Notifications and user messages never choose commands or grant
 execution authority. Explicit investigation streams lifecycle and transient
 permission previews; feedback, decisions and saved-job verification use
 independent bounded exchanges with exact identity/context checks.
+
+The conversation section names the configured model and access/usage boundary.
+**Send to agent** first saves the selected item's message, verifies the post-save
+configuration/context, then starts a repository investigation. **Save without
+sending** performs only the local save; **Continue investigation / answer saved
+messages** explicitly starts work without a new draft. None approves a merge.
+The latest verified answer is visible separately from expandable history and
+technical evidence. A refreshed recommendation retains same-item selection and
+historical conversations, but never inherits old action consent or advice freshness.
 
 A failed current investigation offers an explicit retry with a usage reminder.
 It names the failed attempt, rechecks the current context and creates a new job;

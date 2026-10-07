@@ -51,6 +51,64 @@ Add `--require-advice-before-execution` only when approval-gated execution must 
 
 ## Run once and schedule
 
+### Tool-capable supervisor setup (development)
+
+The unreleased supervisor can be selected during ordinary setup rather than by
+hand-editing TOML. Setup saves policy only: it does not create a workspace, start
+an agent or install a schedule. Register an existing isolated
+POSIX/WSL linked worktree and its expected trusted instruction sources:
+
+```bash
+dependabot-watcher setup \
+  --repo owner/repository \
+  --supervisor-mode approval_first \
+  --supervisor-model MODEL_ID \
+  --supervisor-reasoning low \
+  --supervisor-account chatgpt \
+  --supervisor-access inherit \
+  --supervisor-workspace owner/repository=/absolute/isolated/worktree \
+  --supervisor-instruction owner/repository=/absolute/isolated/worktree/AGENTS.md \
+  --acknowledge-supervisor-use
+```
+
+Replace the model/path placeholders deliberately. Repeat workspace flags for
+each supervised repository and instruction flags in the expected discovery
+order. Selected sources are checked during launch; saving their paths is not
+proof that a runtime loaded them. Quote shell paths containing spaces.
+
+Optionally add `--supervisor-refresh-workspace owner/repository` to permit
+refreshing that registered detached maintenance copy after initial verification
+at the collected base. This does not move your development branch or overwrite
+unfinished maintenance work. Without it, a stale workspace still blocks launch.
+Workspace creation and developer-checkout integration remain separate capabilities.
+
+Access choices are `inherit`, `restricted` with an existing
+`--supervisor-permission-profile NAME`, or `full` with the separate
+`--acknowledge-supervisor-full-access`. Full-access tools may bypass Watcher's
+guarded executor; instructions do not isolate mutation credentials. This choice
+is not approval for a particular merge. `--supervisor-validation-authorized`
+permits later workspace tests/builds; leave it absent for inspection-only work.
+Timeout and job limits can be saved with `--supervisor-timeout-seconds` and
+`--supervisor-max-jobs-per-run`; these are workload limits, not spending caps.
+
+Supervisor and metadata advice cannot both be selected in this setup route.
+Online setup checks existing CLI authentication without launching a model;
+`--offline` skips that check. Neither verifies the actual runtime, workspace,
+account/model selection or scheduled operation. Setup still refuses to overwrite
+an existing profile. The separate [configuration contract](configuration.md#development-supervisor-configuration)
+describes current operating limits.
+
+The development scheduled-supervisor route requires WSL and a deliberately
+registered Windows component (`review --native-component PATH`). With
+supervision enabled, `run` submits that existing owner quietly, without an open
+terminal or automatically showing the window. The owner starts eligible
+configured investigations, saves answers and exposes access or recovery needs.
+`--notify desktop` enables attention notices; `--notify off` keeps them off.
+Process submission is not proof of agent completion. Installed scheduled/live-
+provider acceptance and automatic workspace management remain open.
+
+### Reconciliation and native schedule
+
 Exercise the durable workflow manually before installing a schedule:
 
 ```bash
@@ -83,7 +141,7 @@ configuration-derived job ID before returning a recovery command. A similarly
 named candidate that fails those checks is reported as untrusted rather than
 treated as removal authority.
 
-On WSL, use `--platform wsl --distro EXACT-DISTRIBUTION` when automatic detection is unavailable or when the registration must bind a specific distribution. The task binds the exact Watcher console executable used for installation, the originating Linux user, and trusted Windows System32 WSL/PowerShell helpers; preview displays that actual host-wrapper command. `--notify desktop` is optional. Notifications are non-interactive attention signals containing a bounded queue summary and AI-use status; clicking one has no defined Watcher action. Adapter acceptance does not prove that the user saw the notification. The host can start WSL without an open terminal, but no local schedule runs while the computer is powered off; Watcher records one overdue catch-up after the host returns instead of replaying every missed interval.
+On WSL, use `--platform wsl --distro EXACT-DISTRIBUTION` when automatic detection is unavailable or when the registration must bind a specific distribution. The task binds the exact Watcher console executable used for installation, the originating Linux user, and trusted Windows System32 WSL/PowerShell helpers; preview displays that actual host-wrapper command. `--notify desktop` is optional. The registered Windows component's notice opens its aggregate review queue; it never grants agent access or merge consent. Other desktop adapters may provide an informational notice only. Adapter acceptance does not prove that the user saw the notification. The host can start WSL without an open terminal, but no local schedule runs while the computer is powered off; Watcher records one overdue catch-up after the host returns instead of replaying every missed interval.
 
 Check or remove only the Watcher-owned registration while preserving configuration, run history, plans, and execution audit:
 
@@ -113,6 +171,17 @@ Repeat `--required-check` for every check the watcher must observe as explicitly
 
 This setup call still performs no mutation. It records that later `execute` calls may request approval. Each action separately requires a saved JSON plan whose selected repository and target step are complete, a read-only live execution preflight, and the exact approval confirmation token bound to that current repository, PR, base, head SHA, and merge method. Other repositories may remain partial but are not executable from that evidence. The deterministic token is a two-invocation confirmation value, not a secret, signature, separate approver identity, or proof of human interaction. Setup refuses to infer mutation consent from model/provider choices.
 
+With supervision enabled, the exact current proposal must also have a verified
+completed agent recommendation to proceed with explicit `ready_for_action = true`
+for that exact action. Recommending a candidate for further validation is not
+action readiness; older results without this field cannot enable approval.
+Missing or outdated reasoning,
+`hold`, or a request for further investigation blocks approval readiness.
+Changed feedback, workspace or trusted instructions require fresh investigation.
+The final executor repeats these checks and records agent attribution; it does
+not launch a model or turn its recommendation into approval. Already-merged
+exact heads need observation only, not another agent call.
+
 ## Doctor
 
 ```bash
@@ -123,7 +192,7 @@ dependabot-watcher doctor --offline
 
 `doctor` reports OS/Python runtime, CLI readiness, configuration/profile status, read-only repository and configured-branch access, Dependabot security-alert read access, default-branch drift, detected Dependabot ecosystems, and support depth for every repository in the loaded profile. It does not accept a repository selector. Use `inspect --repo OWNER/REPOSITORY` for a read-only evidence check limited to one configured repository, while recognizing that scoped inspection does not replace `doctor`'s whole-profile readiness preflight. Doctor's bounded alert probe retrieves at most one open alert per configured repository and retains only the readiness state. It recognizes both `.github/dependabot.yml` and `.github/dependabot.yaml`; missing, inaccessible, malformed, oversized, or structurally excessive configuration remains visible as an attention state rather than being treated as ready.
 
-`doctor` discards raw authentication output. It never shows tokens, reads secret files, invokes a model, writes state, mutates GitHub, sends notifications, or creates schedules. Provider authentication is not probed when advisory mode is off. `--offline` still checks local executable versions but skips authentication and repository calls, so its result remains `attention` rather than claiming verified readiness.
+`doctor` discards raw authentication output. It never shows tokens, reads secret files, invokes a model, writes state, mutates GitHub, sends notifications, or creates schedules. Provider authentication is needed when either advice or supervision is enabled; CLI login readiness does not prove the selected app-server runtime, account/model or workspace. `--offline` still checks local executable versions but skips authentication and repository calls, so its result remains `attention` rather than claiming verified readiness.
 
 The current deeper adapter is limited to bounded Python requirements inclusion evidence. Every detected Dependabot ecosystem still receives generic GitHub-based inspection and planning. Approval-gated execution is based on generic exact PR/check/path evidence rather than ecosystem-specific compatibility claims; no ecosystem is eligible for automatic execution.
 

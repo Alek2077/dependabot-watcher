@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from .terminal import sanitize_human_value
+from .config import ConfigError
+from .native_review import NativeReviewError, native_notification
+from .runtime_state import RuntimeStateError
 from .windows_helpers import WindowsHelperError, trusted_windows_executable
 
 
@@ -69,7 +72,7 @@ def _profile_identity(report: Mapping[str, Any]) -> str | None:
     return f"state-{digest}"
 
 
-def _content(report: Mapping[str, Any]) -> tuple[str, str]:
+def _content(report: Mapping[str, Any], *, review_available: bool = False) -> tuple[str, str]:
     notification = report.get("notification")
     data = notification if isinstance(notification, Mapping) else {}
     titles = {
@@ -109,7 +112,8 @@ def _content(report: Mapping[str, Any]) -> tuple[str, str]:
         call_count = int(usage.get("call_count") or 0)
         unit = "call" if call_count == 1 else "calls"
         lines.append(f"AI: {sanitize_human_value(mode)} ({call_count} model {unit} this run)")
-    lines.append("Ask your agent to review the latest Dependabot Watcher result.")
+    lines.append("Open your saved review queue to inspect the next step."
+                 if review_available else "Ask your agent to review the latest Dependabot Watcher result.")
     body = "\n".join(lines)
     return title[:120], body[:1000]
 
@@ -189,6 +193,8 @@ def deliver_desktop_notification(
     report: Mapping[str, Any],
     *,
     runner: NotificationRunner | None = None,
+    config_path: Path | None = None,
+    state_directory: Path | None = None,
 ) -> dict[str, Any]:
     """Attempt one generic local desktop notification without exposing raw evidence."""
 
@@ -208,7 +214,17 @@ def deliver_desktop_notification(
     platform = _platform()
     attempted_at = _timestamp()
     if platform == "windows":
-        returncode = _windows_delivery(active_runner, title, body)
+        if os.getenv("WSL_DISTRO_NAME") and config_path is not None and state_directory is not None:
+            # A configured WSL run must not silently fall back to the transient
+            # legacy balloon when its selected companion fails or has changed.
+            try:
+                receipt = native_notification(config_path, state_directory,
+                    operation="run", run_id=str(report.get("run_id")))
+                returncode = 0 if receipt["status"] == "accepted" else 1
+            except (NativeReviewError, RuntimeStateError, ConfigError):
+                returncode = 1
+        else:
+            returncode = _windows_delivery(active_runner, title, body)
     elif platform == "macos":
         returncode = _macos_delivery(active_runner, title, body)
     elif platform == "linux":

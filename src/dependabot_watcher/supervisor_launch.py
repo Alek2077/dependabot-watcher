@@ -21,7 +21,7 @@ from .review_queue import ReviewQueue, ReviewQueueError, supervisor_context_dige
 from .runtime_state import ensure_private_directory, run_lock
 from .supervision import SupervisorJobs
 from .supervisor_runner import SupervisorRunner
-from .supervisor_workspace import verify_supervisor_workspace
+from .supervisor_workspace_refresh import refresh_supervisor_workspace, supervisor_workspace_lease
 
 
 def _configured_registration(queue: ReviewQueue, repository: str) -> tuple[SupervisorConfig, SupervisorWorkspaceConfig]:
@@ -99,7 +99,7 @@ def run_configured_supervisor(
         raise ReviewQueueError("Inherited or restricted supervision requires a connected permission presentation and consumer.")
     launch_root = ensure_private_directory(queue.directory / "supervisor-launches")
     key = hashlib.sha256(repository.casefold().encode()).hexdigest()
-    with run_lock(launch_root / key):
+    with run_lock(launch_root / key), supervisor_workspace_lease(queue, repository):
         if consumer_check is not None:
             consumer_check()
         queue.require_current_configuration()
@@ -115,7 +115,8 @@ def run_configured_supervisor(
         plan = context["repository_plan"]
         if not isinstance(plan, dict):
             raise ReviewQueueError("Fresh repository collection produced no usable investigation plan.")
-        proof = verify_supervisor_workspace(queue.config, repository, plan)
+        proof = refresh_supervisor_workspace(queue, repository, plan)
+        queue.require_current_configuration()
         queue.record_workspace_evidence(asdict(proof))
         jobs = SupervisorJobs(queue)
         with run_lock(queue.directory, wait_seconds=2):

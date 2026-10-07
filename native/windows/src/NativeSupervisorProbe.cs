@@ -21,15 +21,7 @@ internal static class NativeSupervisorProbe
         request["repository"] = repository;
         var response = await client.SendAsync(request);
         var view = NativeSupervisorView.Parse(response, repository, digest);
-        var text = view.Describe(item);
-        var observed = response["jobs"]!.AsArray().Last(job => job!["provider_completion_observed"]!.GetValue<bool>());
-        var reply = observed!["result"]!["replies"]!.AsArray().First(reply => reply!["proposal_id"]!.GetValue<string>() == item.Id);
-        var question = item.Evidence["feedback"]!.AsArray().First()
-            ?? throw new InvalidDataException("The probe requires a saved question.");
-        if (!text.Contains(reply!["message"]!.GetValue<string>())
-            || !text.Contains(observed["provenance"]!["model"]!.GetValue<string>())
-            || !text.Contains(question["message"]!.GetValue<string>()))
-            throw new InvalidDataException("The actual backend reply, question or model did not reach the native display model.");
+        var observed = CheckPresentation(view, item, response);
         foreach (var fault in new[] { "repository", "receipt", "provenance", "completion", "current_flag", "snapshot_digest" })
         {
             var invalid = (JsonObject)response.DeepClone();
@@ -48,13 +40,32 @@ internal static class NativeSupervisorProbe
             catch (InvalidDataException) { rejected = true; }
             if (!rejected) throw new InvalidDataException($"Malformed agent frame was displayed: {fault}");
         }
-        var other = (JsonObject)item.Evidence.DeepClone();
-        other["proposal_id"] = "proposal_ffffffffffffffff";
-        var unrelated = view.Describe(new QueueProposal { Evidence = other });
-        if (unrelated.Contains(reply!["message"]!.GetValue<string>()))
-            throw new InvalidDataException("Agent reply leaked to a different proposal.");
         App.Record("supervisor_native_probe_passed", new { model = observed["provenance"]!["model"]!.GetValue<string>(),
             exact_question_reply_proposal = true, malformed_frames_rejected = 6, no_new_model_call = true,
             visible_window_acceptance = false });
+    }
+
+    internal static JsonObject CheckPresentation(NativeSupervisorView view, QueueProposal item, JsonObject response)
+    {
+        var text = view.Describe(item);
+        var observed = response["jobs"]!.AsArray().Last(job => job!["provider_completion_observed"]!.GetValue<bool>()
+            && job["status"]!.GetValue<string>() is "completed" or "superseded" or "failed" or "interrupted"
+            && job["messages"]!.AsArray().Any(receipt => item.SameItem(receipt!["item"]!.AsObject())))!.AsObject();
+        var question = observed["messages"]!.AsArray().Last(receipt => item.SameItem(receipt!["item"]!.AsObject()))!;
+        var reply = NativeSupervisorView.Result(observed)!["replies"]!.AsArray().Single(value =>
+            value!["proposal_id"]!.GetValue<string>() == question["proposal_id"]!.GetValue<string>()
+            && value["request_id"]!.GetValue<string>() == question["request_id"]!.GetValue<string>());
+        var expectedReply = NativeDisplayText.Escape(reply!["message"]!.GetValue<string>());
+        if (!text.Contains(expectedReply)
+            || !text.Contains(NativeDisplayText.Escape(observed["provenance"]!["model"]!.GetValue<string>()))
+            || !text.Contains(NativeDisplayText.Escape(question["question"]!.GetValue<string>())))
+            throw new InvalidDataException("The actual backend reply, question or model did not reach the native display model.");
+        var other = (JsonObject)item.Evidence.DeepClone();
+        other["proposal_id"] = "proposal_ffffffffffffffff";
+        other["step"]!["identity"]!["number"] = item.Identity["number"]!.GetValue<int>() + 1;
+        var unrelated = view.Describe(new QueueProposal { Evidence = other });
+        if (unrelated.Contains(expectedReply))
+            throw new InvalidDataException("Agent reply leaked to a different repository item.");
+        return observed;
     }
 }

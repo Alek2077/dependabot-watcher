@@ -2,25 +2,66 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
-from typing import BinaryIO, cast
+from typing import Any, BinaryIO, cast
 
 from .config import ConfigError, load_config
 from .execution import ExecutionError
 from .github import GhCliClient, GitHubClient, GitHubError, public_github_error_message
 from .reconciliation import ReconciliationError
+from .notifications import _content
 from .review_actions import ActionReviews
 from .review_queue import ReviewQueue, ReviewQueueError
-from .runtime_state import RuntimeStateError
+from .runtime_state import RuntimeStateError, load_private_json, load_run_state, run_lock
 from .supervisor_status import supervision_status
 from .supervision import SupervisorJobs
 from .supervisor_permissions import SupervisorPermissions
 from .supervisor_bridge import launch_exchange
+from .scheduled_supervisor import scheduled_supervisor_plan
+from .scheduled_triggers import claim_trigger
 
 
 _MAX_REQUEST_BYTES = 65_536
 _MAX_RESPONSE_BYTES = 10_000_000
+
+
+def notification_attention(queue: ReviewQueue, request: dict[str, Any]) -> dict[str, Any]:
+    """Read one bound run's sparse attention without collecting or deciding.
+
+    The sender cannot choose a report path, title, body, command or merge. The
+    latest report and durable attempt must still agree before publication.
+    """
+    request_id, run_id = request.get("request_id"), request.get("run_id")
+    if (set(request) != {"schema_version", "request_id", "operation", "run_id"}
+            or request.get("operation") != "notification_attention"
+            or type(request.get("schema_version")) is not int or request["schema_version"] != 1
+            or not isinstance(request_id, str) or not re.fullmatch(r"read_[A-Za-z0-9_]{1,59}", request_id)
+            or not isinstance(run_id, str) or not re.fullmatch(r"run_[a-f0-9]{20}", run_id)):
+        raise ReviewQueueError("Notification requires a bounded current run identity.")
+    with run_lock(queue.directory, wait_seconds=2):
+        queue.require_current_configuration()
+        state = load_run_state(queue.directory)
+        report = load_private_json(queue.directory, Path("latest-run.json"))
+        attempt = state.get("last_attempt")
+        if (not isinstance(attempt, dict) or attempt.get("run_id") != run_id
+                or report.get("run_id") != run_id or type(report.get("schema_version")) is not int or report["schema_version"] != 1
+                or report.get("mode") != "run" or report.get("mutation_authorized") is not False
+                or report.get("summary") != attempt.get("queue")
+                or report.get("advisory_coverage") != attempt.get("advisory_coverage")
+                or report.get("provider_usage") != attempt.get("provider_usage")
+                or not isinstance(report.get("notification"), dict)
+                or {key: value for key, value in report["notification"].items() if key != "delivery"}
+                != attempt.get("notification")):
+            raise ReviewQueueError("Notification run changed or does not match its saved evidence.")
+        needed = report["notification"].get("needed")
+        if type(needed) is not bool:
+            raise ReviewQueueError("Saved notification decision is malformed.")
+        title, body = _content(report, review_available=True) if needed else (None, None)
+        return {"schema_version": 1, "request_id": request_id, "status": "ok",
+                "run_id": run_id, "needed": needed, "title": title, "body": body,
+                "capabilities": {"github_mutations": False, "model_calls": False}}
 
 
 def exchange(queue: ReviewQueue, incoming: BinaryIO, outgoing: BinaryIO, *, actions: ActionReviews | None = None) -> int:
@@ -44,9 +85,22 @@ def exchange(queue: ReviewQueue, incoming: BinaryIO, outgoing: BinaryIO, *, acti
         candidate = request.get("request_id")
         if isinstance(candidate, str) and len(candidate) <= 64:
             request_id = candidate
+        if not isinstance(request.get("operation"), str):
+            raise ReviewQueueError("Review operation must be a string.")
         if request.get("operation") == "supervisor_start":
             return launch_exchange(queue, cast(GitHubClient, actions.client) if actions is not None else None, request, outgoing)
-        if request.get("operation") in ("supervisor_permissions", "supervisor_permission_decide"):
+        if request.get("operation") == "notification_attention":
+            response = notification_attention(queue, request)
+        elif request.get("operation") in {"scheduled_supervisor_plan", "scheduled_supervisor_claim"}:
+            if (set(request) != {"schema_version", "request_id", "operation", "run_id"}
+                    or type(request.get("schema_version")) is not int or request["schema_version"] != 1
+                    or not isinstance(request_id, str) or not re.fullmatch(r"read_[A-Za-z0-9_]{1,59}", request_id)):
+                raise ReviewQueueError("Scheduled selection requires a bounded read-only request.")
+            response = {"schema_version": 1, "request_id": request_id, "status": "ok",
+                        **({"plan": scheduled_supervisor_plan(queue, request["run_id"])}
+                           if request["operation"] == "scheduled_supervisor_plan"
+                           else {"trigger": claim_trigger(queue, request["run_id"])})}
+        elif request.get("operation") in ("supervisor_permissions", "supervisor_permission_decide"):
             response = SupervisorPermissions(SupervisorJobs(queue)).handle(request)
         elif request.get("operation") == "supervisor_status":
             response = supervision_status(queue, request)

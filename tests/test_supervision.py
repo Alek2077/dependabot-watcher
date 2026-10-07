@@ -149,6 +149,28 @@ def test_repository_case_alias_resolves_workspace_plan_feedback_and_one_job(
     assert jobs.read(job["job_id"])["status"] == "completed"
 
 
+def test_optional_workspace_refresh_preserves_legacy_context_but_invalidates_new_authority(
+    jobs_case: tuple[SupervisorJobs, dict[str, Any]],
+) -> None:
+    jobs, _report = jobs_case
+    registration = SupervisorWorkspaceConfig("example-org/example-app", "/owned/current", ("/trusted/AGENTS.md",))
+    jobs.queue.config = replace(jobs.queue.config, supervisor=SupervisorConfig(workspaces=(registration,)))
+    original = jobs.prepare(registration.repository)
+    assert "refresh_authorized" not in original["context"]["supervisor"]["workspaces"][0]
+    explicit_false = replace(registration, refresh_authorized=False)
+    jobs.queue.config = replace(jobs.queue.config, supervisor=replace(jobs.queue.config.supervisor,
+        workspaces=(explicit_false,)))
+    assert jobs.prepare(registration.repository)["job_id"] == original["job_id"]
+    enabled = replace(registration, refresh_authorized=True)
+    jobs.queue.config = replace(jobs.queue.config, supervisor=replace(jobs.queue.config.supervisor,
+        workspaces=(enabled,)))
+    updated = jobs.prepare(registration.repository)
+    assert updated["context"]["supervisor"]["workspaces"][0]["refresh_authorized"] is True
+    assert updated["context_digest"] != original["context_digest"]
+    with pytest.raises(ReviewQueueError, match="context changed"):
+        jobs.start(original["job_id"])
+
+
 def test_case_changed_plan_keeps_retired_feedback_and_serializes_session_continuation(
     jobs_case: tuple[SupervisorJobs, dict[str, Any]],
 ) -> None:

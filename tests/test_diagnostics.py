@@ -123,6 +123,33 @@ def test_doctor_reports_redacted_read_only_readiness_and_support_depth(
     ]
 
 
+@pytest.mark.parametrize("offline", [False, True])
+def test_doctor_supervisor_requires_codex_without_claiming_runtime_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: bool,
+) -> None:
+    path = tmp_path / "config.toml"
+    _config(path)
+    path.write_text(path.read_text() + '[supervisor]\nmode = "approval_first"\n'
+        'provider = "codex_app_server"\nmodel = "chosen-model"\nreasoning_effort = "low"\n'
+        'expected_account_type = "chatgpt"\naccess = "inherit"\nmodel_use_acknowledged = true\n'
+        'workspaces = [{repository = "example-org/example-app", directory = '
+        + json.dumps(str(tmp_path / "maintenance")) + ', instruction_sources = []}]\n')
+    path.chmod(0o600)
+    commands: list[tuple[str, ...]] = []
+    def runner(command: Sequence[str], timeout: int) -> CommandResult:
+        commands.append(tuple(command))
+        return CommandResult(0, "{}")
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
+    report = doctor(path, offline=offline, runner=runner)
+    codex = report["tools"]["codex_cli"]
+    assert codex["authentication"] == ("unknown" if offline else "available")
+    assert codex["supervisor_runtime_verified"] is False
+    assert "supervisor_app_server" in codex["adapter_capabilities"]
+    assert (("codex", "login", "status") in commands) is (not offline)
+    assert not any("app-server" in command or "exec" in command for command in commands)
+    assert not (tmp_path / "maintenance").exists()
+
+
 def test_offline_doctor_skips_auth_and_repository_calls(
     tmp_path: Path,
     monkeypatch,

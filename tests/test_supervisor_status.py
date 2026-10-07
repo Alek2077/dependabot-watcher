@@ -17,7 +17,7 @@ from dependabot_watcher.runtime_state import load_private_json, run_lock, save_p
 from dependabot_watcher.supervision import SupervisorJobs
 from dependabot_watcher.supervisor_runner import SupervisorRunner
 from dependabot_watcher.supervisor_status import supervision_status
-from test_execution import saved_plan
+from test_execution import refresh_plan_identities, saved_plan
 from test_review_queue import decision, persist_plan, snapshot
 from test_supervision import refresh_multi_repository_plan, result_for
 from test_supervisor_runner import FixtureProvider
@@ -179,8 +179,62 @@ def test_completed_reply_and_provenance_reach_real_bridge(status_case: tuple[Rev
     assert record["provenance"]["model"] == "fixture-model"
     assert record["result"]["replies"][0]["request_id"] == record["messages"][0]["request_id"]
     assert record["messages"][0]["processing"] == "answered_current"
+    receipt = record["messages"][0]
+    original = job["context"]["proposals"][0]
+    assert receipt["question"] == original["feedback"][0]["message"]
+    assert receipt["created_at"] == original["feedback"][0]["created_at"]
+    assert receipt["item"]["repository"] == job["repository"]
+    assert receipt["item"]["kind"] == original["step"]["kind"]
+    assert receipt["item"]["number"] == original["step"]["identity"]["number"]
+    assert receipt["item"]["head_sha"] == original["step"]["identity"]["head_sha"]
     assert view["capabilities"] == {"github_mutations": False, "model_calls": False}
     assert snapshot(queue)["supervisor_context_digests"][job["repository"]] == view["context_digest"] == job["context_digest"]
+
+
+@pytest.mark.parametrize("change", ["head", "base", "evidence"])
+def test_reply_retains_original_item_and_question_across_recommendation_revisions(
+    status_case: tuple[ReviewQueue, SupervisorJobs, dict[str, Any]], change: str,
+) -> None:
+    queue, jobs, job = status_case
+    SupervisorRunner(jobs, FixtureProvider(queue)).run(job["job_id"])
+    before = supervision_status(queue, request())["jobs"][0]["messages"][0]
+    report = saved_plan()
+    step = report["repositories"][0]["recommended_order"][0]
+    if change == "head":
+        step["identity"]["head_sha"] = step["freshness"]["head_sha"] = "e" * 40
+    elif change == "base":
+        step["identity"]["observed_base"] = step["freshness"]["observed_base"] = "different-base"
+    else:
+        step["summary"] += " Refreshed evidence."
+    persist_plan(queue.directory, refresh_plan_identities(report))
+    current = snapshot(queue)["proposals"][0]
+    assert current["proposal_id"] != before["proposal_id"]
+    assert current["feedback"] == [] and current["handling"] == "pending"
+    # A later status read and a new controller preserve the original attribution,
+    # independently of the replacement proposal's head, base or feedback list.
+    reopened = ReviewQueue(queue.config, queue.directory)
+    outgoing = io.BytesIO()
+    assert exchange(reopened, io.BytesIO(json.dumps(request()).encode()), outgoing) == 0
+    receipt = json.loads(outgoing.getvalue())["jobs"][0]["messages"][0]
+    assert receipt == {**before, "processing": "answered_historical"}
+
+
+def test_status_orders_answers_by_attempt_time_not_random_job_id(
+    status_case: tuple[ReviewQueue, SupervisorJobs, dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue, jobs, first = status_case
+    SupervisorRunner(jobs, FixtureProvider(queue)).run(first["job_id"])
+    queue.handle(decision(queue, "feedback", message="A later question"))
+    with monkeypatch.context() as patch:
+        patch.setattr("dependabot_watcher.supervision.secrets.token_hex", lambda size: "0" * (size * 2))
+        second = jobs.prepare(first["repository"])
+    continued = FixtureProvider(queue)
+    with monkeypatch.context() as patch:
+        patch.setattr(continued, "resume_session_id", "session-123", raising=False)
+        SupervisorRunner(jobs, continued).run(second["job_id"])
+    assert second["job_id"] < first["job_id"]
+    view = supervision_status(queue, request())
+    assert [record["job_id"] for record in view["jobs"]] == [first["job_id"], second["job_id"]]
 
 
 def test_snapshot_revision_changes_when_policy_keeps_same_proposal_and_version(

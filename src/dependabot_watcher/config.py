@@ -150,6 +150,7 @@ class SupervisorWorkspaceConfig:
     repository: str
     directory: str
     instruction_sources: tuple[str, ...] = ()
+    refresh_authorized: bool = False
 
 
 @dataclass(frozen=True)
@@ -697,7 +698,7 @@ def _supervisor(value: object, repositories: tuple[RepositoryConfig, ...]) -> Su
     workspaces: list[SupervisorWorkspaceConfig] = []
     for raw in raw_workspaces:
         workspace = _require_mapping(raw, "supervisor.workspaces entry")
-        _reject_unknown(workspace, {"repository", "directory", "instruction_sources"}, "supervisor workspace")
+        _reject_unknown(workspace, {"repository", "directory", "instruction_sources", "refresh_authorized"}, "supervisor workspace")
         name = normalize_repository_name(workspace.get("repository"), "supervisor workspace repository")
         if name.casefold() not in configured or name.casefold() in seen:
             raise ConfigError("Supervisor workspaces must identify distinct configured repositories.")
@@ -713,7 +714,10 @@ def _supervisor(value: object, repositories: tuple[RepositoryConfig, ...]) -> Su
             raise ConfigError("Supervisor instruction_sources contains duplicates.")
         seen.add(name.casefold())
         directories.add(directory_key)
-        workspaces.append(SupervisorWorkspaceConfig(configured[name.casefold()], directory, instructions))
+        refresh = workspace.get("refresh_authorized", False)
+        if type(refresh) is not bool:
+            raise ConfigError("Supervisor workspace refresh_authorized must be a boolean.")
+        workspaces.append(SupervisorWorkspaceConfig(configured[name.casefold()], directory, instructions, refresh))
     return SupervisorConfig(mode=mode, provider="codex_app_server", model=model, reasoning_effort=effort,
         expected_account_type=account, access=access, permission_profile=permission, model_use_acknowledged=True,
         full_access_acknowledged=full, validation_authorized=data.get("validation_authorized", False),

@@ -4,13 +4,14 @@ import json
 import os
 import shlex
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .config import (
     ConfigError,
+    SupervisorConfig,
     default_config_path,
     normalize_branch_name,
     normalize_repository_name,
@@ -56,6 +57,7 @@ class SetupRequest:
     autonomy: str = "read_only"
     acknowledge_mutation: bool = False
     offline: bool = False
+    supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
 
 
 def _utc_now() -> datetime:
@@ -78,6 +80,22 @@ def _shell_quote(value: str) -> str:
     return shlex.quote(value)
 
 
+def _supervisor_data(policy: SupervisorConfig) -> dict[str, Any]:
+    if policy.mode == "off":
+        if policy != SupervisorConfig():
+            raise SetupError("Disabled supervision cannot retain enabled supervisor choices.")
+        return {"mode": "off"}
+    data = asdict(policy)
+    if policy.permission_profile is None:
+        data.pop("permission_profile")
+    data["workspaces"] = [
+        {"repository": item.repository, "directory": item.directory,
+         "instruction_sources": list(item.instruction_sources), "refresh_authorized": item.refresh_authorized}
+        for item in policy.workspaces
+    ]
+    return data
+
+
 def _config_data(
     request: SetupRequest,
     *,
@@ -90,6 +108,7 @@ def _config_data(
         if request.advisory_mode == "off"
         and request.report_verbosity == "concise"
         and request.autonomy == "read_only"
+        and request.supervisor.mode == "off"
         else "setup_advanced"
     )
     data: dict[str, Any] = {
@@ -107,6 +126,7 @@ def _config_data(
             "confirmed_at": generated_at,
         },
         "advisory": {"mode": request.advisory_mode},
+        "supervisor": _supervisor_data(request.supervisor),
         "repositories": [
             {
                 "name": repository,
@@ -215,6 +235,23 @@ def _render_config(data: Mapping[str, Any]) -> str:
                     + "]",
                 ]
             )
+    supervisor = data["supervisor"]
+    lines.extend(["", "[supervisor]", f"mode = {_toml_string(supervisor['mode'])}"])
+    if supervisor["mode"] != "off":
+        for key in ("provider", "model", "reasoning_effort", "expected_account_type", "access", "permission_profile"):
+            if key in supervisor:
+                lines.append(f"{key} = {_toml_string(supervisor[key])}")
+        for key in ("model_use_acknowledged", "full_access_acknowledged", "validation_authorized"):
+            lines.append(f"{key} = {str(supervisor[key]).lower()}")
+        for key in ("timeout_seconds", "max_jobs_per_run"):
+            lines.append(f"{key} = {supervisor[key]}")
+        for workspace in supervisor["workspaces"]:
+            lines.extend(["", "[[supervisor.workspaces]]",
+                          f"repository = {_toml_string(workspace['repository'])}",
+                          f"directory = {_toml_string(workspace['directory'])}",
+                          f"refresh_authorized = {str(workspace['refresh_authorized']).lower()}",
+                          "instruction_sources = [" + ", ".join(
+                              _toml_string(source) for source in workspace["instruction_sources"]) + "]"])
     return "\n".join(lines) + "\n"
 
 
@@ -300,6 +337,8 @@ def _validate_request(request: SetupRequest) -> None:
         )
     merge_methods = request.merge_methods or {}
     required_checks = request.required_checks or {}
+    if request.autonomy == "read_only" and (request.acknowledge_mutation or merge_methods or required_checks):
+        raise SetupError("Mutation acknowledgement and merge/check choices require autonomy approval_required.")
     unknown_workflows = sorted(
         (set(merge_methods) | set(required_checks)) - set(request.repositories)
     )
@@ -330,6 +369,12 @@ def _validate_request(request: SetupRequest) -> None:
         raise SetupError(
             "Enabling model advice requires --acknowledge-model-use; setup itself makes no model call."
         )
+    if request.advisory_mode == "off" and any((request.triage_model is not None,
+            request.triage_reasoning is not None, request.review_model is not None,
+            request.review_reasoning is not None, request.acknowledge_model_use)):
+        raise SetupError("Advice model/reasoning/acknowledgement choices require an enabled advisory mode.")
+    if request.advisory_mode != "reviewed" and (request.review_model is not None or request.review_reasoning is not None):
+        raise SetupError("Review model/reasoning choices require advisory mode reviewed.")
     if request.require_advice_before_execution and request.advisory_mode == "off":
         raise SetupError(
             "--require-advice-before-execution requires economy or reviewed advisory mode."
@@ -346,6 +391,15 @@ def _validate_request(request: SetupRequest) -> None:
         raise SetupError(
             "Reviewed mode requires explicit --review-model and --review-reasoning."
         )
+    if request.supervisor.mode != "off" and request.advisory_mode != "off":
+        raise SetupError("Choose tool-capable supervision or metadata advice, not both for the same profile.")
+    # Validate saved supervisor scope/consent before any authentication or
+    # repository call. This is parsing, not workspace or runtime attestation.
+    try:
+        parse_config({"schema_version": 1, "repositories": [{"name": name} for name in request.repositories],
+                      "supervisor": _supervisor_data(request.supervisor)})
+    except ConfigError as exc:
+        raise SetupError(f"Supervisor choices are invalid: {exc}") from exc
 
 
 def setup(
@@ -358,6 +412,20 @@ def setup(
 ) -> dict[str, Any]:
     """Create one explicit, non-secret operational profile without external mutation."""
 
+    # GitHub repository lookup is case-insensitive; retain selected spelling in
+    # the profile, and bind every override to it before validation or lookup.
+    names = {name.casefold(): name for name in request.repositories}
+    def canonical(values: Mapping[str, Any], label: str) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for name, value in values.items():
+            selected = names.get(name.casefold(), name)
+            if selected in result:
+                raise SetupError(f"{label} overrides repeat a case-insensitive repository alias.")
+            result[selected] = value
+        return result
+    request = replace(request, branches=canonical(request.branches, "Branch"),
+                      merge_methods=canonical(request.merge_methods, "Merge method"),
+                      required_checks=canonical(request.required_checks, "Required check"))
     _validate_request(request)
     expanded = output_path.expanduser()
     if expanded.exists():
@@ -371,7 +439,7 @@ def setup(
         "github_authentication": "skipped" if request.offline else "unknown",
         "provider_authentication": (
             "not_required"
-            if request.advisory_mode == "off"
+            if request.advisory_mode == "off" and request.supervisor.mode == "off"
             else "skipped"
             if request.offline
             else "unknown"
@@ -424,7 +492,7 @@ def setup(
                     "configured_branch_head_sha": branch_sha,
                 }
             )
-        if request.advisory_mode != "off":
+        if request.advisory_mode != "off" or request.supervisor.mode != "off":
             codex = _tool_status(
                 "codex",
                 version_args=("--version",),
@@ -436,7 +504,7 @@ def setup(
             verification["provider_authentication"] = codex["authentication"]
             if codex["availability"] != "available" or codex["authentication"] != "available":
                 raise SetupError(
-                    "Codex CLI must be installed and authenticated for the selected advisory mode."
+                    "Codex CLI must be installed and authenticated for the selected AI mode."
                 )
         verified = True
 
@@ -494,6 +562,17 @@ def setup(
                 else "selected_repository_pr_alert_dependency_path_check_and_deterministic_assessment_evidence_may_be_sent_to_provider"
             ),
         },
+        "supervisor": {
+            **asdict(parsed_config.supervisor),
+            "workspace_verified": False,
+            "runtime_verified": False,
+            "scheduled_initiation_verified": False,
+            "github_mutations_authorized": False,
+            "usage_effect": ("no_model_calls_or_provider_usage" if request.supervisor.mode == "off"
+                             else "subscription_or_api_usage_if_launched"),
+            "evidence_privacy": ("not_applicable_ai_off" if request.supervisor.mode == "off"
+                                 else "repository_evidence_and_saved_questions_sent_to_selected_provider_if_launched"),
+        },
         "verification": verification,
         "capabilities": {
             "model_calls": False,
@@ -510,6 +589,8 @@ def setup(
             "Run one read-only reconciliation before scheduling recurring operation.",
             "Choose a schedule cadence and notification mode before installing a native schedule.",
             (
+                "Supervisor choices are saved, not launched. Verify the isolated workspaces, instructions and runtime before investigation; scheduled initiation is a separate check."
+                if request.supervisor.mode != "off" else
                 "AI advice is off; decide whether deterministic operation is sufficient before enabling model use."
                 if request.advisory_mode == "off"
                 else "Review the configured models, reasoning levels, and call limits before recurring operation."

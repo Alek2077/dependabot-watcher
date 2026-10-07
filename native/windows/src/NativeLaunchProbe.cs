@@ -57,7 +57,7 @@ internal static class NativeLaunchProbe
 
     internal static async Task RunAsync()
     {
-        NativeReviewLaunchProbe.Run();
+        App.Record("normal_review_entry_probe_passed", new { rejected = NativeReviewLaunchProbe.Run(), normal_client_retained = true });
         VerifyPolicyAndReceipt();
         var startRequest = new JsonObject { ["schema_version"] = 1, ["request_id"] = RequestId,
             ["operation"] = "supervisor_start", ["repository"] = Repository, ["context_digest"] = Context };
@@ -261,13 +261,22 @@ internal static class NativeLaunchProbe
             throw new InvalidDataException("Display escaping changed ordinary Unicode or concealed control/format runes.");
         var displayCase = (JsonObject)response.DeepClone();
         var proposalId = "proposal_" + new string('f', 16);
-        var reply = new JsonObject { ["proposal_id"] = proposalId, ["request_id"] = "decision_fixture", ["message"] = rawText };
+        var reply = new JsonObject { ["proposal_id"] = proposalId, ["request_id"] = "decision_1_fixture", ["message"] = rawText };
         displayCase["jobs"]![0]!["result"]!["replies"] = new JsonArray(reply);
         displayCase["jobs"]![0]!["messages"] = new JsonArray(new JsonObject {
-            ["proposal_id"] = proposalId, ["request_id"] = "decision_fixture", ["processing"] = "answered_current" });
-        var item = new QueueProposal { Evidence = new JsonObject {
-            ["proposal_id"] = proposalId, ["feedback"] = new JsonArray(new JsonObject {
-                ["request_id"] = "decision_fixture", ["message"] = rawText }) } };
+            ["proposal_id"] = proposalId, ["request_id"] = "decision_1_fixture", ["processing"] = "answered_current",
+            ["question"] = rawText, ["created_at"] = "2026-10-06T07:52:59Z",
+            ["item"] = new JsonObject { ["repository"] = Repository, ["kind"] = "pull_request", ["number"] = 42,
+                ["head_sha"] = new string('d', 40), ["expected_base"] = "main", ["observed_base"] = "main" } });
+        var planId = "plan_" + new string('a', 16);
+        var itemEvidence = new JsonObject {
+            ["proposal_id"] = proposalId, ["repository"] = Repository,
+            ["plan_id"] = planId, ["version"] = 0, ["handling"] = "pending", ["evidence_status"] = "complete",
+            ["step"] = new JsonObject { ["kind"] = "pull_request", ["order"] = 1, ["summary"] = "Synthetic display contract", ["identity"] = new JsonObject {
+                ["repository"] = Repository, ["number"] = 42 } },
+            ["feedback"] = new JsonArray(new JsonObject {
+                ["request_id"] = "decision_1_fixture", ["message"] = rawText, ["status"] = "saved_not_submitted" }) };
+        var item = QueueProposal.Parse(JsonNode.Parse(itemEvidence.ToJsonString()), planId);
         var beforeDisplay = displayCase.ToJsonString();
         var beforeItem = item.Evidence.ToJsonString();
         var rendered = NativeSupervisorView.Parse(displayCase, Repository, Context).Describe(item);

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from contextlib import contextmanager
@@ -10,7 +11,7 @@ from typing import Iterator, TextIO
 
 from . import __version__
 from .advisory import AdvisoryError, advise
-from .config import ConfigError, WatcherConfig, default_config_path, load_config
+from .config import ConfigError, SupervisorConfig, SupervisorWorkspaceConfig, WatcherConfig, default_config_path, load_config
 from .diagnostics import doctor
 from .execution import ExecutionError, execute_approved, load_plan, preflight_execution
 from .github import GhCliClient, GitHubError, public_github_error_message
@@ -25,7 +26,7 @@ from .reconciliation import (
     record_notification_delivery,
 )
 from .reconciliation_output import render_reconciliation
-from .native_review import NativeReviewError, open_native_review
+from .native_review import NativeReviewError, native_notification, open_native_review, submit_scheduled_supervisor
 from .runtime_state import default_state_directory
 from .schedulers.common import ScheduleError
 from .scheduling import inventory_schedules, manage_schedule, recurring_profile_summary
@@ -176,6 +177,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Open the optional aggregate Windows review window (WSL).",
     )
     review_parser.set_defaults(output_format="text")
+    notification_parser = commands.add_parser(
+        "notification", help="Test, inspect or remove this profile's optional Windows notifications (WSL).",
+    )
+    notification_parser.add_argument("notification_action", choices=("test", "status", "remove"))
+    notification_parser.add_argument("--config", type=Path, default=default_config_path())
+    notification_parser.add_argument("--state-dir", type=Path, default=default_state_directory())
+    notification_parser.add_argument("--native-component", type=Path,
+        help="Deliberately select the optional Windows component for a notification test.")
+    notification_parser.add_argument("--format", choices=("text", "json"), default="text", dest="output_format")
     run_parser = commands.add_parser(
         "run",
         help="Run one durable non-mutating reconciliation for scheduling.",
@@ -217,6 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
         setup_parser,
         execute_parser,
         review_parser,
+        notification_parser,
         run_parser,
     ):
         command_parser.add_argument(
@@ -327,6 +338,28 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--triage-reasoning")
     setup_parser.add_argument("--review-model")
     setup_parser.add_argument("--review-reasoning")
+    setup_parser.add_argument("--supervisor-mode", choices=("off", "approval_first"), default="off",
+        help="Save tool-capable Codex supervision choices; setup itself launches no agent.")
+    setup_parser.add_argument("--supervisor-model")
+    setup_parser.add_argument("--supervisor-reasoning", choices=("minimal", "low", "medium", "high", "xhigh"))
+    setup_parser.add_argument("--supervisor-account", choices=("chatgpt", "apiKey"))
+    setup_parser.add_argument("--supervisor-access", choices=("inherit", "restricted", "full"),
+        help="Explicitly choose inherited Codex permissions, a named restricted policy, or full access.")
+    setup_parser.add_argument("--supervisor-permission-profile")
+    setup_parser.add_argument("--acknowledge-supervisor-use", action="store_true",
+        help="Acknowledge repository/context transmission and selected supervisor quota or cost.")
+    setup_parser.add_argument("--acknowledge-supervisor-full-access", action="store_true",
+        help="Acknowledge broad agent tools may bypass Watcher's guarded executor; no merge is authorized here.")
+    setup_parser.add_argument("--supervisor-validation-authorized", action="store_true",
+        help="Authorize later workspace tests/builds, not repository publication or merges.")
+    setup_parser.add_argument("--supervisor-timeout-seconds", type=int)
+    setup_parser.add_argument("--supervisor-max-jobs-per-run", type=int)
+    setup_parser.add_argument("--supervisor-workspace", action="append", default=[], metavar="OWNER/REPO=PATH",
+        help="Register an existing isolated linked worktree; repeat per supervised repository.")
+    setup_parser.add_argument("--supervisor-instruction", action="append", default=[], metavar="OWNER/REPO=PATH",
+        help="Expected trusted instruction source in discovery order; repeat as needed.")
+    setup_parser.add_argument("--supervisor-refresh-workspace", action="append", default=[], metavar="OWNER/REPO",
+        help="Allow refreshing only the registered detached maintenance worktree; developer checkouts are not changed.")
     setup_parser.add_argument(
         "--acknowledge-model-use",
         action="store_true",
@@ -559,6 +592,111 @@ def _run_review(args: argparse.Namespace, presentation: TerminalPresentation) ->
     return ExitCode.SUCCESS
 
 
+def _run_notification(args: argparse.Namespace, presentation: TerminalPresentation) -> int:
+    receipt = native_notification(args.config, args.state_dir, operation=args.notification_action,
+                                  component=args.native_component)
+    if args.output_format == "json":
+        text = json.dumps(receipt)
+    elif args.notification_action == "test":
+        text = ("Windows accepted the test notification. Please check its visibility and click Open review.\n"
+                "Acceptance does not prove display. No AI, GitHub change or reminder-state reset occurred."
+                if receipt["status"] == "accepted" else
+                "Windows notifications are unavailable or disabled. Saved work is unchanged.")
+    elif args.notification_action == "status":
+        text = (f"Notifications: {receipt['setting']} | saved review notices: {receipt['review_count']} | "
+                f"test notices: {receipt['test_count']}\n"
+                "This is Windows history readback, not proof that you saw a notification.")
+    else:
+        text = "Removed this profile's notification link and notices; configuration, queue and schedules are unchanged."
+    _write_report(text, presentation)
+    return ExitCode.NOTIFICATION_ERROR if receipt["status"] == "unavailable" else ExitCode.SUCCESS
+
+
+def _setup_supervisor(args: argparse.Namespace) -> SupervisorConfig:
+    supplied = any(getattr(args, name) for name in (
+        "supervisor_model", "supervisor_reasoning", "supervisor_account", "supervisor_access",
+        "supervisor_permission_profile", "acknowledge_supervisor_use", "acknowledge_supervisor_full_access",
+        "supervisor_validation_authorized", "supervisor_workspace", "supervisor_instruction", "supervisor_refresh_workspace"))
+    supplied = supplied or args.supervisor_timeout_seconds is not None or args.supervisor_max_jobs_per_run is not None
+    if args.supervisor_mode == "off":
+        if supplied:
+            raise SetupError("Supervisor choices require --supervisor-mode approval_first; nothing was saved.")
+        return SupervisorConfig()
+    if args.supervisor_access is None:
+        raise SetupError("Choose --supervisor-access inherit, restricted or full explicitly.")
+    workspaces: dict[str, str] = {}
+    instructions: dict[str, list[str]] = {}
+    for raw in args.supervisor_workspace:
+        name, separator, path = raw.partition("=")
+        if not separator or not name or not path or name.casefold() in {key.casefold() for key in workspaces}:
+            raise SetupError("Use one --supervisor-workspace OWNER/REPO=PATH per repository.")
+        workspaces[name] = path
+    for raw in args.supervisor_instruction:
+        name, separator, path = raw.partition("=")
+        keys = [key for key in workspaces if key.casefold() == name.casefold()]
+        if not separator or not path or len(keys) != 1:
+            raise SetupError("Each --supervisor-instruction must name a registered supervisor workspace.")
+        instructions.setdefault(keys[0], []).append(path)
+    refresh_names: set[str] = set()
+    for name in args.supervisor_refresh_workspace:
+        keys = [key for key in workspaces if key.casefold() == name.casefold()]
+        if len(keys) != 1 or keys[0].casefold() in refresh_names:
+            raise SetupError("Each --supervisor-refresh-workspace must name one registered workspace exactly once.")
+        refresh_names.add(keys[0].casefold())
+    return SupervisorConfig(mode="approval_first", provider="codex_app_server",
+        model=args.supervisor_model, reasoning_effort=args.supervisor_reasoning,
+        expected_account_type=args.supervisor_account, access=args.supervisor_access,
+        permission_profile=args.supervisor_permission_profile,
+        model_use_acknowledged=args.acknowledge_supervisor_use,
+        full_access_acknowledged=args.acknowledge_supervisor_full_access,
+        validation_authorized=args.supervisor_validation_authorized,
+        timeout_seconds=args.supervisor_timeout_seconds if args.supervisor_timeout_seconds is not None else 900,
+        max_jobs_per_run=args.supervisor_max_jobs_per_run if args.supervisor_max_jobs_per_run is not None else 1,
+        workspaces=tuple(SupervisorWorkspaceConfig(name, path, tuple(instructions.get(name, [])), name.casefold() in refresh_names)
+                         for name, path in workspaces.items()))
+
+
+def _run_reconciliation(args: argparse.Namespace, presentation: TerminalPresentation) -> int:
+    config = load_config(args.config)
+    supervised = config.supervisor.mode == "approval_first"
+    client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
+    repository_count = len(config.repositories)
+    repository_word = "repository" if repository_count == 1 else "repositories"
+    with live_progress(
+        f"Reconciling Dependabot evidence for {repository_count} {repository_word}...",
+        presentation=presentation,
+        stream=sys.stderr,
+    ):
+        report = reconcile(
+            config,
+            client,
+            config_path=args.config.expanduser(),
+            state_directory=args.state_dir,
+            retry_after_seconds=args.retry_after_seconds,
+            notification_mode="off" if supervised else args.notify,
+            expected_interval_minutes=args.expected_interval_minutes,
+        )
+    notification = report.get("notification") or {}
+    delivery_failed = False
+    if supervised:
+        dispatch = submit_scheduled_supervisor(args.config, args.state_dir, str(report["run_id"]), notification_mode=args.notify)
+        report = {**report, "supervisor_dispatch": dispatch}
+    elif args.notify == "desktop" and notification.get("needed"):
+        delivery = deliver_desktop_notification(report, config_path=args.config, state_directory=args.state_dir)
+        report = record_notification_delivery(args.state_dir, str(report["run_id"]), delivery, original_report=report)
+        delivery_failed = delivery.get("status") != "delivered"
+    if not args.quiet:
+        _write_report(render_reconciliation(report, args.output_format), presentation)
+    if delivery_failed:
+        _write_error(
+            "Notification",
+            "Desktop notification could not be delivered; the durable run report contains the action and next command.",
+            presentation,
+        )
+        return ExitCode.NOTIFICATION_ERROR
+    return ExitCode.PARTIAL_INSPECTION if report["status"] == "partial" else ExitCode.SUCCESS
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -623,12 +761,15 @@ def main(argv: list[str] | None = None) -> int:
                         autonomy=args.autonomy,
                         acknowledge_mutation=args.acknowledge_mutation,
                         offline=args.offline,
+                        supervisor=_setup_supervisor(args),
                     ),
                 )
             _write_report(render_operational(report, args.output_format), presentation)
             return ExitCode.SUCCESS
         if args.command == "review":
             return _run_review(args, presentation)
+        if args.command == "notification":
+            return _run_notification(args, presentation)
         if args.command == "execute":
             config = load_config(args.config)
             client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
@@ -659,51 +800,7 @@ def main(argv: list[str] | None = None) -> int:
             _write_report(render_execution(report, args.output_format), presentation)
             return ExitCode.SUCCESS
         if args.command == "run":
-            config = load_config(args.config)
-            client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
-            repository_count = len(config.repositories)
-            repository_word = "repository" if repository_count == 1 else "repositories"
-            with live_progress(
-                f"Reconciling Dependabot evidence for {repository_count} {repository_word}...",
-                presentation=presentation,
-                stream=sys.stderr,
-            ):
-                report = reconcile(
-                    config,
-                    client,
-                    config_path=args.config.expanduser(),
-                    state_directory=args.state_dir,
-                    retry_after_seconds=args.retry_after_seconds,
-                    notification_mode=args.notify,
-                    expected_interval_minutes=args.expected_interval_minutes,
-                )
-            notification = report.get("notification") or {}
-            delivery_failed = False
-            if args.notify == "desktop" and notification.get("needed"):
-                delivery = deliver_desktop_notification(report)
-                report = record_notification_delivery(
-                    args.state_dir,
-                    str(report["run_id"]),
-                    delivery,
-                )
-                delivery_failed = delivery.get("status") != "delivered"
-            if not args.quiet:
-                _write_report(
-                    render_reconciliation(report, args.output_format),
-                    presentation,
-                )
-            if delivery_failed:
-                _write_error(
-                    "Notification",
-                    "Desktop notification could not be delivered; the durable run report contains the action and next command.",
-                    presentation,
-                )
-                return ExitCode.NOTIFICATION_ERROR
-            return (
-                ExitCode.PARTIAL_INSPECTION
-                if report["status"] == "partial"
-                else ExitCode.SUCCESS
-            )
+            return _run_reconciliation(args, presentation)
         if args.command == "schedule":
             schedule_config: WatcherConfig | None = None
             if args.schedule_action in {"preview", "install"}:

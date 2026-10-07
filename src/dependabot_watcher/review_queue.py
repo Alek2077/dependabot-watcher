@@ -347,7 +347,7 @@ class ReviewQueue:
                 raise ReviewQueueError("Verified workspace no longer matches the configured current repository evidence.")
             save_private_json(self.directory, _QUEUE_PATH, state, maximum_bytes=_MAX_BYTES)
 
-    def _supervision_context_under_lock(self, repository: str) -> dict[str, Any]:
+    def _supervision_context_under_lock(self, repository: str, *, persist: bool = True) -> dict[str, Any]:
         """Share the operation lock with a job journal without nested acquisition."""
         self.require_current_configuration()
         if not any(item.name.casefold() == repository.casefold() for item in self.config.repositories):
@@ -357,7 +357,8 @@ class ReviewQueue:
             raise ReviewQueueError("Queue clock must include a time zone.")
         state = _load_queue(self.directory)
         self._synchronize(state, now)
-        save_private_json(self.directory, _QUEUE_PATH, state, maximum_bytes=_MAX_BYTES)
+        if persist:
+            save_private_json(self.directory, _QUEUE_PATH, state, maximum_bytes=_MAX_BYTES)
         plan = self._current_plan()
         return self._supervision_context_from_state(repository, state, plan)
 
@@ -383,6 +384,11 @@ class ReviewQueue:
         supervisor = asdict(self.config.supervisor)
         supervisor["workspaces"] = [asdict(workspace) for workspace in self.config.supervisor.workspaces
                                     if workspace.repository.casefold() == key]
+        # Preserve existing context/session identities when the new optional
+        # permission is disabled; enabling it must still invalidate authority.
+        for registration in supervisor["workspaces"]:
+            if not registration["refresh_authorized"]:
+                registration.pop("refresh_authorized")
         workspace = state["workspace_evidence"].get(key)
         if workspace is not None and not _workspace_matches_context(workspace, supervisor, repository_plan, repository):
             workspace = None

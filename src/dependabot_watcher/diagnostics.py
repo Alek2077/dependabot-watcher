@@ -423,6 +423,8 @@ def doctor(
         timeout_seconds=timeout_seconds,
     )
     advisory_mode = config.advisory.mode if config is not None else "off"
+    supervisor_enabled = config is not None and config.supervisor.mode == "approval_first"
+    provider_needed = advisory_mode != "off" or supervisor_enabled
     execution_enabled = bool(
         config is not None
         and config.operation.autonomy == "approval_required"
@@ -479,13 +481,16 @@ def doctor(
         "codex",
         version_args=("--version",),
         auth_args=("login", "status"),
-        offline=offline or advisory_mode == "off",
+        offline=offline or not provider_needed,
         runner=runner,
         timeout_seconds=timeout_seconds,
     )
-    if advisory_mode == "off":
+    if not provider_needed:
         codex["authentication"] = "not_required"
     codex["adapter_capabilities"] = ["triage", "review"]
+    if supervisor_enabled:
+        codex["adapter_capabilities"].append("supervisor_app_server")
+        codex["supervisor_runtime_verified"] = False
 
     if gh["availability"] != "available":
         findings.append(
@@ -501,13 +506,13 @@ def doctor(
             )
         )
 
-    if advisory_mode != "off":
+    if provider_needed:
         if codex["availability"] != "available":
             findings.append(
                 _finding(
                     "error",
                     "provider_cli_missing",
-                    "The configured Codex CLI advisory provider is not available on PATH.",
+                    "The configured Codex CLI provider is not available on PATH.",
                 )
             )
         elif not offline and codex["authentication"] != "available":
@@ -515,7 +520,7 @@ def doctor(
                 _finding(
                     "error",
                     "provider_auth_unavailable",
-                    "The configured Codex CLI advisory provider is not authenticated.",
+                    "The configured Codex CLI provider is not authenticated.",
                 )
             )
 

@@ -36,7 +36,22 @@ def _authentication(value: object) -> str:
     }.get(str(value), _plain(value))
 
 
-def _setup_ai_lines(advisory: dict[str, Any]) -> list[str]:
+def _setup_ai_lines(advisory: dict[str, Any], supervisor: dict[str, Any] | None = None) -> list[str]:
+    if supervisor and supervisor.get("mode") != "off":
+        lines = [
+            f"Agent: {_plain(supervisor.get('model'))} ({_plain(supervisor.get('reasoning_effort'))} reasoning) via installed Codex CLI",
+            f"Agent access: {_plain(supervisor.get('access'))}; account: {_plain(supervisor.get('expected_account_type'))}",
+            "Private repository evidence and saved questions will be sent to the selected provider; runs consume subscription/API usage.",
+            f"Workload: up to {_plain(supervisor.get('max_jobs_per_run'))} jobs per run, {_plain(supervisor.get('timeout_seconds'))} seconds per investigation; not a spending cap.",
+            "Saved choices only: workspace/runtime checks and scheduled operation have not been verified. No agent or merge was launched.",
+            "Metadata advice: off (no separate advice budget)",
+        ]
+        if supervisor.get("permission_profile"):
+            lines.insert(2, f"Restricted permission profile: {_plain(supervisor['permission_profile'])}")
+        if supervisor.get("access") == "full":
+            lines.append("Full-access tools may bypass Watcher's guarded executor; instructions alone do not isolate mutation credentials.")
+        lines.append("Workspace tests/builds: " + ("authorized for later investigation" if supervisor.get("validation_authorized") else "not authorized"))
+        return lines
     mode = str(advisory.get("mode") or "off")
     if mode == "off":
         return ["AI: off (no model calls and no provider quota or cost)"]
@@ -235,7 +250,7 @@ def _setup_text(report: dict[str, Any]) -> str:
         f"  - {_plain(repository['name'])} ({_plain(repository['default_branch'])})"
         for repository in report["repositories"]
     )
-    lines.extend(_setup_ai_lines(report["advisory"]))
+    lines.extend(_setup_ai_lines(report["advisory"], report.get("supervisor")))
     lines.append("Next commands:")
     lines.extend(f"  - {_plain(command)}" for command in report["next_commands"])
     lines.append("Before recurring operation:")
@@ -281,7 +296,7 @@ def _setup_markdown(report: dict[str, Any]) -> str:
         for repository in report["repositories"]
     )
     lines.extend(["", "## AI", ""])
-    lines.extend(f"- {_escape(item)}" for item in _setup_ai_lines(report["advisory"]))
+    lines.extend(f"- {_escape(item)}" for item in _setup_ai_lines(report["advisory"], report.get("supervisor")))
     lines.extend(
         [
             "",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -9,7 +10,7 @@ import pytest
 
 import dependabot_watcher.setup as setup_implementation
 from dependabot_watcher import diagnostics
-from dependabot_watcher.config import load_config
+from dependabot_watcher.config import SupervisorConfig, SupervisorWorkspaceConfig, load_config
 from dependabot_watcher.diagnostics import CommandResult
 from dependabot_watcher.setup import (
     SetupError,
@@ -409,3 +410,143 @@ def test_setup_does_not_publish_partial_configuration_on_interruption(
 
     assert not path.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def _supervisor_policy(tmp_path: Path, **changes) -> SupervisorConfig:
+    return replace(SupervisorConfig(
+        mode="approval_first", provider="codex_app_server", model="chosen-model",
+        reasoning_effort="low", expected_account_type="chatgpt", access="inherit",
+        model_use_acknowledged=True,
+        workspaces=(SupervisorWorkspaceConfig("example-org/example-app", str(tmp_path / "work=tree"),
+                    (str(tmp_path / "trusted instructions" / "AGENTS.md"),)),)), **changes)
+
+
+@pytest.mark.parametrize("access", ["inherit", "restricted", "full"])
+def test_supervisor_setup_roundtrips_saved_policy_without_launch_or_workspace_creation(tmp_path: Path, access: str) -> None:
+    policy = _supervisor_policy(tmp_path, access=access,
+        permission_profile="chosen-restriction" if access == "restricted" else None,
+        full_access_acknowledged=access == "full", validation_authorized=True,
+        timeout_seconds=321, max_jobs_per_run=2)
+    path = tmp_path / "config.toml"
+    report = create_profile(path, SetupRequest(repositories=("example-org/example-app",), branches={},
+        offline=True, supervisor=policy))
+    saved = load_config(path)
+    assert saved.supervisor == policy
+    assert saved.profile.source == "setup_advanced"
+    assert saved.advisory.mode == "off"
+    assert saved.operation.mutation_enabled is False
+    assert not Path(policy.workspaces[0].directory).exists()
+    assert report["verification"]["provider_authentication"] == "skipped"
+    assert report["supervisor"]["workspace_verified"] is False
+    assert report["supervisor"]["runtime_verified"] is False
+    assert report["supervisor"]["scheduled_initiation_verified"] is False
+    assert report["supervisor"]["github_mutations_authorized"] is False
+    assert report["capabilities"]["model_calls"] is False
+
+
+@pytest.mark.parametrize("changes", [
+    {"model_use_acknowledged": False}, {"model": None}, {"expected_account_type": None},
+    {"access": "full", "full_access_acknowledged": False},
+    {"access": "restricted", "permission_profile": None},
+    {"access": "inherit", "permission_profile": "unwanted"},
+    {"timeout_seconds": 0}, {"max_jobs_per_run": 0}, {"workspaces": ()},
+    {"workspaces": (SupervisorWorkspaceConfig("other-org/other-app", "/isolated"),)},
+])
+def test_invalid_supervisor_setup_refuses_before_authentication_or_writes(tmp_path: Path, changes: dict) -> None:
+    def unexpected(*_args):
+        raise AssertionError("Invalid choices must not execute commands")
+    with pytest.raises(SetupError, match="Supervisor choices"):
+        create_profile(tmp_path / "config.toml", SetupRequest(
+            repositories=("example-org/example-app",), branches={},
+            supervisor=_supervisor_policy(tmp_path, **changes)), runner=unexpected)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_supervisor_setup_online_checks_existing_authentication_without_model(tmp_path: Path, monkeypatch) -> None:
+    commands: list[tuple[str, ...]] = []
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
+    report = create_profile(tmp_path / "config.toml", SetupRequest(
+        repositories=("example-org/example-app",), branches={}, supervisor=_supervisor_policy(tmp_path)),
+        runner=_runner(commands))
+    assert ("codex", "login", "status") in commands
+    assert not any("exec" in command or "app-server" in command for command in commands)
+    assert report["verification"]["provider_authentication"] == "available"
+    assert report["supervisor"]["runtime_verified"] is False
+
+
+def test_setup_refuses_metadata_advice_alongside_supervisor(tmp_path: Path) -> None:
+    with pytest.raises(SetupError, match="not both"):
+        create_profile(tmp_path / "config.toml", SetupRequest(
+            repositories=("example-org/example-app",), branches={}, offline=True,
+            advisory_mode="economy", triage_model="advice-model", triage_reasoning="low",
+            acknowledge_model_use=True, supervisor=_supervisor_policy(tmp_path)))
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_disabled_supervisor_cannot_silently_retain_full_access(tmp_path: Path) -> None:
+    with pytest.raises(SetupError, match="Disabled supervision"):
+        create_profile(tmp_path / "config.toml", SetupRequest(
+            repositories=("example-org/example-app",), branches={}, offline=True,
+            supervisor=SupervisorConfig(access="full", full_access_acknowledged=True)))
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_setup_case_aliases_bind_branch_and_workflow_to_selected_spelling(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    report = create_profile(path, SetupRequest(
+        repositories=("EXAMPLE-ORG/Example-App",),
+        branches={"example-org/example-app": "develop"},
+        merge_methods={"Example-Org/Example-App": "squash"},
+        required_checks={"EXAMPLE-ORG/EXAMPLE-APP": ("CI", "Build")},
+        autonomy="approval_required", acknowledge_mutation=True, offline=True))
+    repository = load_config(path).repositories[0]
+    assert repository.name == "EXAMPLE-ORG/Example-App"
+    assert repository.default_branch == "develop"
+    assert repository.workflow.merge_method == "squash"
+    assert repository.workflow.required_checks == ("CI", "Build")
+    assert report["repositories"][0]["name"] == repository.name
+
+
+@pytest.mark.parametrize("field,values", [
+    ("branches", {"example-org/example-app": "main", "EXAMPLE-ORG/EXAMPLE-APP": "develop"}),
+    ("merge_methods", {"example-org/example-app": "squash", "EXAMPLE-ORG/EXAMPLE-APP": "merge"}),
+    ("required_checks", {"example-org/example-app": ("CI",), "EXAMPLE-ORG/EXAMPLE-APP": ("Build",)}),
+])
+def test_setup_refuses_duplicate_override_aliases_before_commands(tmp_path: Path, field: str, values: dict) -> None:
+    def unexpected(*_args):
+        raise AssertionError("Ambiguous overrides must not execute commands")
+    request = replace(SetupRequest(repositories=("example-org/example-app",), branches={}), **{field: values})
+    with pytest.raises(SetupError, match="case-insensitive repository alias"):
+        create_profile(tmp_path / "config.toml", request, runner=unexpected)
+    assert not (tmp_path / "config.toml").exists()
+
+
+@pytest.mark.parametrize("changes", [
+    {"triage_model": "ignored-model"}, {"triage_reasoning": "low"},
+    {"review_model": "ignored-model"}, {"review_reasoning": "low"},
+    {"acknowledge_model_use": True},
+    {"advisory_mode": "economy", "triage_model": "triage", "triage_reasoning": "low",
+     "acknowledge_model_use": True, "review_model": "ignored-review"},
+])
+def test_setup_refuses_inactive_advice_choices_without_writing(tmp_path: Path, changes: dict) -> None:
+    request = replace(SetupRequest(repositories=("example-org/example-app",), branches={}, offline=True), **changes)
+    with pytest.raises(SetupError, match="require"):
+        create_profile(tmp_path / "config.toml", request)
+    assert not (tmp_path / "config.toml").exists()
+
+
+@pytest.mark.parametrize("changes", [
+    {"acknowledge_mutation": True},
+    {"merge_methods": {"example-org/example-app": "squash"}},
+    {"merge_methods": {"example-org/example-app": "invalid"}},
+    {"required_checks": {"example-org/example-app": ("CI",)}},
+])
+def test_read_only_setup_refuses_discarded_workflow_choices(tmp_path: Path, changes: dict) -> None:
+    request = replace(SetupRequest(repositories=("example-org/example-app",), branches={}), **changes)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Invalid setup must fail before authentication or collection")
+
+    with pytest.raises(SetupError, match="require autonomy approval_required"):
+        create_profile(tmp_path / "config.toml", request, runner=unexpected)
+    assert not (tmp_path / "config.toml").exists()

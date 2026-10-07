@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from dependabot_watcher.providers.codex_app_server_settings import CodexAppServerSettings
-from dependabot_watcher.providers.codex_app_server_supervisor import CodexAppServerSupervisor, _available_decisions
+from dependabot_watcher.providers.codex_app_server_supervisor import CodexAppServerSupervisor, _available_decisions, _output_schema
 from dependabot_watcher.config import load_config
 from dependabot_watcher.review_queue import ReviewConfigurationChanged, ReviewQueue, ReviewQueueError
 from dependabot_watcher.runtime_state import load_private_json
@@ -54,6 +54,13 @@ for line in sys.stdin:
         assert schema['properties']['job_id']['enum']==[data['job_id']]
         assert schema['properties']['context_digest']['enum']==[data['context_digest']]
         assert schema['additionalProperties'] is False
+        result_schema=schema['properties']['analysis']['properties']
+        assert result_schema['recommendations']['items']['properties']['proposal_id']['enum']==sorted(p['proposal_id'] for p in data['context']['proposals'])
+        for p in data['context']['proposals']:
+            for m in p['feedback']:
+                assert any(branch['properties']['proposal_id']['enum']==[p['proposal_id']]
+                    and m['request_id'] in branch['properties']['request_id']['enum']
+                    for branch in result_schema['replies']['items']['anyOf'])
         response(frame['id'],{'turn':{'id':'turn1','status':'inProgress'}})
         if FAULT=='historical_usage':
             send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread1','turnId':'prior-turn',
@@ -85,11 +92,54 @@ for line in sys.stdin:
                   'replies':[{'proposal_id':p['proposal_id'],'request_id':m['request_id'],'message':'Exact fixture question answered.'} for p in proposals for m in p['feedback']]}
         final={'job_id':'wrong-job' if FAULT=='wrong_job' else data['job_id'],
                'context_digest':data['context_digest'],'analysis':analysis}
+        if FAULT=='unknown_proposal':
+            analysis['recommendations'][0]['proposal_id']='proposal_'+'f'*16
         send({'method':'item/completed','params':{'threadId':'thread1','turnId':'turn1',
               'item':{'id':'answer1','type':'agentMessage','text':json.dumps(final)}}})
         if FAULT!='missing_usage':
-            send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread1','turnId':'turn1',
-                  'tokenUsage':{'last':{'inputTokens':10,'cachedInputTokens':5,'outputTokens':3,'reasoningOutputTokens':1}}}})
+            counts={'inputTokens':10,'cachedInputTokens':5,'outputTokens':3,'reasoningOutputTokens':1}
+            def wire_counts(values):
+                return {**values,'totalTokens':values['inputTokens']+values['outputTokens'],'cacheWriteInputTokens':0}
+            usage={'last':wire_counts(counts),'total':wire_counts({key:value+100 for key,value in counts.items()})}
+            if FAULT=='missing_total':
+                del usage['total']
+            elif FAULT=='bad_usage_shape':
+                usage['last']=[]
+            elif FAULT=='boolean_usage':
+                usage['total']['inputTokens']=True
+            elif FAULT=='negative_usage':
+                usage['last']['inputTokens']=-1
+            elif FAULT=='oversized_usage':
+                usage['total']['inputTokens']=2**63
+            elif FAULT=='total_below_last':
+                usage['total']['inputTokens']=9
+                usage['total']['totalTokens']=112
+            elif FAULT=='unknown_usage_counter':
+                usage['last']['futureTokens']=7
+            elif FAULT=='cache_write_usage':
+                usage['last']['cacheWriteInputTokens']=3
+            elif FAULT=='bad_total_tokens':
+                usage['last']['totalTokens']=14
+            elif FAULT=='missing_total_tokens':
+                del usage['last']['totalTokens']
+            def token_event(snapshot):
+                send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread1','turnId':'turn1',
+                      'tokenUsage':snapshot}})
+            token_event(usage)
+            if FAULT in ('multiple_usage','duplicate_usage','regressed_usage','missing_request_usage','contradictory_duplicate'):
+                next_usage={'last':wire_counts(counts),'total':wire_counts({key:value+100+counts[key] for key,value in counts.items()})}
+                if FAULT=='regressed_usage':
+                    next_usage['total']['inputTokens']=109
+                    next_usage['total']['totalTokens']=215
+                elif FAULT=='missing_request_usage':
+                    next_usage['total']['inputTokens']=130
+                    next_usage['total']['totalTokens']=236
+                elif FAULT=='contradictory_duplicate':
+                    next_usage['last']=wire_counts({key:value*2 for key,value in counts.items()})
+                    next_usage['total']=dict(usage['total'])
+                token_event(next_usage)
+                if FAULT=='duplicate_usage':
+                    token_event(next_usage)
         send({'method':'turn/completed','params':{'threadId':'thread1','turn':{'id':'turn1',
               'status':'failed' if FAULT=='failed_turn' else 'completed'}}})
 '''
@@ -158,6 +208,7 @@ def test_file_authority_revocation_stops_actual_child_wait_and_invalidates_pendi
     worker = threading.Thread(target=run)
     worker.start()
     journal = SupervisorPermissions(jobs)
+    records: list[Any] = []
     try:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -227,7 +278,7 @@ def test_receipt_bound_provider_refuses_independent_launch_settings_before_trans
     else:
         instance.settings = replace(instance.settings, timeout_seconds=901)
     def forbidden_command(*args: Any, **kwargs: Any) -> list[str]:
-        pytest.fail("A mismatched provider must be rejected before even resolving its command")
+        raise AssertionError("A mismatched provider must be rejected before even resolving its command")
     monkeypatch.setattr(CodexAppServerSettings, "command", forbidden_command)
     with pytest.raises(ReviewQueueError, match="selected|saved job policy"):
         SupervisorRunner(jobs, instance).run(job["job_id"])
@@ -295,6 +346,39 @@ def test_same_session_continuation_excludes_historical_usage_from_current_result
     assert len(result["observation"]["analysis"]["replies"]) == 2
 
 
+@pytest.mark.parametrize("fault", ["multiple_usage", "duplicate_usage"])
+def test_current_turn_counts_all_requests_once_not_prior_thread_totals(
+    runner_case: tuple[SupervisorJobs, FixtureProvider, dict[str, Any]], tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, fault: str,
+) -> None:
+    jobs, _unused, job = runner_case
+    SupervisorRunner(jobs, provider(tmp_path, monkeypatch)).run(job["job_id"])
+    jobs.queue.handle(decision(jobs.queue, "feedback", message="Answer this follow-up only."))
+    followup = jobs.prepare(job["repository"])
+    result = SupervisorRunner(jobs, provider(tmp_path, monkeypatch, session="thread1", fault=fault)).run(followup["job_id"])
+    expected = {"input_tokens": 20, "cached_input_tokens": 10, "output_tokens": 6, "reasoning_output_tokens": 2}
+    assert result["observation"]["usage"] == expected
+    observed = load_private_json(jobs.queue.directory, Path("supervisor-observations") / f'{followup["job_id"]}.json')
+    assert observed["usage"] == expected
+    assert result["job"]["session_id"] == "thread1"
+
+
+@pytest.mark.parametrize("fault", ["missing_total", "bad_usage_shape", "boolean_usage", "negative_usage",
+                                  "oversized_usage", "total_below_last", "regressed_usage", "missing_request_usage",
+                                  "unknown_usage_counter", "cache_write_usage", "bad_total_tokens", "missing_total_tokens",
+                                  "contradictory_duplicate"])
+def test_incomplete_or_contradictory_usage_does_not_claim_completed_accounting(
+    runner_case: tuple[SupervisorJobs, FixtureProvider, dict[str, Any]], tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, fault: str,
+) -> None:
+    jobs, _unused, job = runner_case
+    with pytest.raises(ReviewQueueError, match="usage"):
+        SupervisorRunner(jobs, provider(tmp_path, monkeypatch, fault=fault)).run(job["job_id"])
+    assert jobs.read(job["job_id"])["status"] == "failed"
+    assert not (jobs.queue.directory / "supervisor-observations" / f'{job["job_id"]}.json').exists()
+    assert all(record["status"] == "closed" for record in SupervisorPermissions(jobs).snapshot(job["repository"])["connections"])
+
+
 @pytest.mark.parametrize("choice", ["allow_once", "deny", "cancel"])
 @pytest.mark.parametrize("fault", ["", "missing_resolution", "denied_completed", "network_denied_completed"])
 def test_real_child_waits_for_exact_durable_decision_and_records_resolution(
@@ -356,7 +440,7 @@ def test_real_child_waits_for_exact_durable_decision_and_records_resolution(
     assert saved["requests"][requested["permission_id"]]["decision"] == choice
 
 
-@pytest.mark.parametrize("fault", ["wrong_account", "wrong_job", "failed_turn", "missing_usage", "wrong_turn",
+@pytest.mark.parametrize("fault", ["wrong_account", "wrong_job", "unknown_proposal", "failed_turn", "missing_usage", "wrong_turn",
                                   "available_empty", "available_wrong_type", "available_unknown_choice", "unanswered_resolution"])
 def test_failed_or_misattributed_runtime_does_not_complete_or_leave_live_consent(
     runner_case: tuple[SupervisorJobs, FixtureProvider, dict[str, Any]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str,
@@ -367,6 +451,74 @@ def test_failed_or_misattributed_runtime_does_not_complete_or_leave_live_consent
                                        permission=fault in {"wrong_turn", "unanswered_resolution"} or fault.startswith("available_"))).run(job["job_id"])
     assert jobs.read(job["job_id"])["status"] == "failed"
     assert all(c["status"] == "closed" for c in SupervisorPermissions(jobs).snapshot(job["repository"])["connections"])
+
+
+def schema_job(proposals: list[dict[str, Any]], retired: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {"job_id": "job_" + "a" * 32, "context_digest": "b" * 64,
+            "context": {"proposals": proposals, "retired_proposals": retired or []}}
+
+
+def test_generation_schema_binds_current_recommendations_and_exact_current_or_retired_message_pairs() -> None:
+    first, second, old = ("proposal_" + letter * 16 for letter in "abc")
+    schema = _output_schema(schema_job([
+        {"proposal_id": first, "feedback": [{"request_id": "decision_1_first"}]},
+        {"proposal_id": second, "feedback": [{"request_id": "decision_2_second"}]},
+    ], [{"proposal_id": old, "feedback": [{"request_id": "decision_3_old"}]}]))
+    fields = schema["properties"]["analysis"]["properties"]
+    recommendation = fields["recommendations"]["items"]
+    assert recommendation["properties"]["ready_for_action"] == {"type": "boolean"}
+    assert "ready_for_action" in recommendation["required"]
+    assert fields["recommendations"]["items"]["properties"]["proposal_id"]["enum"] == [first, second]
+    branches = fields["replies"]["items"]["anyOf"]
+    assert [(branch["properties"]["proposal_id"]["enum"], branch["properties"]["request_id"]["enum"])
+            for branch in branches] == [([first], ["decision_1_first"]), ([second], ["decision_2_second"]),
+                                      ([old], ["decision_3_old"])]
+    assert all(branch["additionalProperties"] is False for branch in branches)
+
+
+@pytest.mark.parametrize("has_proposal", [False, True])
+def test_empty_generation_namespaces_require_empty_arrays_without_invalid_empty_enums(has_proposal: bool) -> None:
+    proposals = [{"proposal_id": "proposal_" + "a" * 16, "feedback": []}] if has_proposal else []
+    fields = _output_schema(schema_job(proposals))["properties"]["analysis"]["properties"]
+    assert fields["replies"]["maxItems"] == 0
+    assert "anyOf" not in fields["replies"]["items"]
+    if not has_proposal:
+        assert fields["recommendations"]["maxItems"] == 0
+        assert "enum" not in fields["recommendations"]["items"]["properties"]["proposal_id"]
+
+
+def test_retired_duplicate_feedback_namespaces_merge_without_losing_exact_question_bindings() -> None:
+    proposal = "proposal_" + "a" * 16
+    fields = _output_schema(schema_job([
+        {"proposal_id": proposal, "feedback": [{"request_id": "decision_1_same"}]},
+    ], [
+        {"proposal_id": proposal, "feedback": [{"request_id": "decision_1_same"}, {"request_id": "decision_2_old"}]},
+    ]))["properties"]["analysis"]["properties"]
+    assert len(fields["replies"]["items"]["anyOf"]) == 1
+    assert fields["replies"]["items"]["anyOf"][0]["properties"]["request_id"]["enum"] == [
+        "decision_1_same", "decision_2_old"]
+
+
+@pytest.mark.parametrize("limit", ["enum_total", "enum_characters"])
+def test_oversized_generation_identity_schema_refuses_instead_of_dropping_bindings(limit: str) -> None:
+    if limit == "enum_total":
+        # Each enum is small; the combined recommendation/reply count exceeds 1k.
+        job = schema_job([{"proposal_id": f"proposal_{number:016x}", "feedback": [
+            {"request_id": f"decision_{number + 1}_first"}, {"request_id": f"decision_{number + 1}_second"},
+        ]} for number in range(249)])
+    else:
+        # Below the global count limit, but this individual enum exceeds 15k.
+        job = schema_job([{"proposal_id": "proposal_" + "a" * 16,
+                           "feedback": [{"request_id": f"decision_1_{number:032x}"} for number in range(400)]}])
+    with pytest.raises(ReviewQueueError, match="provider schema limits"):
+        _output_schema(job)
+
+
+def test_generation_identity_schema_accepts_supported_size_near_combined_enum_limit() -> None:
+    job = schema_job([{"proposal_id": f"proposal_{number:016x}", "feedback": [
+        {"request_id": f"decision_{number + 1}_first"}, {"request_id": f"decision_{number + 1}_second"},
+    ]} for number in range(248)])
+    assert len(_output_schema(job)["properties"]["analysis"]["properties"]["replies"]["items"]["anyOf"]) == 248
 
 
 def test_absent_decisions_use_defaults_but_persistent_amendments_are_not_offered() -> None:

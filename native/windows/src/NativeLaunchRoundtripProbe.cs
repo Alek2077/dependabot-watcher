@@ -45,10 +45,51 @@ internal static class NativeLaunchRoundtripProbe
 
     internal static async Task RunAsync(string launchFile, string testCase)
     {
-        if (testCase is not ("allow_once" or "deny" or "cancel" or "disconnect" or "stale_feedback" or "resume_feedback" or "retry_interrupted"))
+        if (testCase is not ("allow_once" or "deny" or "cancel" or "disconnect" or "stale_feedback" or "resume_feedback" or "retry_interrupted" or "scheduled" or "scheduled_malformed"))
             throw new InvalidDataException("Unsupported controlled launch diagnostic.");
         var client = BackendClient.FromLaunchFile(launchFile);
         if (!client.DiagnosticTransport) throw new InvalidDataException("A synthetic transport marker is required.");
+        if (testCase == "scheduled_malformed")
+        {
+            var window = new BackendQueueWindow(client);
+            await window.InitializeAsync();
+            bool Enabled(string field) => ((System.Windows.UIElement)typeof(BackendQueueWindow)
+                .GetField(field, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .GetValue(window)!).IsEnabled;
+            if (!Enabled("_actions")) throw new InvalidDataException("Fixture did not establish initially usable local controls.");
+            File.WriteAllText(Path.Combine(Path.GetDirectoryName(launchFile)!, "malformed-snapshot.ready"), "controlled diagnostic only");
+            var rejected = false;
+            try { await window.RunScheduledAsync("run_" + new string('a', 20), notify: false); }
+            catch (Exception error) when (error is InvalidDataException or InvalidOperationException) { rejected = true; }
+            if (!rejected || Enabled("_actions") || Enabled("_prepare") || Enabled("_permissions")
+                || typeof(BackendQueueWindow).GetField("_refreshRequired", System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.NonPublic)!.GetValue(window) is not true)
+                throw new InvalidDataException("Malformed scheduled refresh left stale decision/access controls usable.");
+            await client.StopAcceptingAndDrainAsync();
+            App.Record("native_scheduled_malformed_passed", new { stale_controls_disabled = true,
+                actual_hidden_window_flow = true, model_calls = 0, github_mutations = false });
+            return;
+        }
+        if (testCase == "scheduled")
+        {
+            // Exercise the actual hidden window flow after its cached context
+            // becomes stale, not only the standalone receipt parser.
+            var window = new BackendQueueWindow(client);
+            await window.InitializeAsync();
+            var initial = await Snapshot(client);
+            await SaveMessage(client, initial, "Scheduled stale-owner regression: answer this new exact question.");
+            var current = await Snapshot(client);
+            if (Digest(initial) == Digest(current)) throw new InvalidDataException("Scheduled context fixture did not change.");
+            var runId = "run_" + new string('a', 20);
+            if (await window.RunScheduledAsync(runId, notify: false) != "completed" || window.IsVisible)
+                throw new InvalidDataException("Fresh scheduled work did not complete in the hidden existing window.");
+            if (await window.RunScheduledAsync(runId, notify: false) != "quiet")
+                throw new InvalidDataException("Consumed scheduled work was replayed or not quietly verified.");
+            await client.StopAcceptingAndDrainAsync();
+            App.Record("native_scheduled_roundtrip_passed", new { cached_context_changed = true,
+                actual_hidden_window_flow = true, duplicate_quiet = true, model_calls = 0, github_mutations = false });
+            return;
+        }
         var rounds = testCase is "resume_feedback" or "retry_interrupted" ? 2 : 1;
         string? firstJob = null;
         for (var round = 0; round < rounds; round++)

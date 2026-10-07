@@ -141,7 +141,7 @@ These flags do not disable Codex's platform safety. The watcher supplies its own
 
 ## Development supervisor configuration
 
-This unreleased configuration is separate from metadata advice and defaults to `mode = "off"`. Ordinary `setup` does not yet configure it, and `schedule` does not launch it. The development native investigation control accepts only the trusted saved profile; messages cannot choose executable commands, workspace paths, models or access.
+This unreleased configuration is separate from metadata advice and defaults to `mode = "off"`. Ordinary `setup` can save its explicit choices (see [supervisor setup](setup.md#tool-capable-supervisor-setup-development)); the development WSL scheduled route uses the registered quiet native owner. The native investigation control accepts only the trusted saved profile; messages cannot choose executable commands, workspace paths, models or access.
 
 ```toml
 [supervisor]
@@ -159,6 +159,15 @@ workspaces = [{ repository = "example-org/example-app", directory = "/absolute/i
 ```
 
 The registered repository must already be in `[[repositories]]`. This first launcher requires metadata advice off, an owned POSIX/WSL linked worktree at the freshly collected base, and an explicitly selected ordered instruction-source list. It does not create worktrees or synchronize primary checkouts. Model acknowledgement permits transmitting repository evidence and saved questions to the selected provider; turns consume subscription or API usage. Configuration parsing is not live account, harness, isolation or spend-enforcement evidence.
+
+Per-workspace `refresh_authorized = true` optionally permits advancing an owned
+detached maintenance copy after its initial clean-base registration. It defaults
+false and does not authorize edits, developer-checkout synchronization, pushes or
+merges. Dirty files, untracked work, attached branches or unexpected commits are
+preserved and block this refresh. An interrupted checkout is reconciled only from
+a verified clean detached prior or intended head; it is never forcibly retried.
+This development capability remains subject to its
+own operating acceptance.
 
 | Choice | Accepted values / effect |
 |---|---|
@@ -183,4 +192,21 @@ Supported adapter values are `wsl`, `windows`, `systemd`, and `launchd`; `auto` 
 
 Schedule identity is derived from the exact configuration path. Use the same configuration, state, platform, cadence, notification, and WSL distribution arguments for ordinary lifecycle commands. If a profile moves, is deleted, or its arguments are forgotten, `schedule inventory` scans the current user's selected native scheduler without loading a profile, validates Watcher's ownership marker, embedded command, current-user authority, and configuration-derived job ID, and returns an exact recovery command. Inventory must be run separately in every host context where scheduling was used; native Windows PowerShell and WSL are separate contexts when both were configured. Candidates that match only by name are reported as untrusted and are never removal authority.
 
-`--notify desktop` is optional and sparse. It sends a bounded action message, queue counts, AI-use status, an opaque profile identity and run ID, and an instruction to ask the operating agent for the latest result through Windows PowerShell, macOS `osascript`, or Linux `notify-send`; it does not include the full queue, raw evidence, private paths, or an execution command. Desktop notifications have no defined Watcher click action. A successful adapter return proves only that the operating system accepted the submission, not that the user saw it. Failed submission remains in the durable report and produces a notification-specific nonzero exit without changing the completed reconciliation result.
+`--notify desktop` is optional and sparse. It sends a bounded action message,
+queue counts and AI-use information; it never includes full evidence, private
+paths or an execution command. In the development WSL route, select the optional
+Windows component through `review --native-component PATH` or
+`notification test --native-component PATH` with the same configuration/state.
+Its toast opens that saved aggregate queue through an opaque profile key. A
+missing, changed or unavailable component fails visibly rather than reverting
+to the short-lived balloon. macOS `osascript`, Linux `notify-send` and the legacy
+native-Windows adapter remain informational routes without this review action.
+
+A successful adapter return proves submission acceptance, not that the user saw
+it. Failed submission remains in the durable report and produces a
+notification-specific nonzero exit without changing the completed reconciliation
+result. The separate `notification test` bypasses reminder suppression without
+altering it; `notification status` reads Windows settings/history; removal clears
+only this profile's lookup and notices, not configuration, queues or schedules.
+Later desktop-enabled delivery can register again. These development controls
+do not establish cold/warm or scheduled supervisor operating acceptance.

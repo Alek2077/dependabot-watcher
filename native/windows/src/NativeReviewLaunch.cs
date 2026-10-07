@@ -23,22 +23,30 @@ internal sealed record NativeReviewLaunch(BackendClient Client, string Directory
         var bytes = File.ReadAllBytes(file);
         using var stream = File.OpenRead(executable);
         var fingerprint = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
-        return Validate(bytes, file, executable, fingerprint);
+        var assembly = typeof(NativeReviewLaunch).Assembly.Location;
+        if (!string.Equals(Path.GetFullPath(assembly), Path.ChangeExtension(Path.GetFullPath(executable), ".dll"), StringComparison.OrdinalIgnoreCase)
+            || (new FileInfo(assembly).Attributes & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("Review application code is not in the selected component directory.");
+        using var assemblyStream = File.OpenRead(assembly);
+        var assemblyFingerprint = Convert.ToHexString(SHA256.HashData(assemblyStream)).ToLowerInvariant();
+        return Validate(bytes, file, executable, fingerprint, assemblyFingerprint);
     }
 
-    internal static NativeReviewLaunch Validate(byte[] bytes, string file, string executable, string fingerprint)
+    internal static NativeReviewLaunch Validate(byte[] bytes, string file, string executable, string fingerprint, string assemblyFingerprint)
     {
         if (bytes.Length is < 1 or > 65536) throw new InvalidDataException("Review launch exceeds its byte bound.");
         using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 8 });
         NativeLaunchStream.RequireUniqueKeys(document.RootElement);
         var launch = JsonNode.Parse(bytes) as JsonObject ?? throw new InvalidDataException("Invalid review launch.");
-        if (launch.Count != 4 || launch["schema_version"]?.ToJsonString() != "2"
+        if (launch.Count != 4 || launch["schema_version"]?.ToJsonString() != "3"
             || launch["diagnostic_transport"]?.ToJsonString() != "false"
-            || launch["component"] is not JsonObject component || component.Count != 2
+            || launch["component"] is not JsonObject component || component.Count != 3
             || Text(component["path"]) is not string selected || !Path.IsPathFullyQualified(selected)
             || !string.Equals(Path.GetFullPath(selected), Path.GetFullPath(executable), StringComparison.OrdinalIgnoreCase)
             || Text(component["sha256"]) is not string digest || !Regex.IsMatch(digest, "^[a-f0-9]{64}$")
-            || digest != fingerprint || launch["arguments"] is not JsonArray args || args.Count != 17)
+            || digest != fingerprint
+            || Text(component["assembly_sha256"]) is not string assemblyDigest || !Regex.IsMatch(assemblyDigest, "^[a-f0-9]{64}$")
+            || assemblyDigest != assemblyFingerprint || launch["arguments"] is not JsonArray args || args.Count != 17)
             throw new InvalidDataException("Review launch does not match the selected component and protocol.");
         var arguments = new List<string>();
         foreach (var value in args)

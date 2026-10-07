@@ -376,6 +376,36 @@ def _attach_notification(
     return record
 
 
+def _notification_predecessor(state: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Use accepted equivalent history for deduplication, not new-run attribution.
+
+    Acceptance can arrive after an unchanged run was saved. Keep that receipt on
+    its actual run, but don't retry the same notice just because the latest run
+    was still pending when collected. Changed evidence/policy/action never reuse it.
+    """
+    previous = state.get("last_attempt")
+    if not isinstance(previous, Mapping):
+        return {}
+    notification = previous.get("notification")
+    delivery = previous.get("notification_delivery")
+    if (not isinstance(notification, Mapping) or notification.get("needed") is not True
+            or not isinstance(delivery, Mapping) or delivery.get("status") == "delivered"):
+        return previous
+    for earlier in reversed(state.get("history") or []):
+        accepted = earlier.get("notification_delivery")
+        if (isinstance(accepted, Mapping) and accepted.get("status") == "delivered"
+                and accepted.get("mode") == delivery.get("mode")
+                and earlier.get("notification") == notification
+                # Plan identity binds material advice, not just GitHub evidence.
+                # Equal generic notice text cannot acknowledge changed advice.
+                and earlier.get("plan_id") == previous.get("plan_id")
+                and earlier.get("advisory_coverage") == previous.get("advisory_coverage")
+                and all(earlier.get(field) == previous.get(field) and previous.get(field) is not None
+                        for field in ("evidence_revision", "advisory_policy_id", "execution_revision"))):
+            return {**dict(previous), "notification_delivery": accepted}
+    return previous
+
+
 def _suppressed_notification(
     previous: Mapping[str, Any],
     *,
@@ -613,12 +643,7 @@ def reconcile(
                 retry_at = _timestamp(
                     now + timedelta(seconds=retry_after_seconds)
                 )
-                previous_attempt = state.get("last_attempt")
-                previous = (
-                    previous_attempt
-                    if isinstance(previous_attempt, Mapping)
-                    else {}
-                )
+                previous = _notification_predecessor(state)
                 record = _record(
                     run_id=_run_id(completed_at, revision),
                     completed_at=completed_at,
@@ -674,6 +699,7 @@ def reconcile(
                 )
                 state_file = save_run_state(state_path, state)
                 return _report(
+                    config=config,
                     record=record,
                     inspection=inspection,
                     synopsis=synopsis,
@@ -685,8 +711,7 @@ def reconcile(
             run_id = _run_id(completed_at, revision)
             synopsis = queue_synopsis(inspection)
             execution = execution_observation(state_path, inspection)
-            last_attempt = state.get("last_attempt")
-            previous = last_attempt if isinstance(last_attempt, Mapping) else {}
+            previous = _notification_predecessor(state)
             previous_plan = state.get("latest_plan")
             previous_plan_data = previous_plan if isinstance(previous_plan, Mapping) else {}
             supersedes_plan_id = previous_plan_data.get("plan_id")
@@ -764,6 +789,7 @@ def reconcile(
                 )
                 state_file = save_run_state(state_path, state)
                 return _report(
+                    config=config,
                     record=record,
                     inspection=inspection,
                     synopsis=synopsis,
@@ -816,6 +842,7 @@ def reconcile(
                 )
                 state_file = save_run_state(state_path, state)
                 return _report(
+                    config=config,
                     record=record,
                     inspection=inspection,
                     synopsis=synopsis,
@@ -885,6 +912,7 @@ def reconcile(
                     ],
                 )
                 return _report(
+                    config=config,
                     record=record,
                     inspection=inspection,
                     synopsis=synopsis,
@@ -972,6 +1000,7 @@ def reconcile(
                 ],
             )
             return _report(
+                config=config,
                 record=record,
                 inspection=inspection,
                 synopsis=synopsis,
@@ -985,6 +1014,7 @@ def reconcile(
 
 def _report(
     *,
+    config: WatcherConfig,
     record: Mapping[str, Any],
     inspection: Mapping[str, Any],
     synopsis: Mapping[str, Any],
@@ -998,6 +1028,9 @@ def _report(
     report = {
         "schema_version": RUN_SCHEMA_VERSION,
         "mode": "run",
+        "supervisor": {"mode": config.supervisor.mode, "model": config.supervisor.model,
+            "reasoning_effort": config.supervisor.reasoning_effort,
+            "assurance": "saved_policy_only", "github_mutations_authorized": False},
         "generated_at": record.get("completed_at"),
         "run_id": record.get("run_id"),
         "status": status,
@@ -1046,8 +1079,15 @@ def record_notification_delivery(
     state_directory: Path,
     run_id: str,
     delivery: Mapping[str, Any],
+    *,
+    original_report: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Atomically attach one bounded delivery result to the matching durable run."""
+    """Attach acceptance to its durable run without replacing newer evidence.
+
+    The CLI supplies its original report so concurrent collection cannot change
+    which run it prints. Other callers receive a delivery receipt if that report
+    is no longer latest; persisted history always remains bound by run ID.
+    """
 
     status = delivery.get("status")
     if status not in {"delivered", "failed"}:
@@ -1075,10 +1115,26 @@ def record_notification_delivery(
                     updated["notification_delivery"] = delivery_record
                     updated_state[field] = updated
             report = load_private_json(state_path, Path("latest-run.json"))
-            if report.get("run_id") != run_id:
+            latest_attempt = state.get("last_attempt")
+            if (not isinstance(latest_attempt, Mapping)
+                    or report.get("run_id") != latest_attempt.get("run_id")):
                 raise ReconciliationError(
                     "Latest run report changed before notification delivery was recorded."
                 )
+            latest_matches = report.get("run_id") == run_id
+            if not latest_matches:
+                if original_report is None:
+                    save_run_state(state_path, updated_state)
+                    return {"schema_version": 1, "mode": "notification_delivery", "status": "recorded",
+                            "run_id": run_id, "delivery": delivery_record, "latest_report_updated": False}
+                record = history[matches[0]]
+                if (original_report.get("run_id") != run_id or original_report.get("mode") != "run"
+                        or original_report.get("summary") != record.get("queue")
+                        or not isinstance(original_report.get("notification"), Mapping)
+                        or {key: value for key, value in original_report["notification"].items() if key != "delivery"}
+                        != record.get("notification")):
+                    raise ReconciliationError("Original notification report does not match its durable run.")
+                report = copy.deepcopy(dict(original_report))
             notification = report.get("notification")
             if not isinstance(notification, Mapping):
                 raise ReconciliationError("Latest run report has malformed notification state.")
@@ -1094,7 +1150,8 @@ def record_notification_delivery(
                 "notifications": status == "delivered",
             }
             save_run_state(state_path, updated_state)
-            save_private_json(state_path, Path("latest-run.json"), report)
+            if latest_matches:
+                save_private_json(state_path, Path("latest-run.json"), report)
             return report
     except RuntimeStateError as exc:
         raise ReconciliationError(str(exc)) from exc

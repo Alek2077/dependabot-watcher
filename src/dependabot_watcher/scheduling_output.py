@@ -55,8 +55,20 @@ def _profile_text(profile: Mapping[str, Any]) -> list[str]:
     advisory = advisory_value if isinstance(advisory_value, Mapping) else {}
     operation_value = profile.get("operation")
     operation = operation_value if isinstance(operation_value, Mapping) else {}
+    supervisor_value = profile.get("supervisor")
+    supervisor = supervisor_value if isinstance(supervisor_value, Mapping) else {}
     mode = str(advisory.get("mode") or "off")
-    if mode == "off":
+    if supervisor.get("mode") == "approval_first":
+        ai = (
+            f"supervised by {_plain(supervisor.get('model'))} "
+            f"({_plain(supervisor.get('reasoning_effort'))} reasoning); "
+            f"access {_plain(supervisor.get('access'))}; "
+            f"up to {_plain(supervisor.get('max_jobs_per_run'))} jobs per run "
+            "(not a spending cap); consumes subscription/API usage if launched. "
+            "Private repository context and saved questions may be sent to the provider. "
+            "Saved policy only; actual workspace, runtime and native owner readiness are checked separately"
+        )
+    elif mode == "off":
         ai = "off (scheduled runs make no model calls and use no provider quota or cost)"
     else:
         triage_value = advisory.get("triage")
