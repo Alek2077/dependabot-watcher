@@ -1,4 +1,4 @@
-# Optional Windows review component
+# Windows review component
 
 This directory brings the native review source into the repository. It is a
 development integration, not yet an ordinary installed companion or a public
@@ -38,13 +38,27 @@ this component or the Python distribution.
 
 The project uses C#/WPF on .NET 10 and Windows App SDK 2.5.1, with self-contained
 Windows x64 deployment. Contributors need the Windows build tools; end users
-will receive an optional built component rather than install an SDK. The Python
-package must remain usable without the component or its bundled runtime.
+will receive a built component rather than install an SDK. The basic Python
+CLI remains usable without its runtime; the current WSL scheduled AI supervisor
+requires the component, although the review window need not stay visible.
 
 Restore and build `src/WatcherNativeProof.csproj` using a compatible Windows
 .NET SDK. A cached development build can use `--no-restore`. Build output and
 private test/launch state must not be committed. Development tool caches are
 not application runtime requirements.
+
+### Package a verified build
+
+Maintainers can create the separate Windows x64 ZIP without copying SDKs or caches into it:
+
+```bash
+python native/windows/package.py --published-directory PUBLISH_DIRECTORY --assets-file PROJECT_ASSETS_JSON --output-directory OUTPUT_DIRECTORY --version VERSION --source-commit FULL_VERIFIED_COMMIT --preview
+# Remove --preview after checking the selected build and its source provenance.
+```
+
+The assets file is the build's resolved `obj/project.assets.json`; when packaging a Windows build from WSL, `--package-cache` selects that build's mounted NuGet cache. The packager includes runtime dependencies, project license, resolved dependency notices and a per-file SHA-256 manifest. It excludes debug symbols and refuses recognized private state, logs and linked files. Keep the selected build and cache immutable during packaging; identity/change checks are not isolation against a concurrent same-user writer. The source commit is supplied by the maintainer: packaging does not independently prove build provenance, sign the executable, register it or publish a release. Integrity hashes are not publisher authentication.
+
+For a supplied package, extract the complete ZIP into a stable user-owned directory and retain the runtime files beside `WatcherNativeProof.exe`. From WSL, select that executable with `dependabot-watcher review --native-component PATH`, using the intended configuration and state. Do not replace a registered build in place: extract an update into a new versioned directory and deliberately reselect it. The basic Python CLI does not require this ZIP; the current WSL scheduled AI supervisor does, even when its window remains hidden. A complete guided install/update path and signed release distribution remain separate acceptance work; users must not install build tools merely to run a packaged component.
 
 ## Communication and lifetime
 

@@ -43,7 +43,11 @@ def _setup_ai_lines(advisory: dict[str, Any], supervisor: dict[str, Any] | None 
             f"Agent access: {_plain(supervisor.get('access'))}; account: {_plain(supervisor.get('expected_account_type'))}",
             "Private repository evidence and saved questions will be sent to the selected provider; runs consume subscription/API usage.",
             f"Workload: up to {_plain(supervisor.get('max_jobs_per_run'))} jobs per run, {_plain(supervisor.get('timeout_seconds'))} seconds per investigation; not a spending cap.",
-            "Saved choices only: workspace/runtime checks and scheduled operation have not been verified. No agent or merge was launched.",
+            (
+                "Provisioned maintenance copy passed local linked-worktree checks; runtime instruction discovery and scheduled operation have not been verified. No agent or merge was launched."
+                if supervisor.get("workspace_provisioning") else
+                "Saved choices only: workspace/runtime checks and scheduled operation have not been verified. No agent or merge was launched."
+            ),
             "Metadata advice: off (no separate advice budget)",
         ]
         if supervisor.get("permission_profile"):
@@ -65,6 +69,40 @@ def _setup_ai_lines(advisory: dict[str, Any], supervisor: dict[str, Any] | None 
             paths = validation.get("storage_reserve_paths") or []
             lines.append("Additional reserve paths: " + (", ".join(_plain(path) for path in paths) or "none"))
             lines.append("Disposable copies are cleaned after the job; reusable validation caches and execution receipts are retained.")
+        provisioning = supervisor.get("workspace_provisioning")
+        if isinstance(provisioning, list):
+            for item in provisioning:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    f"Persistent maintenance copy ({_plain(item.get('status'))}): "
+                    f"{_plain(item.get('directory'))}"
+                )
+                provenance = item.get("base_provenance")
+                lines.append(
+                    f"Base: {_plain(item.get('base_sha'))} "
+                    f"({_plain(provenance)}; runtime instruction discovery not verified)"
+                )
+                lines.append(
+                    f"Disk: estimated {_plain(item.get('estimated_bytes'))} bytes, "
+                    f"setup-wide maximum {_plain(item.get('setup_wide_maximum_bytes'))} bytes, "
+                    f"minimum free reserve {_plain(item.get('minimum_free_bytes'))} bytes."
+                )
+                reserves = item.get("reserve_paths") or []
+                lines.append("Physical reserve paths: " + (", ".join(_plain(path) for path in reserves) or "workspace filesystem only"))
+                instructions = item.get("expected_instruction_sources") or []
+                lines.append("Expected instruction paths: " + (", ".join(_plain(path) for path in instructions) or "none discovered"))
+                source_ancestors = item.get("source_checkout_ancestor_instruction_sources") or []
+                maintenance_ancestors = item.get("maintenance_path_ancestor_instruction_sources") or []
+                if source_ancestors != maintenance_ancestors:
+                    lines.append(
+                        "Source-checkout and maintenance-path ancestor instructions differ; "
+                        "review the displayed expected paths before launch."
+                    )
+                lines.append(
+                    f"Retention: {_plain(item.get('retention'))}. "
+                    "Disposable exact-PR validation copies remain separate."
+                )
         return lines
     mode = str(advisory.get("mode") or "off")
     if mode == "off":
