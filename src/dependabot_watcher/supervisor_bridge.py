@@ -110,7 +110,7 @@ def _preview(params: Mapping[str, Any]) -> dict[str, Any]:
         "proposedNetworkPolicyAmendments", "reason", "startedAtMs", "threadId", "turnId"}
     if set(params) - fields:
         raise ReviewQueueError("Agent access request contains unsupported preview fields.")
-    if params.get("kind", "command") != "command" or params.get("environmentId") is not None:
+    if params.get("kind", "command") != "command" or params.get("environmentId") not in (None, "local"):
         raise ReviewQueueError("This live review cannot present the requested terminal input or remote environment.")
     details = {name: params.get(name) for name in ("command", "cwd", "reason")}
     for name, value in details.items():

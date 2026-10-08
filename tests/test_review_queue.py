@@ -70,6 +70,24 @@ def workspace_receipt(queue: ReviewQueue) -> dict[str, Any]:
             "instruction_fingerprints": [[source, "c" * 64] for source in registration.instruction_sources]}
 
 
+def test_supervisor_context_carries_only_its_repository_action_observations(queue_case: tuple[ReviewQueue, dict[str, Any]]) -> None:
+    queue, _ = queue_case
+    before = queue.supervision_context("example-org/example-app")
+    assert "recent_actions" not in before
+    state = load_run_state(queue.directory)
+    action = {"action_id": "action_" + "a" * 24, "repository": "example-org/example-app",
+              "pull_request": 42, "head_sha": "b" * 40, "status": "success_observed", "recovery_required": False}
+    state["last_attempt"] = {"execution_observation": {"observations": [
+        {**action, "latest_outcome": "not forwarded", "recovery": "not forwarded"},
+        {**action, "repository": "other/repository"},
+    ]}}
+    save_run_state(queue.directory, state)
+    context = queue.supervision_context("EXAMPLE-ORG/EXAMPLE-APP")
+    assert context["recent_actions"] == [action]
+    assert context["mutation_authorized"] is False
+    assert context["proposals"] == before["proposals"]
+
+
 def test_legacy_queue_migration_preserves_feedback_handling_and_receipts(
     queue_case: tuple[ReviewQueue, dict[str, Any]],
 ) -> None:

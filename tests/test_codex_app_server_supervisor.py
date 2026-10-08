@@ -126,6 +126,21 @@ for line in sys.stdin:
                 send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread1','turnId':'turn1',
                       'tokenUsage':snapshot}})
             token_event(usage)
+            if FAULT in ('compaction_usage','unmarked_compaction_usage','compaction_changed_total'):
+                if FAULT!='unmarked_compaction_usage':
+                    send({'method':'item/started','params':{'threadId':'thread1','turnId':'turn1',
+                          'item':{'id':'compact1','type':'contextCompaction'}}})
+                compact_usage={'last':wire_counts({key:0 for key in counts}), 'total':dict(usage['total'])}
+                compact_usage['last']['totalTokens']=85895
+                if FAULT=='compaction_changed_total':
+                    compact_usage['total']['inputTokens']+=1
+                    compact_usage['total']['totalTokens']+=1
+                token_event(compact_usage)
+                send({'method':'item/completed','params':{'threadId':'thread1','turnId':'turn1',
+                      'item':{'id':'compact1','type':'contextCompaction'}}})
+                if FAULT=='compaction_usage':
+                    token_event(compact_usage)
+                    token_event({'last':wire_counts(counts),'total':wire_counts({key:value+100+counts[key] for key,value in counts.items()})})
             if FAULT in ('multiple_usage','duplicate_usage','regressed_usage','missing_request_usage','contradictory_duplicate'):
                 next_usage={'last':wire_counts(counts),'total':wire_counts({key:value+100+counts[key] for key,value in counts.items()})}
                 if FAULT=='regressed_usage':
@@ -346,7 +361,7 @@ def test_same_session_continuation_excludes_historical_usage_from_current_result
     assert len(result["observation"]["analysis"]["replies"]) == 2
 
 
-@pytest.mark.parametrize("fault", ["multiple_usage", "duplicate_usage"])
+@pytest.mark.parametrize("fault", ["multiple_usage", "duplicate_usage", "compaction_usage"])
 def test_current_turn_counts_all_requests_once_not_prior_thread_totals(
     runner_case: tuple[SupervisorJobs, FixtureProvider, dict[str, Any]], tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch, fault: str,
@@ -366,7 +381,7 @@ def test_current_turn_counts_all_requests_once_not_prior_thread_totals(
 @pytest.mark.parametrize("fault", ["missing_total", "bad_usage_shape", "boolean_usage", "negative_usage",
                                   "oversized_usage", "total_below_last", "regressed_usage", "missing_request_usage",
                                   "unknown_usage_counter", "cache_write_usage", "bad_total_tokens", "missing_total_tokens",
-                                  "contradictory_duplicate"])
+                                  "contradictory_duplicate", "unmarked_compaction_usage", "compaction_changed_total"])
 def test_incomplete_or_contradictory_usage_does_not_claim_completed_accounting(
     runner_case: tuple[SupervisorJobs, FixtureProvider, dict[str, Any]], tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch, fault: str,

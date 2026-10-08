@@ -15,9 +15,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from .review_queue import ReviewQueue, ReviewQueueError, _validate_workspace_evidence
+from .review_queue import ReviewQueue, ReviewQueueError, _validate_workspace_evidence, _load_queue
 from .runtime_state import ensure_private_directory, load_private_json, run_lock, save_private_json, validate_user_owned_directory
-from .supervisor_workspace import SupervisorWorkspaceEvidence, _git, verify_supervisor_workspace
+from .supervisor_workspace import SupervisorWorkspaceEvidence, _git, verify_supervisor_workspace, same_supervisor_session_workspace
 
 
 @contextmanager
@@ -66,11 +66,23 @@ The caller must hold its configured launch lease and recheck policy afterwards.
     with run_lock(root / identity):
         location = Path(identity) / "ownership.json"
         if not os.path.lexists(root / location):
-            proof = verify_supervisor_workspace(queue.config, repository, repository_plan)
+            # Enabling refresh after base movement may adopt only a previously
+            # verified copy, not any clean checkout at an arbitrary older head.
+            with run_lock(queue.directory, wait_seconds=2):
+                previous = _load_queue(queue.directory)["workspace_evidence"].get(repository.casefold())
+            initial_plan = repository_plan
+            if previous is not None:
+                _validate_workspace_evidence(previous)
+                initial_plan = {"repository": repository, "evidence_snapshot": {"base_sha": previous["head_sha"]}}
+            proof = verify_supervisor_workspace(queue.config, repository, initial_plan)
+            if previous is not None and not same_supervisor_session_workspace(previous,
+                    {**asdict(proof), "instruction_fingerprints": [list(item) for item in proof.instruction_fingerprints]}):
+                raise ReviewQueueError("Previously verified workspace identity or instructions changed; no checkout was performed.")
             if _git(workspace, "symbolic-ref", "-q", "HEAD", empty_ok=True):
                 raise ReviewQueueError("Managed refresh requires a detached maintenance worktree, not a working branch.")
             save_private_json(root, location, {"schema_version": 1, "evidence": asdict(proof), "target_sha": None})
-            return proof
+            if proof.head_sha.casefold() == target.casefold():
+                return proof
         receipt = load_private_json(root, location)
         if (not isinstance(receipt, dict) or set(receipt) != {"schema_version", "evidence", "target_sha"}
                 or type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1

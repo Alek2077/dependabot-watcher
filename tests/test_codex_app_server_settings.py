@@ -118,3 +118,22 @@ def test_settings_receipt_does_not_copy_unknown_nested_configuration(tmp_path: P
     assert receipt["sandbox"] == {"type": "workspaceWrite", "networkAccess": False}
     assert receipt["active_permission_profile"] == {"id": "watcher-job"}
     assert "PRIVATE_CONFIG_MARKER" not in json.dumps(receipt)
+
+
+def test_explicit_local_execution_environment_is_checked_not_copied(tmp_path: Path) -> None:
+    original = response(tmp_path)
+    original["thread"]["environments"] = [{"environmentId": "local", "cwd": str(tmp_path),
+                                         "runtimeWorkspaceRoots": [str(tmp_path), "/permitted"]}]
+    receipt = make_settings(tmp_path).verify_thread(original)
+    assert receipt["workspace"] == str(tmp_path)
+    assert "environments" not in receipt and "/permitted" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("environments", [[], {}, [None],
+    [{"environmentId": "remote1", "cwd": "/worktree", "runtimeWorkspaceRoots": []}],
+    [{"environmentId": "local", "cwd": "/different", "runtimeWorkspaceRoots": []}]])
+def test_unverified_execution_environment_stops_before_a_turn(tmp_path: Path, environments: Any) -> None:
+    original = response(tmp_path)
+    original["thread"]["environments"] = environments
+    with pytest.raises(ReviewQueueError, match="execution environment"):
+        make_settings(tmp_path).verify_thread(original)

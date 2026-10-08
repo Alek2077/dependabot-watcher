@@ -102,6 +102,20 @@ class CodexAppServerSettings:
                         else isinstance(approval, dict) and isinstance(approval.get("granular"), dict))):
             raise ReviewQueueError("Codex returned incomplete or different effective supervisor settings.")
         active = response.get("activePermissionProfile")
+        environments = thread.get("environments")
+        # Newer local runtimes identify ordinary command approvals as "local".
+        # An identifier is not proof of a remote host: check the selected thread
+        # environment before any model turn, and still refuse remote selections.
+        # Older runtimes omit this experimental metadata or return null.
+        if environments is not None:
+            if (not isinstance(environments, list) or len(environments) != 1
+                    or not isinstance(environments[0], dict)
+                    or environments[0].get("environmentId") != "local"
+                    or environments[0].get("cwd") != str(self.workspace)
+                    or not isinstance(environments[0].get("runtimeWorkspaceRoots"), list)
+                    or any(not isinstance(root, str) or not Path(root).is_absolute() or "\0" in root
+                           for root in environments[0]["runtimeWorkspaceRoots"])):
+                raise ReviewQueueError("Codex selected an unsupported or different execution environment.")
         if instructions != [str(p) for p in self.expected_instruction_sources]:
             raise ReviewQueueError("Codex did not load the expected trusted instruction sources.")
         if self.access == "restricted":

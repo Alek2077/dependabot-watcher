@@ -14,6 +14,17 @@ internal sealed class NativeSupervisorView
 {
     private readonly List<JsonObject> _jobs;
     internal NativeLaunchPolicy? LaunchPolicy { get; }
+    internal bool HasActiveInvestigation => _jobs.LastOrDefault(job => job["current_context"]!.GetValue<bool>())?["status"]?.GetValue<string>() is "prepared" or "running";
+    internal string? CurrentAssessmentSummary
+    {
+        get
+        {
+            var job = _jobs.LastOrDefault(value => value["current_context"]!.GetValue<bool>());
+            return job is not null && job["status"]!.GetValue<string>() == "completed"
+                && job["provider_completion_observed"]!.GetValue<bool>() && !ObservationOnly(job)
+                ? NativeDisplayText.Escape(Result(job)!["summary"]!.GetValue<string>()) : null;
+        }
+    }
     internal string? RetryJobId => _jobs.SingleOrDefault(job => job["retry_available"]?.GetValue<bool>() == true)?["job_id"]?.GetValue<string>();
 
     private NativeSupervisorView(List<JsonObject> jobs, NativeLaunchPolicy? launchPolicy)
@@ -62,6 +73,10 @@ internal sealed class NativeSupervisorView
                         || Text(recommendation?["conclusion"], 20) is not ("recommend" or "investigate" or "hold" or "no_action"))
                         throw new InvalidDataException("Invalid agent recommendation.");
                     Text(recommendation?["explanation"], 8192);
+                    if (recommendation?["ready_for_action"] is JsonNode ready
+                        && (ready is not JsonValue flag || !flag.TryGetValue<bool>(out var isReady)
+                            || (isReady && recommendation?["conclusion"]?.GetValue<string>() != "recommend")))
+                        throw new InvalidDataException("Invalid agent readiness claim.");
                 }
                 var answered = new HashSet<string>();
                 foreach (var reply in replies)
@@ -184,13 +199,14 @@ internal sealed class NativeSupervisorView
             var receipts = job["messages"]!.AsArray().ToDictionary(ReplyKey, value => value!.AsObject());
             var replies = result["replies"]!.AsArray()
                 .Where(value => item.SameItem(receipts[ReplyKey(value)]["item"]!.AsObject())).ToList();
-            if (recommendations.Count == 0 && replies.Count == 0) continue;
-            var source = job["provenance"]!;
             var current = job["current_context"]!.GetValue<bool>() && job["status"]!.GetValue<string>() == "completed" && !observationOnly;
+            if (recommendations.Count == 0 && replies.Count == 0 && !current) continue;
+            var source = job["provenance"]!;
             var content = $"{source["model"]} · {source["reasoning_effort"]} · {source["provider"]}\n"
                 + (observationOnly ? "Provider answer was received, but final job acceptance was not recorded. Historical conversation only; no current recommendation."
                     : current ? "Agent answered the saved context. Recheck the PR before any action."
                     : "Earlier context — retained for reference, not a current approval recommendation.");
+            if (current) content += $"\n\nRepository assessment: {result["summary"]}";
             foreach (var recommendation in recommendations)
                 content += $"\n\nAgent recommendation: {recommendation!["conclusion"]}\n{recommendation["explanation"]}";
             foreach (var reply in replies)
@@ -229,5 +245,80 @@ internal sealed class NativeSupervisorView
                     : "Verified answer to an earlier saved context for this same item. Not a current merge recommendation or approval."));
         }
         return null;
+    }
+
+    // Current advice is deliberately separate from historical conversation.
+    // It never grants authority or changes the planner's order.
+    private JsonNode? CurrentAdvice(QueueProposal item)
+    {
+        var job = _jobs.LastOrDefault(value => value["current_context"]!.GetValue<bool>());
+        if (job is null || job["status"]!.GetValue<string>() != "completed"
+            || !job["provider_completion_observed"]!.GetValue<bool>() || ObservationOnly(job)) return null;
+        var recommendation = Result(job)!["recommendations"]!.AsArray()
+            .SingleOrDefault(value => value?["proposal_id"]?.GetValue<string>() == item.Id);
+        return recommendation;
+    }
+
+    internal (string Heading, string Explanation, bool Ready)? CurrentRecommendation(QueueProposal item)
+    {
+        var recommendation = CurrentAdvice(item);
+        if (recommendation is null) return null;
+        var providerReady = recommendation["ready_for_action"]?.GetValue<bool>() == true;
+        var mergeStep = item.Kind == "PR" && item.Step["action"]?.GetValue<string>() == "validate_then_merge";
+        var ready = providerReady && mergeStep;
+        var heading = recommendation["conclusion"]!.GetValue<string>() switch {
+            "recommend" when ready => "Ready for merge review",
+            "recommend" when providerReady => "Action needed",
+            "hold" => "On hold",
+            "no_action" => "No action recommended",
+            _ => "Further investigation needed"
+        };
+        return (heading, NativeDisplayText.Escape(recommendation["explanation"]!.GetValue<string>()), ready);
+    }
+
+    internal (string Question, string Answer, string Source, string Freshness)? LatestConversation(QueueProposal item)
+    {
+        foreach (var job in _jobs.AsEnumerable().Reverse().Where(value => value["provider_completion_observed"]!.GetValue<bool>()
+            && value["status"]!.GetValue<string>() is "completed" or "superseded" or "failed" or "interrupted"))
+        {
+            var receipts = job["messages"]!.AsArray().ToDictionary(ReplyKey, value => value!.AsObject());
+            var reply = Result(job)!["replies"]!.AsArray().Reverse()
+                .FirstOrDefault(value => item.SameItem(receipts[ReplyKey(value)]["item"]!.AsObject()));
+            if (reply is null) continue;
+            var receipt = receipts[ReplyKey(reply)];
+            var current = !ObservationOnly(job) && job["status"]!.GetValue<string>() == "completed"
+                && job["current_context"]!.GetValue<bool>() && receipt["proposal_id"]!.GetValue<string>() == item.Id;
+            return (NativeDisplayText.Escape(receipt["question"]!.GetValue<string>()),
+                NativeDisplayText.Escape(reply["message"]!.GetValue<string>()),
+                NativeDisplayText.Escape($"{job["provenance"]!["model"]} · {job["provenance"]!["reasoning_effort"]}"),
+                current ? "Verified reply for the current saved context. This is not merge approval."
+                    : "Earlier conversation for this item — not a current recommendation or approval.");
+        }
+        return null;
+    }
+
+    internal string ActionGuidance(QueueProposal item, bool executionEnabled)
+    {
+        var advice = CurrentAdvice(item);
+        if (advice?["conclusion"]?.GetValue<string>() == "hold") return "On hold — see reason in details.";
+        if (advice?["conclusion"]?.GetValue<string>() == "no_action") return "No action needed.";
+        var recommendation = CurrentRecommendation(item);
+        if (item.Kind != "PR" || item.Step["action"]?.GetValue<string>() != "validate_then_merge")
+            return advice?["ready_for_action"]?.GetValue<bool>() == true ? "Next: review proposed action." : "Next: investigate this item.";
+        if (recommendation?.Ready != true)
+            return advice is null ? "Next: start investigation." : "Next: continue investigation.";
+        var target = NativeDisplayText.Escape(item.Identity["expected_base"]?.GetValue<string>() ?? "the configured target branch");
+        return executionEnabled
+            ? $"Next: review merge into {target}."
+            : "Merge disabled in this profile.";
+    }
+
+    internal bool SuggestsInvestigation(QueueProposal item)
+    {
+        if (HasActiveInvestigation) return false;
+        var advice = CurrentAdvice(item);
+        var conclusion = advice?["conclusion"]?.GetValue<string>();
+        return conclusion is null or "investigate"
+            || (conclusion == "recommend" && advice?["ready_for_action"]?.GetValue<bool>() != true);
     }
 }

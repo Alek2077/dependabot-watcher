@@ -339,9 +339,9 @@ def test_cli_schedule_binds_the_invoked_console_script(
 
 def test_cli_schedule_normalizes_wsl_style_native_windows_invocation() -> None:
     assert cli._normalized_console_invocation(
-        "/mnt/c/Users/Alek/AppData/Local/Programs/dependabot-watcher.exe",
+        "/mnt/c/Users/ExampleUser/AppData/Local/Programs/dependabot-watcher.exe",
         windows=True,
-    ) == r"C:\Users\Alek\AppData\Local\Programs\dependabot-watcher.exe"
+    ) == r"C:\Users\ExampleUser\AppData\Local\Programs\dependabot-watcher.exe"
 
 
 def test_cli_schedule_uses_console_sibling_when_launcher_argv_is_opaque(

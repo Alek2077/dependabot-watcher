@@ -86,6 +86,7 @@ def _supervisor_data(policy: SupervisorConfig) -> dict[str, Any]:
             raise SetupError("Disabled supervision cannot retain enabled supervisor choices.")
         return {"mode": "off"}
     data = asdict(policy)
+    data['validation']['storage_reserve_paths'] = list(policy.validation.storage_reserve_paths)
     if policy.permission_profile is None:
         data.pop("permission_profile")
     data["workspaces"] = [
@@ -245,6 +246,14 @@ def _render_config(data: Mapping[str, Any]) -> str:
             lines.append(f"{key} = {str(supervisor[key]).lower()}")
         for key in ("timeout_seconds", "max_jobs_per_run"):
             lines.append(f"{key} = {supervisor[key]}")
+        validation = supervisor["validation"]
+        lines.extend(["", "[supervisor.validation]"])
+        for key in ("preparation_authorized", "network_authorized"):
+            lines.append(f"{key} = {str(validation[key]).lower()}")
+        for key in ("maximum_bytes", "minimum_free_bytes", "command_timeout_seconds"):
+            lines.append(f"{key} = {validation[key]}")
+        lines.append('storage_reserve_paths = [' + ', '.join(_toml_string(path)
+                     for path in validation['storage_reserve_paths']) + ']')
         for workspace in supervisor["workspaces"]:
             lines.extend(["", "[[supervisor.workspaces]]",
                           f"repository = {_toml_string(workspace['repository'])}",

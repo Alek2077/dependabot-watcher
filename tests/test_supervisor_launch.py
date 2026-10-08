@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import shutil
 from pathlib import Path
 from typing import Any, cast
 
@@ -14,7 +15,7 @@ from dependabot_watcher.github import GitHubClient
 from dependabot_watcher.providers.codex_app_server_settings import CodexAppServerSettings
 from dependabot_watcher.review_queue import ReviewQueue, ReviewQueueError
 from dependabot_watcher.supervision import SupervisorJobs
-from dependabot_watcher.supervisor_launch import run_configured_supervisor
+from dependabot_watcher.supervisor_launch import run_configured_supervisor, _session_policy_identity
 from test_codex_app_server_supervisor import PROGRAM
 from test_execution import refresh_plan_identities, saved_plan
 from test_review_queue import decision, persist_plan
@@ -68,6 +69,51 @@ def invoke(case: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         permission_presentation=lambda params: ("Synthetic permission", ["allow_once", "deny", "cancel"]), **kwargs)
 
 
+def test_configured_supervisor_executes_exact_snapshot_through_dynamic_tools_and_records_results(
+    launch_case: dict[str, Any],
+) -> None:
+    case = launch_case
+    if not Path('/proc').is_dir() or shutil.which('bwrap') is None:
+        pytest.skip('Linux/WSL Bubblewrap validation integration')
+    path = case['path']
+    path.write_text(path.read_text().replace('model_use_acknowledged = true',
+        'model_use_acknowledged = true\nvalidation_authorized = true')
+        + '\n[supervisor.validation]\npreparation_authorized = true\nnetwork_authorized = false\n')
+    case['queue'].config = load_config(path)
+    step = case['report']['repositories'][0]['recommended_order'][0]
+    step['identity']['head_sha'] = case['head']
+    step['freshness']['head_sha'] = case['head']
+    case['report'].update(refresh_plan_identities(case['report']))
+    program = case['program']
+    dynamic = r'''
+        assert 'watcher_validation_prepare' in frame['params']['input'][0]['text']
+        proposal = data['context']['proposals'][0]['proposal_id']
+        send({'id':70,'method':'item/tool/call','params':{'threadId':'thread1','turnId':'turn1',
+              'callId':'prepare1','tool':'watcher_validation_prepare','arguments':{'proposal_id':proposal}}})
+        prepared=json.loads(sys.stdin.readline())
+        assert prepared['id']==70 and prepared['result']['success'] is True
+        snapshot=json.loads(prepared['result']['contentItems'][0]['text'])
+        assert snapshot['git_metadata_present'] is False and snapshot['tracked_files']>0
+        send({'id':71,'method':'item/tool/call','params':{'threadId':'thread1','turnId':'turn1',
+              'callId':'run1','tool':'watcher_validation_run','arguments':{
+                'validation_id':snapshot['validation_id'],
+                'command':'test ! -e .git && printf verified-sandbox'}}})
+        completed=json.loads(sys.stdin.readline())
+        assert completed['id']==71 and completed['result']['success'] is True
+        execution=json.loads(completed['result']['contentItems'][0]['text'])
+        assert execution['output']=='verified-sandbox' and execution['exit_code']==0
+        assert execution['head_sha']==snapshot['head_sha'] and execution['tracked_source_changed'] is False
+'''
+    program.write_text(program.read_text().replace("        proposals=data['context']['proposals']", dynamic + "\n        proposals=data['context']['proposals']"))
+    result = invoke(case)
+    assert result['job']['status'] == 'completed'
+    receipts = list((case['queue'].directory / 'supervisor-validation' / result['job']['job_id']).glob('*.json'))
+    assert len(receipts) == 2
+    assert not list((case['queue'].directory / 'supervisor-validation' / result['job']['job_id']).glob('validation_*/'))
+    assert not (case['worktree'] / '.tmp').exists()
+    assert not (case['queue'].directory / 'execution-audit.jsonl').exists()
+
+
 def test_configured_launch_refreshes_real_worktree_and_uses_only_selected_runtime(launch_case: dict[str, Any]) -> None:
     case = launch_case
     result = invoke(case)
@@ -96,6 +142,38 @@ def test_saved_feedback_continues_only_the_owned_matching_session_and_answers_ex
     saved = second["job"]["context"]["proposals"][0]["feedback"][0]
     assert saved["message"] == message and reply["request_id"] == saved["request_id"]
     assert len(case["launches"]) == 2
+
+
+@pytest.mark.parametrize("change", ["model", "effort", "timeout", "run_budget", "workspace_refresh"])
+def test_compatible_settings_changes_reuse_conversation_with_new_checked_job(launch_case: dict[str, Any], change: str) -> None:
+    case = launch_case
+    first = invoke(case)
+    text = case["path"].read_text()
+    replacements = {
+        "model": ('model = "gpt-5.6-luna"', 'model = "gpt-6.1-sol"'),
+        "effort": ('reasoning_effort = "xhigh"', 'reasoning_effort = "low"'),
+        "timeout": ('model_use_acknowledged = true', 'model_use_acknowledged = true\ntimeout_seconds = 600'),
+        "run_budget": ('model_use_acknowledged = true', 'model_use_acknowledged = true\nmax_jobs_per_run = 2'),
+        "workspace_refresh": (', instruction_sources = [', ', refresh_authorized = true, instruction_sources = ['),
+    }
+    old, new = replacements[change]
+    case["path"].write_text(text.replace(old, new))
+    case["queue"].config = load_config(case["path"])
+    second = invoke(case)
+    assert second["reused"] is False and second["job"]["job_id"] != first["job"]["job_id"]
+    assert second["job"]["session_id"] == first["job"]["session_id"]
+    assert second["observation"]["model"] == case["queue"].config.supervisor.model
+    assert second["observation"]["reasoning_effort"] == case["queue"].config.supervisor.reasoning_effort
+
+
+def test_session_policy_keeps_access_account_and_tool_capabilities_separate_from_resource_limits() -> None:
+    policy: dict[str, Any] = {"provider": "codex_app_server", "access": "inherit", "expected_account_type": "chatgpt",
+              "validation": {"preparation_authorized": True, "network_authorized": False, "maximum_bytes": 100}}
+    identity = _session_policy_identity(policy)
+    assert _session_policy_identity({**policy, "validation": {**policy["validation"], "maximum_bytes": 200}}) == identity
+    for field, value in (("provider", "another"), ("access", "full"), ("expected_account_type", "apiKey")):
+        assert _session_policy_identity({**policy, field: value}) != identity
+    assert _session_policy_identity({**policy, "validation": {**policy["validation"], "network_authorized": True}}) != identity
 
 
 def test_refresh_enabled_case_aliases_reuse_exact_job_and_owned_session(launch_case: dict[str, Any]) -> None:
@@ -166,7 +244,7 @@ def test_retry_failure_requires_a_new_exact_choice(launch_case: dict[str, Any]) 
     assert len(case["launches"]) == 2
 
 
-def test_retry_after_failed_continuation_does_not_resume_earlier_completed_session(launch_case: dict[str, Any]) -> None:
+def test_retry_after_failed_continuation_resumes_compatible_completed_session(launch_case: dict[str, Any]) -> None:
     case = launch_case
     completed = invoke(case)
     case["queue"].handle(decision(case["queue"], "feedback", message="Continue the completed investigation"))
@@ -176,9 +254,9 @@ def test_retry_after_failed_continuation_does_not_resume_earlier_completed_sessi
     jobs = SupervisorJobs(case["queue"])
     failed = next(record for record in jobs._load()["jobs"].values() if record["status"] == "failed")
     assert failed["session_id"] == completed["job"]["session_id"]
-    case["program"].write_text(case["program"].read_text().replace("FAULT='failed_turn'", "FAULT=''").replace("'thread1'", "'thread2'"))
+    case["program"].write_text(case["program"].read_text().replace("FAULT='failed_turn'", "FAULT=''"))
     retried = invoke(case, retry_job_id=failed["job_id"])
-    assert retried["job"]["status"] == "completed" and retried["job"]["session_id"] == "thread2"
+    assert retried["job"]["status"] == "completed" and retried["job"]["session_id"] == completed["job"]["session_id"]
     assert retried["job"]["retry_of"] == failed["job_id"] and jobs.read(failed["job_id"]) == failed
     assert len(case["launches"]) == 3
 

@@ -22,6 +22,28 @@ from .runtime_state import ensure_private_directory, run_lock
 from .supervision import SupervisorJobs
 from .supervisor_runner import SupervisorRunner
 from .supervisor_workspace_refresh import refresh_supervisor_workspace, supervisor_workspace_lease
+from .supervisor_workspace import same_supervisor_session_workspace
+
+
+def _session_policy_identity(policy: object) -> str:
+    """Separate conversation compatibility from each job's exact authority.
+
+    Model/effort are explicitly reapplied and checked on thread/resume. Host
+    orchestration and validation resource limits also bind the new job, not the
+    conversation. Access/account/provider/tool capability changes remain gated.
+    """
+    if not isinstance(policy, dict):
+        return supervisor_context_digest(policy)
+    harmless = {"model", "reasoning_effort", "timeout_seconds", "max_jobs_per_run"}
+    identity = {key: value for key, value in policy.items() if key not in harmless}
+    if (isinstance(identity.get("workspaces"), (list, tuple))
+            and all(isinstance(registration, dict) for registration in identity["workspaces"])):
+        identity["workspaces"] = [{key: value for key, value in registration.items() if key != "refresh_authorized"}
+                                  for registration in identity["workspaces"]]
+    if isinstance(identity.get("validation"), dict):
+        limits = {"maximum_bytes", "minimum_free_bytes", "command_timeout_seconds", "storage_reserve_paths"}
+        identity["validation"] = {key: value for key, value in identity["validation"].items() if key not in limits}
+    return supervisor_context_digest(identity)
 
 
 def _configured_registration(queue: ReviewQueue, repository: str) -> tuple[SupervisorConfig, SupervisorWorkspaceConfig]:
@@ -58,7 +80,7 @@ def configured_launch_summary(queue: ReviewQueue, repository: str) -> dict[str, 
         policy, registration = _configured_registration(queue, repository)
     except ReviewQueueError as exc:
         reason = str(exc)
-    return {
+    summary = {
         "status": "configured" if registration is not None else "blocked", "reason": reason,
         "mode": policy.mode, "provider": policy.provider, "model": policy.model,
         "reasoning_effort": policy.reasoning_effort, "expected_account_type": policy.expected_account_type,
@@ -74,6 +96,9 @@ def configured_launch_summary(queue: ReviewQueue, repository: str) -> dict[str, 
         "usage_effect": "subscription_or_api_usage_if_launched",
         "evidence_privacy": "repository_evidence_and_saved_questions_sent_to_selected_provider_if_launched",
     }
+    if policy.validation.preparation_authorized:
+        summary['validation'] = asdict(policy.validation)
+    return summary
 
 
 def run_configured_supervisor(
@@ -127,12 +152,13 @@ def run_configured_supervisor(
             attempts = [item for item in state["jobs"].values()
                         if item["repository"].casefold() == repository.casefold()]
             # Continue only a completed, backend-owned session whose policy and
-            # full workspace receipt still match. A changed harness/base starts
-            # fresh; arbitrary thread IDs never come from UI or model output.
+            # workspace ownership/harness still match. A newly verified base
+            # changes evidence, not conversation identity. Arbitrary thread IDs
+            # never come from UI or model output.
             owners = [item for item in attempts if item["status"] in {"completed", "superseded"}
                       and item["session_id"] is not None
-                      and supervisor_context_digest(item["context"].get("supervisor")) == supervisor_context_digest(current["supervisor"])
-                      and item["context"].get("workspace_evidence") == current["workspace_evidence"]]
+                      and _session_policy_identity(item["context"].get("supervisor")) == _session_policy_identity(current["supervisor"])
+                      and same_supervisor_session_workspace(item["context"].get("workspace_evidence"), current["workspace_evidence"])]
             owner = max(owners, key=lambda item: item["finished_at"]) if owners else None
         job = jobs.prepare(repository, retry_job_id=retry_job_id)
         if job["context_digest"] != digest:
@@ -145,7 +171,7 @@ def run_configured_supervisor(
             permission_profile=policy.permission_profile, full_access_acknowledged=policy.full_access_acknowledged,
             timeout_seconds=policy.timeout_seconds)
         provider = CodexAppServerSupervisor(settings, expected_account_type=policy.expected_account_type,
-            session_id=owner["session_id"] if owner and "retry_of" not in job else None,
+            session_id=owner["session_id"] if owner else None,
             permission_presentation=permission_presentation,
             permission_notice=permission_notice,
             consumer_check=consumer_check,

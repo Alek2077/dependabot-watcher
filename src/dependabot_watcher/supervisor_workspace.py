@@ -22,7 +22,7 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from .config import SupervisorWorkspaceConfig, WatcherConfig, normalize_repository_name
-from .review_queue import ReviewConfigurationChanged, ReviewQueueError, _validate_workspace_evidence
+from .review_queue import ReviewConfigurationChanged, ReviewQueueError, _validate_workspace_evidence, supervisor_context_digest
 from .runtime_state import RuntimeStateError, validate_user_owned_directory
 
 
@@ -164,6 +164,25 @@ class SupervisorAuthorityChanged(ReviewConfigurationChanged):
     """The selected trusted instructions no longer match this attempt."""
 
 
+def same_supervisor_session_workspace(previous: object, current: object) -> bool:
+    """A new checked commit is new evidence, not a different workspace/session.
+
+    Both receipts are validated separately. Preserve Git ownership and trusted
+    instruction identity; only the head revision may evolve during maintenance.
+    """
+    if not isinstance(previous, Mapping) or not isinstance(current, Mapping):
+        return False
+    try:
+        _validate_workspace_evidence(previous)
+        _validate_workspace_evidence(current)
+    except ReviewQueueError:
+        return False
+    fields = ("directory", "git_directory", "common_directory", "instruction_fingerprints")
+    return (str(previous.get("repository", "")).casefold() == str(current.get("repository", "")).casefold()
+            and supervisor_context_digest({field: previous.get(field) for field in fields})
+            == supervisor_context_digest({field: current.get(field) for field in fields}))
+
+
 def verify_supervisor_runtime_binding(context: Mapping[str, Any], settings: Mapping[str, Any]) -> None:
     """Bind a real/provider launch receipt to this job, not independent settings."""
     proof = context.get("workspace_evidence")
@@ -176,6 +195,8 @@ def verify_supervisor_runtime_binding(context: Mapping[str, Any], settings: Mapp
                    ("model", "reasoning_effort", "access", "validation_authorized"))
             or settings.get("account_type") != policy.get("expected_account_type")):
         raise ReviewQueueError("Supervisor runtime differs from its selected workspace, instructions or policy.")
+    if policy.get('validation', {}).get('preparation_authorized') is True and settings.get('validation_policy') != policy['validation']:
+        raise ReviewQueueError('Supervisor validation runtime differs from its saved capability policy.')
 
 
 class SupervisorInstructionGuard:

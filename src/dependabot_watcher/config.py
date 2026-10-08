@@ -154,6 +154,18 @@ class SupervisorWorkspaceConfig:
 
 
 @dataclass(frozen=True)
+class SupervisorValidationConfig:
+    """Explicit isolated preparation policy; never remote mutation authority."""
+
+    preparation_authorized: bool = False
+    network_authorized: bool = False
+    maximum_bytes: int = 256 * 1024 * 1024
+    minimum_free_bytes: int = 512 * 1024 * 1024
+    command_timeout_seconds: int = 120
+    storage_reserve_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SupervisorConfig:
     """Explicit host/runtime policy, independent of metadata advice and merging."""
 
@@ -170,6 +182,7 @@ class SupervisorConfig:
     timeout_seconds: int = 900
     max_jobs_per_run: int = 1
     workspaces: tuple[SupervisorWorkspaceConfig, ...] = ()
+    validation: SupervisorValidationConfig = field(default_factory=SupervisorValidationConfig)
 
 
 @dataclass(frozen=True)
@@ -663,7 +676,7 @@ def _supervisor(value: object, repositories: tuple[RepositoryConfig, ...]) -> Su
         raise ConfigError("supervisor.mode must be off or approval_first; unattended actions are not supported.")
     _reject_unknown(data, {"mode", "provider", "model", "reasoning_effort", "expected_account_type", "access",
                           "permission_profile", "model_use_acknowledged", "full_access_acknowledged",
-                          "validation_authorized", "timeout_seconds", "max_jobs_per_run", "workspaces"}, "supervisor")
+                          "validation_authorized", "timeout_seconds", "max_jobs_per_run", "workspaces", "validation"}, "supervisor")
     if data.get("provider") != "codex_app_server":
         raise ConfigError("supervisor.provider must explicitly select codex_app_server.")
     model = _optional_string(data.get("model"), "supervisor.model")
@@ -718,12 +731,35 @@ def _supervisor(value: object, repositories: tuple[RepositoryConfig, ...]) -> Su
         if type(refresh) is not bool:
             raise ConfigError("Supervisor workspace refresh_authorized must be a boolean.")
         workspaces.append(SupervisorWorkspaceConfig(configured[name.casefold()], directory, instructions, refresh))
+    raw_validation = _require_mapping(data.get("validation", {}), "supervisor.validation")
+    _reject_unknown(raw_validation, {"preparation_authorized", "network_authorized", "maximum_bytes",
+                                   "minimum_free_bytes", "command_timeout_seconds", "storage_reserve_paths"}, "supervisor.validation")
+    for key in ("preparation_authorized", "network_authorized"):
+        if type(raw_validation.get(key, False)) is not bool:
+            raise ConfigError(f"supervisor.validation.{key} must be a boolean.")
+    preparation = raw_validation.get("preparation_authorized", False)
+    network = raw_validation.get("network_authorized", False)
+    if (preparation and data.get("validation_authorized", False) is not True
+            or network and not preparation):
+        raise ConfigError("Validation preparation requires test authority; network requires preparation authority.")
+    reserve_paths = raw_validation.get('storage_reserve_paths', [])
+    if not isinstance(reserve_paths, list) or len(reserve_paths) > 8:
+        raise ConfigError('supervisor.validation.storage_reserve_paths must be a bounded list.')
+    validation = SupervisorValidationConfig(
+        preparation_authorized=preparation, network_authorized=network,
+        maximum_bytes=_positive_int(raw_validation.get("maximum_bytes", 256 * 1024**2),
+                                    "supervisor.validation.maximum_bytes", maximum=16 * 1024**3),
+        minimum_free_bytes=_positive_int(raw_validation.get("minimum_free_bytes", 512 * 1024**2),
+                                         "supervisor.validation.minimum_free_bytes", maximum=64 * 1024**3),
+        command_timeout_seconds=_positive_int(raw_validation.get("command_timeout_seconds", 120),
+                                              "supervisor.validation.command_timeout_seconds", maximum=3600),
+        storage_reserve_paths=tuple(_supervisor_path(path, 'validation storage reserve path') for path in reserve_paths))
     return SupervisorConfig(mode=mode, provider="codex_app_server", model=model, reasoning_effort=effort,
         expected_account_type=account, access=access, permission_profile=permission, model_use_acknowledged=True,
         full_access_acknowledged=full, validation_authorized=data.get("validation_authorized", False),
         timeout_seconds=_positive_int(data.get("timeout_seconds", 900), "supervisor.timeout_seconds", maximum=3600),
         max_jobs_per_run=_positive_int(data.get("max_jobs_per_run", 1), "supervisor.max_jobs_per_run", maximum=20),
-        workspaces=tuple(workspaces))
+        workspaces=tuple(workspaces), validation=validation)
 
 
 def _supervisor_path(value: object, location: str) -> str:

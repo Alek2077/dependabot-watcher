@@ -78,7 +78,7 @@ def _validate_context(context: Mapping[str, Any]) -> None:
               "repository_plan", "evidence_status", "proposals", "retired_proposals", "mutation_authorized"}
     # Preserve existing development journals; new jobs bind the configured
     # supervisor policy as well. Missing legacy policy is never launch consent.
-    if (not fields <= set(context) or set(context) - fields - {"supervisor", "workspace_evidence"}
+    if (not fields <= set(context) or set(context) - fields - {"supervisor", "workspace_evidence", "recent_actions", "previous_assessment"}
             or ("supervisor" in context and not isinstance(context["supervisor"], dict))
             or type(context["schema_version"]) is not int or context["schema_version"] != 1
             or not isinstance(context["repository"], str)
@@ -92,6 +92,51 @@ def _validate_context(context: Mapping[str, Any]) -> None:
             or not isinstance(context["proposals"], list) or len(context["proposals"]) > 1000
             or not isinstance(context["retired_proposals"], list) or len(context["retired_proposals"]) > 100):
         raise ReviewQueueError("Supervisor context has an invalid bounded schema.")
+    actions = context.get("recent_actions", [])
+    if not isinstance(actions, list) or len(actions) > 20:
+        raise ReviewQueueError("Supervisor maintenance actions exceed their bounded schema.")
+    for action in actions:
+        if (not isinstance(action, dict) or set(action) != {
+                "action_id", "repository", "pull_request", "head_sha", "status", "recovery_required"}
+                or not isinstance(action["repository"], str)
+                or action["repository"].casefold() != context["repository"].casefold()
+                or not isinstance(action["action_id"], str) or not re.fullmatch(r"action_[a-f0-9]{24}", action["action_id"])
+                or type(action["pull_request"]) is not int or action["pull_request"] <= 0
+                or not isinstance(action["head_sha"], str) or not re.fullmatch(r"[a-fA-F0-9]{40}|[a-fA-F0-9]{64}", action["head_sha"])
+                or not isinstance(action["status"], str)
+                or action["status"] not in {"interrupted", "failed", "already_applied", "observation_incomplete",
+                    "success_observed", "success_not_reflected", "repository_state_changed", "unknown"}
+                or type(action["recovery_required"]) is not bool):
+            raise ReviewQueueError("Supervisor maintenance action is invalid or outside repository scope.")
+    prior = context.get("previous_assessment")
+    if prior is not None:
+        if (not isinstance(prior, dict) or set(prior) != {"source_job_id", "source_context_digest", "repository",
+                "provider", "model", "reasoning_effort", "applicability", "summary", "recommendations", "recommendations_omitted"}
+                or prior["repository"] != context["repository"]
+                or prior["applicability"] != "historical_recheck_before_use"
+                or not isinstance(prior["source_job_id"], str) or not _JOB_ID.fullmatch(prior["source_job_id"])
+                or not isinstance(prior["source_context_digest"], str) or not re.fullmatch(r"[a-f0-9]{64}", prior["source_context_digest"])
+                or any(not isinstance(prior[name], str) or not prior[name].strip() or len(prior[name].encode()) > limit
+                       for name, limit in (("provider", 128), ("model", 128), ("reasoning_effort", 128), ("summary", 8192)))
+                or not isinstance(prior["recommendations"], list) or len(prior["recommendations"]) > 20
+                or type(prior["recommendations_omitted"]) is not int or not 0 <= prior["recommendations_omitted"] <= 1000):
+            raise ReviewQueueError("Historical supervisor assessment is malformed.")
+        for recommendation in prior["recommendations"]:
+            if (not isinstance(recommendation, dict) or set(recommendation) != {"proposal_id", "item", "conclusion", "explanation"}
+                    or not isinstance(recommendation["proposal_id"], str) or not re.fullmatch(r"proposal_[a-f0-9]{16}", recommendation["proposal_id"])
+                    or not isinstance(recommendation["item"], dict)
+                    or set(recommendation["item"]) != {"repository", "kind", "number", "head_sha"}
+                    or recommendation["item"]["repository"] != context["repository"]
+                    or not isinstance(recommendation["item"]["kind"], str)
+                    or recommendation["item"]["kind"] not in {"pull_request", "alert"}
+                    or type(recommendation["item"]["number"]) is not int or recommendation["item"]["number"] <= 0
+                    or (recommendation["item"]["kind"] == "pull_request" and (not isinstance(recommendation["item"]["head_sha"], str)
+                        or not re.fullmatch(r"[a-fA-F0-9]{40}|[a-fA-F0-9]{64}", recommendation["item"]["head_sha"])))
+                    or (recommendation["item"]["kind"] == "alert" and recommendation["item"]["head_sha"] is not None)
+                    or not isinstance(recommendation["conclusion"], str) or recommendation["conclusion"] not in {"recommend", "investigate", "hold", "no_action"}
+                    or not isinstance(recommendation["explanation"], str) or not recommendation["explanation"].strip()
+                    or len(recommendation["explanation"].encode()) > 8192):
+                raise ReviewQueueError("Historical supervisor recommendation is malformed.")
     plan = context["repository_plan"]
     if plan is None:
         if context["evidence_status"] != "unavailable" or context["proposals"]:
@@ -127,6 +172,61 @@ def _validate_context(context: Mapping[str, Any]) -> None:
             seen.add(proposal_id)
             if not retired and (plan is None or item["step"] not in plan["recommended_order"]):
                 raise ReviewQueueError("Supervisor proposal does not match its evidence plan.")
+
+
+def previous_assessment(queue: ReviewQueue, context: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Carry one verified pre-action analysis, never recursive job history.
+
+    Bind selection to an observed successful exact head which was active in
+    that prior job. A post-merge completion cannot select itself and churn the
+    context digest forever. Changed policy/harness starts without this input.
+    """
+    from .supervisor_runner import validate_observation
+    from .supervisor_workspace import same_supervisor_session_workspace
+
+    successful = [action for action in context.get("recent_actions", [])
+                  if action["status"] in {"success_observed", "already_applied"} and not action["recovery_required"]]
+    if not successful:
+        return None
+    action = successful[-1]
+    if any(proposal["step"]["kind"] == "pull_request"
+           and proposal["step"]["identity"].get("number") == action["pull_request"]
+           and proposal["step"]["identity"].get("head_sha") == action["head_sha"] for proposal in context["proposals"]):
+        return None
+    candidates = []
+    for job in SupervisorJobs(queue)._load()["jobs"].values():
+        old = job["context"]
+        if (job["repository"].casefold() != context["repository"].casefold()
+                or job["status"] not in {"completed", "superseded"}
+                or _digest(old.get("supervisor")) != _digest(context.get("supervisor"))
+                or not same_supervisor_session_workspace(old.get("workspace_evidence"), context.get("workspace_evidence"))):
+            continue
+        if any(proposal["step"]["kind"] == "pull_request"
+               and proposal["step"]["identity"].get("number") == action["pull_request"]
+               and proposal["step"]["identity"].get("head_sha") == action["head_sha"] for proposal in old["proposals"]):
+            candidates.append(job)
+    for job in sorted(candidates, key=lambda value: (_time(value["finished_at"]), value["job_id"]), reverse=True):
+        path = Path("supervisor-observations") / f'{job["job_id"]}.json'
+        if not ((queue.directory / path).exists() or (queue.directory / path).is_symlink()):
+            continue
+        observed = load_private_json(queue.directory, path, maximum_bytes=2_000_000)
+        if (observed.get("job_id") != job["job_id"] or observed.get("context_digest") != job["context_digest"]
+                or observed.get("session_id") != job["session_id"] or observed.get("analysis") != job["result"]):
+            raise ReviewQueueError("Historical supervisor observation does not match its saved job.")
+        validate_observation({key: value for key, value in observed.items() if key not in {"job_id", "context_digest"}}, job)
+        proposals = {proposal["proposal_id"]: proposal for proposal in job["context"]["proposals"]}
+        recommendations = [{"proposal_id": rec["proposal_id"], "item": {
+                                "repository": context["repository"], "kind": proposals[rec["proposal_id"]]["step"]["kind"],
+                                "number": proposals[rec["proposal_id"]]["step"]["identity"]["number"],
+                                "head_sha": proposals[rec["proposal_id"]]["step"]["identity"].get("head_sha")},
+                            "conclusion": rec["conclusion"], "explanation": rec["explanation"]}
+                           for rec in job["result"]["recommendations"] if rec["proposal_id"] in proposals]
+        return {"source_job_id": job["job_id"], "source_context_digest": job["context_digest"],
+                "repository": context["repository"], "provider": observed["provider"], "model": observed["model"],
+                "reasoning_effort": observed["reasoning_effort"], "applicability": "historical_recheck_before_use",
+                "summary": job["result"]["summary"], "recommendations": recommendations[:20],
+                "recommendations_omitted": max(0, len(recommendations) - 20)}
+    return None
 
 
 class SupervisorJobs:
@@ -328,8 +428,6 @@ class SupervisorJobs:
                    for other in state["jobs"].values()):
                 raise ReviewQueueError("A supervisor is already running for this repository.")
             if resume_session_id is not None:
-                if "retry_of" in job:
-                    raise ReviewQueueError("A retry must start a fresh session, not resume a failed conversation.")
                 if not isinstance(resume_session_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", resume_session_id):
                     raise ReviewQueueError("Supervisor resume identity is invalid.")
                 owners = [other for other in state["jobs"].values() if other["session_id"] == resume_session_id]

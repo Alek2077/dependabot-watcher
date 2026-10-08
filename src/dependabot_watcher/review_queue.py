@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .advisory import advisory_action_policy
-from .config import ConfigError, WatcherConfig, load_config, normalize_repository_name
+from .config import ConfigError, SupervisorValidationConfig, WatcherConfig, load_config, normalize_repository_name
 from .planning import PlanningError, validate_plan_identities
 from .runtime_state import (
     RuntimeStateError,
@@ -382,6 +382,9 @@ class ReviewQueue:
         retired = [{key: copy.deepcopy(value) for key, value in item.items() if key != "plan_id"}
                    for item in state["history"] if item["repository"].casefold() == key]
         supervisor = asdict(self.config.supervisor)
+        # New disabled preparation must not invalidate prior jobs or sessions.
+        if self.config.supervisor.validation == SupervisorValidationConfig():
+            supervisor.pop("validation")
         supervisor["workspaces"] = [asdict(workspace) for workspace in self.config.supervisor.workspaces
                                     if workspace.repository.casefold() == key]
         # Preserve existing context/session identities when the new optional
@@ -392,7 +395,7 @@ class ReviewQueue:
         workspace = state["workspace_evidence"].get(key)
         if workspace is not None and not _workspace_matches_context(workspace, supervisor, repository_plan, repository):
             workspace = None
-        return {
+        context = {
             "schema_version": 1, "repository": repository,
             "repository_config": asdict(configured),
             "path_policy": asdict(self.config.path_policy),
@@ -406,6 +409,33 @@ class ReviewQueue:
             "proposals": proposals, "retired_proposals": retired,
             "mutation_authorized": False,
         }
+        # The refreshed collector's bounded execution observations explain why
+        # an earlier PR disappeared. Absence from the queue alone is not proof
+        # of a successful merge, nor is an old action new execution authority.
+        attempt = load_run_state(self.directory).get("last_attempt") or {}
+        execution = attempt.get("execution_observation") or {}
+        if not isinstance(execution, dict):
+            raise ReviewQueueError("Maintenance action observations are invalid.")
+        observations = execution.get("observations", [])
+        if not isinstance(observations, list) or len(observations) > 20:
+            raise ReviewQueueError("Maintenance action observations are invalid.")
+        actions = []
+        for observation in observations:
+            if not isinstance(observation, dict):
+                raise ReviewQueueError("Maintenance action observation is invalid.")
+            if str(observation.get("repository", "")).casefold() != key:
+                continue
+            actions.append({name: copy.deepcopy(observation.get(name)) for name in
+                            ("action_id", "repository", "pull_request", "head_sha", "status", "recovery_required")})
+        if actions:
+            context["recent_actions"] = actions
+            # Runtime import breaks the queue/journal validation dependency;
+            # the projection contains no nested context or executable authority.
+            from .supervision import previous_assessment
+            prior = previous_assessment(self, context)
+            if prior is not None:
+                context["previous_assessment"] = prior
+        return context
 
     def current_selection(self, proposal_id: str, version: int) -> tuple[dict[str, Any], dict[str, Any]]:
         """Resolve an exact pending selection for a backend-owned action.

@@ -1449,8 +1449,9 @@ def test_active_reconciliation_lock_blocks_execution(
     assert client.merges == []
 
 
+@pytest.mark.parametrize("repository", ["example-org/example-app", "EXAMPLE-ORG/EXAMPLE-APP"])
 def test_execution_observation_correlates_success_and_recovery(
-    tmp_path: Path,
+    tmp_path: Path, repository: str,
 ) -> None:
     tmp_path.chmod(0o700)
     binding = {
@@ -1488,7 +1489,7 @@ def test_execution_observation_correlates_success_and_recovery(
     inspection = {
         "repositories": [
             {
-                "repository": "example-org/example-app",
+                "repository": repository,
                 "pull_requests": [],
                 "errors": [],
                 "truncations": [],
@@ -1504,3 +1505,12 @@ def test_execution_observation_correlates_success_and_recovery(
     assert result["observations"][0]["status"] == "success_observed"
     assert result["observations"][1]["status"] == "failed"
     assert result["revision"].startswith("execution_")
+
+
+def test_execution_observation_rejects_duplicate_case_aliases(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    with pytest.raises(ExecutionError, match="duplicate repository aliases"):
+        execution_observation(tmp_path, {"repositories": [
+            {"repository": "example-org/example-app", "pull_requests": []},
+            {"repository": "EXAMPLE-ORG/EXAMPLE-APP", "pull_requests": []},
+        ]})
