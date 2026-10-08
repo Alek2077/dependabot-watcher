@@ -965,7 +965,10 @@ def execution_observation(
             head_sha = identity.get("head_sha")
             if isinstance(number, int) and isinstance(head_sha, str):
                 open_heads[number] = head_sha
-        repositories[name] = {
+        repository_key = name.casefold()
+        if repository_key in repositories:
+            raise ExecutionError("Execution observation contains duplicate repository aliases.")
+        repositories[repository_key] = {
             "complete": not bool(
                 raw_repository.get("errors") or raw_repository.get("truncations")
             ),
@@ -987,7 +990,7 @@ def execution_observation(
         pull_request = binding_data.get("pull_request")
         head_sha = binding_data.get("head_sha")
         event_type = latest.get("event_type")
-        repository_state = repositories.get(str(repository))
+        repository_state = repositories.get(str(repository).casefold())
         recovery_required = False
         if event_type == "execution_started":
             status = "interrupted"

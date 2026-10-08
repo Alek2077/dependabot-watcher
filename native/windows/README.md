@@ -22,8 +22,9 @@ not proof of a visible window. Normal startup does not fall back to synthetic
 recommendations. Installed-wheel read-only queue/feedback/decision/reopen plumbing
 has been exercised on Windows/WSL. Installed development checks also cover cold
 notification opening, quiet scheduled initiation and same-session live feedback;
-reliable foreground focus, component distribution/setup and live-action acceptance
-remain open. See validation for the exact snapshot boundaries.
+one exact approved merge and subsequent same-conversation validation have also
+completed. Reliable foreground focus, component distribution/setup and complete
+maintenance-loop acceptance remain open. See validation for exact snapshot boundaries.
 Synthetic notification controls are not offered in a normal profile. The
 development `notification test` command instead exercises the normal selected
 component without changing queue decisions or production reminder state.
@@ -98,8 +99,8 @@ independent bounded exchanges with exact identity/context checks.
 The conversation section names the configured model and access/usage boundary.
 **Send to agent** first saves the selected item's message, verifies the post-save
 configuration/context, then starts a repository investigation. **Save without
-sending** performs only the local save; **Continue investigation / answer saved
-messages** explicitly starts work without a new draft. None approves a merge.
+sending** performs only the local save; **Investigate this item** saves an
+item-scoped investigation request and starts or continues work. None approves a merge.
 The latest verified answer is visible separately from expandable history and
 technical evidence. A refreshed recommendation retains same-item selection and
 historical conversations, but never inherits old action consent or advice freshness.

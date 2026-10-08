@@ -39,6 +39,29 @@ def test_supervisor_defaults_off_without_changing_advice_or_merge_policy() -> No
     assert config.supervisor.model is None
 
 
+def test_validation_preparation_limits_are_explicit_and_not_merge_authority() -> None:
+    data = valid_config()
+    data['supervisor'] = configured_supervisor(validation_authorized=True, validation={
+        'preparation_authorized': True, 'network_authorized': True, 'maximum_bytes': 123456})
+    config = parse_config(data)
+    assert config.supervisor.validation.preparation_authorized
+    assert config.supervisor.validation.network_authorized
+    assert config.supervisor.validation.maximum_bytes == 123456
+    assert not config.operation.mutation_enabled
+
+
+@pytest.mark.parametrize('validation', [
+    {'preparation_authorized': True}, {'network_authorized': True},
+    {'maximum_bytes': 0}, {'maximum_bytes': True}, {'minimum_free_bytes': -1},
+    {'command_timeout_seconds': 3601}, {'network_authorized': 'yes'}, {'unknown': True},
+])
+def test_invalid_preparation_authority_and_limits_are_refused(validation: dict[str, object]) -> None:
+    data = valid_config()
+    data['supervisor'] = configured_supervisor(validation=validation)
+    with pytest.raises(ConfigError):
+        parse_config(data)
+
+
 @pytest.mark.parametrize("access", ["inherit", "restricted", "full"])
 def test_explicit_supervisor_access_and_privacy_are_saved_separately_from_mutation(access: str) -> None:
     data = valid_config()

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import replace
+import json
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from dependabot_watcher.review_queue import ReviewQueue, ReviewQueueError
+from dependabot_watcher.review_queue import ReviewQueue, ReviewQueueError, _load_queue, _QUEUE_PATH
 from dependabot_watcher.runtime_state import RuntimeLockBusyError, load_private_json, save_private_json
 from dependabot_watcher.supervisor_workspace_refresh import refresh_supervisor_workspace, supervisor_workspace_lease
+from dependabot_watcher.supervisor_workspace import verify_supervisor_workspace
 from test_supervisor_workspace import git, workspace_case
 
 
@@ -82,6 +84,43 @@ def test_first_registration_cannot_adopt_stale_worktree(managed_case: dict[str, 
         refresh(case, plan)
     assert git(case["worktree"], "rev-parse", "HEAD") == case["head"]
     assert not list(case["queue"].directory.rglob("ownership.json"))
+
+
+@pytest.mark.parametrize("change", ["none", "commit", "instructions", "fingerprint", "dirty"])
+def test_enabling_refresh_after_base_move_requires_unchanged_prior_verified_copy(
+    managed_case: dict[str, Any], change: str,
+) -> None:
+    case = managed_case
+    trusted = case["primary"].parent / "trusted.md"
+    if change == "fingerprint":
+        trusted.write_text("Original trusted instructions\n")
+        registration = replace(case["queue"].config.supervisor.workspaces[0], instruction_sources=(str(trusted),))
+        case["queue"].config = replace(case["queue"].config,
+            supervisor=replace(case["queue"].config.supervisor, workspaces=(registration,)))
+    proof = verify_supervisor_workspace(case["queue"].config, case["plan"]["repository"], case["plan"])
+    state = _load_queue(case["queue"].directory)
+    state["workspace_evidence"][case["plan"]["repository"].casefold()] = json.loads(json.dumps(asdict(proof)))
+    save_private_json(case["queue"].directory, _QUEUE_PATH, state)
+    plan = next_base(case)
+    if change == "commit":
+        git(case["worktree"], "commit", "--allow-empty", "-m", "Unexpected local commit")
+    elif change == "instructions":
+        (case["worktree"] / "AGENTS.md").write_text("Changed instructions\n")
+        git(case["worktree"], "add", "AGENTS.md")
+        git(case["worktree"], "commit", "-m", "Changed harness")
+    elif change == "dirty":
+        (case["worktree"] / "app.py").write_text("Unfinished work\n")
+    elif change == "fingerprint":
+        trusted.write_text("Different trusted instructions\n")
+    before = git(case["worktree"], "rev-parse", "HEAD"), git(case["worktree"], "status", "--porcelain")
+    if change == "none":
+        assert refresh(case, plan).head_sha == plan["evidence_snapshot"]["base_sha"]
+        assert git(case["primary"], "rev-parse", "HEAD") == plan["evidence_snapshot"]["base_sha"]
+    else:
+        with pytest.raises(ReviewQueueError):
+            refresh(case, plan)
+        assert (git(case["worktree"], "rev-parse", "HEAD"), git(case["worktree"], "status", "--porcelain")) == before
+        assert not list(case["queue"].directory.rglob("ownership.json"))
 
 
 def test_foreign_plan_cannot_trigger_checkout(managed_case: dict[str, Any]) -> None:

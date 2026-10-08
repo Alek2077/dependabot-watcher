@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -14,7 +15,7 @@ from dependabot_watcher.review_queue import ReviewQueue, ReviewQueueError, super
 from dependabot_watcher.supervision import SupervisorJobs
 from dependabot_watcher.supervisor_workspace import (
     SupervisorAuthorityChanged, SupervisorInstructionGuard,
-    _github_repository, _git, _instruction_fingerprint, verify_supervisor_workspace,
+    _github_repository, _git, _instruction_fingerprint, verify_supervisor_workspace, same_supervisor_session_workspace,
 )
 from test_execution import refresh_plan_identities, saved_plan
 from test_review_queue import persist_plan, snapshot
@@ -26,6 +27,19 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX/WSL isolated s
 def git(path: Path, *args: str) -> str:
     result = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, check=True)
     return result.stdout.strip()
+
+
+def test_session_workspace_allows_new_head_but_not_changed_ownership_or_harness(workspace_case: dict[str, Any]) -> None:
+    case = workspace_case
+    proof = json.loads(json.dumps(asdict(verify_supervisor_workspace(case["config"], "example-org/example-app", case["plan"]))))
+    assert same_supervisor_session_workspace(proof, {**proof, "head_sha": "f" * 40})
+    assert not same_supervisor_session_workspace(None, proof)
+    assert not same_supervisor_session_workspace({}, {})
+    for field in ("directory", "git_directory", "common_directory"):
+        assert not same_supervisor_session_workspace(proof, {**proof, field: proof[field] + "-other"})
+    assert not same_supervisor_session_workspace(proof, {**proof, "repository": "other/repository"})
+    assert not same_supervisor_session_workspace(proof, {**proof,
+        "instruction_fingerprints": [[proof["instruction_fingerprints"][0][0], "f" * 64]]})
 
 
 @pytest.fixture

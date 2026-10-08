@@ -11,6 +11,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
+using System.Windows.Markup;
 
 namespace WatcherNativeProof;
 
@@ -25,6 +26,10 @@ internal sealed class QueueProposal
     public string Kind => Step["kind"]!.GetValue<string>() == "alert" ? "Alert" : "PR";
     public string Handling => Evidence["handling"]!.GetValue<string>();
     public int Order => Step["order"]!.GetValue<int>();
+    internal string InvestigationRequest => $"Investigate the selected {Kind} #{Identity["number"]} in {Evidence["repository"]}. "
+        + "Assess current evidence, identify and perform needed investigation or validation within the configured permissions, "
+        + "and report the next action and any remaining blockers. Reuse prior investigation where relevant. "
+        + "This request does not authorize merging, pushing, deploying or changing developer checkouts.";
 
     internal bool SameItem(JsonObject identity) =>
         string.Equals(Evidence["repository"]!.GetValue<string>(), identity["repository"]?.GetValue<string>(), StringComparison.OrdinalIgnoreCase)
@@ -77,7 +82,10 @@ internal sealed class BackendQueueWindow : Window
     private readonly TextBlock _detail = new() { TextWrapping = TextWrapping.Wrap, FontSize = 14 };
     private readonly TextBlock _recommendation = new() { TextWrapping = TextWrapping.Wrap, FontSize = 17, FontWeight = FontWeights.SemiBold };
     private readonly TextBlock _handling = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
-    private readonly TextBlock _messageStatus = new() { TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold, Foreground = Brushes.DarkSlateBlue, Margin = new Thickness(0, 14, 0, 8) };
+    private readonly TextBlock _agentRecommendation = new() { TextWrapping = TextWrapping.Wrap, FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 18, 0, 6) };
+    private readonly TextBlock _agentReason = new() { TextWrapping = TextWrapping.Wrap, FontSize = 14 };
+    private readonly TextBlock _nextStep = new() { TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, 0) };
+    private readonly TextBlock _messageStatus = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 6) };
     private readonly TextBlock _savedMessages = new() { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _agentReplies = new() { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _agentIdentity = new() { Text = "Agent: checking configuration…", TextWrapping = TextWrapping.Wrap,
@@ -85,6 +93,9 @@ internal sealed class BackendQueueWindow : Window
     private readonly TextBlock _agentUsage = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
     private readonly TextBlock _latestReply = new() { TextWrapping = TextWrapping.Wrap, FontSize = 14,
         Foreground = SystemColors.WindowTextBrush, Margin = new Thickness(0, 6, 0, 8) };
+    private readonly TextBlock _latestQuestion = new() { TextWrapping = TextWrapping.Wrap, FontSize = 14, Margin = new Thickness(0, 6, 0, 12) };
+    private readonly TextBlock _replySource = new() { TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold };
+    private readonly TextBlock _replyFreshness = new() { TextWrapping = TextWrapping.Wrap, Foreground = SystemColors.GrayTextBrush, Margin = new Thickness(0, 6, 0, 0) };
     private readonly StackPanel _latestAnswer = new() { Visibility = Visibility.Collapsed };
     private readonly TextBlock _launchPolicy = new() { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _launchProgress = new() { TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold };
@@ -93,6 +104,10 @@ internal sealed class BackendQueueWindow : Window
     private readonly Button _stopInvestigation;
     private readonly Button _collect;
     private NativeLaunchPolicy? _selectedLaunchPolicy;
+    private bool _currentAgentReady;
+    private bool _suggestInvestigation;
+    private bool _supervisionDisabled;
+    private bool _savedInvestigationActive;
     private string? _launchPolicyRepository;
     private string? _launchPolicyDigest;
     private string? _retryJobId;
@@ -108,8 +123,11 @@ internal sealed class BackendQueueWindow : Window
     private readonly Expander _accessRequests = new() { Header = "Agent access requests", IsExpanded = false };
     private Dictionary<string, string> _supervisorDigests = new();
     private readonly TextBlock _outcome = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly Border _outcomeSurface = new() { Visibility = Visibility.Collapsed,
+        Padding = new Thickness(12), Margin = new Thickness(0, 12, 0, 0), CornerRadius = new CornerRadius(5) };
     private readonly TextBox _message = new() { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 70 };
     private readonly StackPanel _actions = new();
+    private readonly ScrollViewer _detailsScroll = new();
     private readonly Button _resume;
     private readonly Button _prepare;
     private readonly Button _confirm;
@@ -118,6 +136,10 @@ internal sealed class BackendQueueWindow : Window
     private readonly TextBlock _confirmationText = new() { TextWrapping = TextWrapping.Wrap };
     private readonly StackPanel _activity = new();
     private readonly TextBlock _historyStatus = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock _actionHeadline = new() { TextWrapping = TextWrapping.Wrap, FontSize = 18, FontWeight = FontWeights.SemiBold };
+    private readonly TextBlock _actionSummary = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
+    private readonly Border _actionNotice = new() { Visibility = Visibility.Collapsed, Padding = new Thickness(14),
+        Margin = new Thickness(0, 0, 0, 14), CornerRadius = new CornerRadius(5) };
     private readonly Expander _history = new();
     private List<NativeActionReview> _reviews = new();
     private NativeActionReview? _prepared;
@@ -142,11 +164,13 @@ internal sealed class BackendQueueWindow : Window
     {
         _client = client;
         Title = "Dependabot Watcher — review queue (development integration)";
-        Width = 1080; Height = 740; MinWidth = 850; MinHeight = 560;
+        Width = 1080; Height = 840; MinWidth = 850; MinHeight = 560;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         var root = new DockPanel { Margin = new Thickness(22) };
         var header = new StackPanel { Margin = new Thickness(0, 0, 0, 18) };
-        header.Children.Add(new TextBlock { Text = "Recommendations", FontSize = 24, FontWeight = FontWeights.SemiBold });
+        FontFamily = new FontFamily("Segoe UI"); FontSize = 14;
+        ApplyTheme();
+        header.Children.Add(new TextBlock { Text = "Dependency review", FontSize = 24, FontWeight = FontWeights.SemiBold });
         header.Children.Add(_summary);
         header.Children.Add(_launchProgress);
         DockPanel.SetDock(header, Dock.Top); root.Children.Add(header);
@@ -161,9 +185,11 @@ internal sealed class BackendQueueWindow : Window
                 Task.FromException(new InvalidOperationException("Owned synthetic dispatcher failure."))));
         var bottom = new StackPanel();
         bottom.Children.Add(footer);
-        bottom.Children.Add(_historyStatus);
         _history.Margin = new Thickness(0, 8, 0, 0);
-        _history.Content = new ScrollViewer { Content = _activity, MaxHeight = 200, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var historyContent = new StackPanel();
+        historyContent.Children.Add(_historyStatus);
+        historyContent.Children.Add(_activity);
+        _history.Content = new ScrollViewer { Content = historyContent, MaxHeight = 200, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         bottom.Children.Add(_history);
         DockPanel.SetDock(bottom, Dock.Bottom); root.Children.Add(bottom);
         var split = new Grid();
@@ -173,9 +199,9 @@ internal sealed class BackendQueueWindow : Window
         _queue.SelectionMode = DataGridSelectionMode.Single;
         _queue.HeadersVisibility = DataGridHeadersVisibility.Column;
         _queue.Margin = new Thickness(0, 0, 22, 0);
-        _queue.Columns.Add(new DataGridTextColumn { Header = "Recommendation", Binding = new Binding("Label"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
-        _queue.Columns.Add(new DataGridTextColumn { Header = "Repo order", Binding = new Binding("Order"), Width = DataGridLength.Auto });
-        _queue.Columns.Add(new DataGridTextColumn { Header = "Local decision", Binding = new Binding("Handling"), Width = DataGridLength.Auto, MinWidth = 115 });
+        _queue.Columns.Add(new DataGridTextColumn { Header = "PR / alert", Binding = new Binding("Label"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
+        _queue.Columns.Add(new DataGridTextColumn { Header = "Planner order", Binding = new Binding("Order"), Width = DataGridLength.Auto });
+        _queue.Columns.Add(new DataGridTextColumn { Header = "Your decision", Binding = new Binding("Handling"), Width = DataGridLength.Auto, MinWidth = 100 });
         _queue.SelectionChanged += (_, _) => SelectProposal();
         _message.TextChanged += (_, _) => {
             if (!_rendering && _selectedId is not null) _drafts[_selectedId] = _message.Text;
@@ -184,41 +210,68 @@ internal sealed class BackendQueueWindow : Window
         split.Children.Add(_queue);
         _actions.Children.Add(_recommendation);
         _actions.Children.Add(_handling);
+        _agentIdentity.Margin = new Thickness(0, 12, 0, 0);
+        _actions.Children.Add(_agentIdentity);
+        _actions.Children.Add(_agentRecommendation);
+        _actions.Children.Add(new Expander { Header = "Details and evidence", Content = _agentReason,
+            Margin = new Thickness(0, 4, 0, 0), IsExpanded = false });
+        _actions.Children.Add(_nextStep);
+        _investigate = Button("Start investigation", StartItemInvestigationAsync);
+        _investigate.IsEnabled = false;
+        _actions.Children.Add(_investigate);
         var choices = new WrapPanel { Margin = new Thickness(0, 15, 0, 0) };
         _actions.Children.Add(new TextBlock { Text = "Your decision", FontSize = 16, FontWeight = FontWeights.SemiBold,
             Margin = new Thickness(0, 12, 0, 0) });
-        _prepare = Button("Review and approve this PR", PrepareAsync);
+        _prepare = Button("Review proposed merge", PrepareAsync);
+        _prepare.ToolTip = "Opens the exact repository, PR, commit and merge details. Nothing merges unless you separately confirm on the next screen.";
         choices.Children.Add(_prepare);
         choices.Children.Add(Button("Defer one day", async () => await DecideAsync("defer")));
         choices.Children.Add(Button("Reject locally", async () => await DecideAsync("reject")));
         _resume = Button("Undo rejection or deferral", async () => await DecideAsync("resume"));
         choices.Children.Add(_resume);
         _actions.Children.Add(choices);
+        _actions.Children.Add(new TextBlock { Text = "Opens details. Does not merge.",
+            TextWrapping = TextWrapping.Wrap, Foreground = SystemColors.GrayTextBrush, Margin = new Thickness(0, 6, 0, 0) });
         _confirmation.Children.Add(new TextBlock { Text = "Confirm this one exact merge", FontSize = 17, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 12, 0, 8) });
         _confirmation.Children.Add(_confirmationText);
         _confirm = Button("Confirm this merge", ConfirmAsync);
+        _confirm.Background = PrimaryBrush;
+        _confirm.Foreground = SystemColors.HighlightTextBrush;
+        _confirm.FontWeight = FontWeights.SemiBold;
         _confirmation.Children.Add(_confirm);
-        _confirmation.Children.Add(Button("Back to recommendations", () => {
+        _confirmation.Children.Add(Button("Cancel review", () => {
             _prepared = null; _confirmation.Visibility = Visibility.Collapsed;
-            _outcome.Text = "No approval was submitted."; return Task.CompletedTask;
+            _outcome.Text = "Review canceled. Nothing was approved or merged.";
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ContextIdle,
+                new Action(() => { _detailsScroll.UpdateLayout(); _detailsScroll.ScrollToTop(); }));
+            return Task.CompletedTask;
         }));
         _actions.Children.Add(_confirmation);
         _check = Button("Check saved action outcome", CheckOutcomeAsync);
         _check.Visibility = Visibility.Collapsed; _actions.Children.Add(_check);
-        _outcome.Margin = new Thickness(0, 12, 0, 0); _actions.Children.Add(_outcome);
+        _outcomeSurface.Background = SystemParameters.HighContrast ? SystemColors.ControlBrush
+            : new SolidColorBrush(Color.FromRgb(226, 232, 240));
+        _outcomeSurface.Child = _outcome;
+        _actions.Children.Add(_outcomeSurface);
+        var outcomeDescriptor = System.ComponentModel.DependencyPropertyDescriptor.FromProperty(TextBlock.TextProperty, typeof(TextBlock));
+        outcomeDescriptor.AddValueChanged(_outcome, (_, _) => {
+            _outcomeSurface.Visibility = string.IsNullOrWhiteSpace(_outcome.Text) ? Visibility.Collapsed : Visibility.Visible;
+        });
         _actions.Children.Add(new TextBlock { Text = "Talk to your agent", FontSize = 19, FontWeight = FontWeights.SemiBold,
             Margin = new Thickness(0, 18, 0, 8) });
-        _actions.Children.Add(_agentIdentity);
-        _actions.Children.Add(_agentUsage);
-        _actions.Children.Add(new Expander { Header = "Agent access and usage", Content = _launchPolicy,
+        var accessDetails = new StackPanel();
+        accessDetails.Children.Add(_agentUsage);
+        accessDetails.Children.Add(_launchPolicy);
+        _actions.Children.Add(new Expander { Header = "Agent access and usage", Content = accessDetails,
             Margin = new Thickness(0, 0, 0, 8) });
         _actions.Children.Add(_messageStatus);
+        _actions.Children.Add(new TextBlock { Text = "Your message to the agent", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) });
         _actions.Children.Add(_message);
         var conversationActions = new WrapPanel();
         _send = Button("Send to agent", SendToAgentAsync);
         _send.FontWeight = FontWeights.SemiBold;
         _send.Padding = new Thickness(18, 9, 18, 9);
-        _send.Background = SystemColors.HighlightBrush;
+        _send.Background = PrimaryBrush;
         _send.Foreground = SystemColors.HighlightTextBrush;
         conversationActions.Children.Add(_send);
         conversationActions.Children.Add(Button("Save without sending", async () => await DecideAsync("feedback")));
@@ -228,12 +281,17 @@ internal sealed class BackendQueueWindow : Window
             Margin = new Thickness(0, 8, 0, 0)
         });
         var agentPanel = new StackPanel();
-        _investigate = Button("Continue investigation / answer saved messages", InvestigateAsync);
-        _investigate.IsEnabled = false;
-        _actions.Children.Add(_investigate);
-        _latestAnswer.Children.Add(new TextBlock { Text = "Latest verified agent reply", FontSize = 16,
-            FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 14, 0, 0) });
-        _latestAnswer.Children.Add(_latestReply);
+        _latestAnswer.Children.Add(new TextBlock { Text = "Latest conversation", FontSize = 18,
+            FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 18, 0, 10) });
+        _latestAnswer.Children.Add(new TextBlock { Text = "YOU SENT", FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = SystemColors.GrayTextBrush });
+        _latestAnswer.Children.Add(_latestQuestion);
+        var replyPanel = new StackPanel();
+        replyPanel.Children.Add(new TextBlock { Text = "AGENT REPLIED", FontSize = 12, FontWeight = FontWeights.SemiBold });
+        replyPanel.Children.Add(_replySource);
+        replyPanel.Children.Add(_latestReply);
+        _latestAnswer.Children.Add(new Border { BorderBrush = PrimaryBrush, BorderThickness = new Thickness(3, 0, 0, 0),
+            Padding = new Thickness(12, 8, 0, 8), Child = replyPanel });
+        _latestAnswer.Children.Add(_replyFreshness);
         _actions.Children.Add(_latestAnswer);
         _stopInvestigation = Button("Stop this investigation", StopInvestigationAsync);
         _stopInvestigation.Visibility = Visibility.Collapsed;
@@ -255,9 +313,22 @@ internal sealed class BackendQueueWindow : Window
             Content = permissionPanel, MaxHeight = 180, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         _accessRequests.Margin = new Thickness(0, 12, 0, 0);
         bottom.Children.Add(_accessRequests);
-        var scroll = new ScrollViewer { Content = _actions, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var scroll = _detailsScroll;
+        scroll.Content = _actions;
+        scroll.Padding = new Thickness(12, 8, 12, 8);
+        scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
         System.Windows.Automation.AutomationProperties.SetName(scroll, "Recommendation details");
-        Grid.SetColumn(scroll, 1); split.Children.Add(scroll);
+        var inspector = new DockPanel();
+        var actionNoticeContent = new StackPanel();
+        actionNoticeContent.Children.Add(_actionHeadline);
+        actionNoticeContent.Children.Add(_actionSummary);
+        _actionNotice.Child = actionNoticeContent;
+        _actionNotice.Background = SystemParameters.HighContrast ? SystemColors.ControlBrush
+            : new SolidColorBrush(Color.FromRgb(226, 232, 240));
+        DockPanel.SetDock(_actionNotice, Dock.Top);
+        inspector.Children.Add(_actionNotice);
+        inspector.Children.Add(scroll);
+        Grid.SetColumn(inspector, 1); split.Children.Add(inspector);
         root.Children.Add(split); Content = root;
         Closing += (_, e) => {
             if (Application.Current is App { IsQuitting: true }) return;
@@ -365,6 +436,66 @@ internal sealed class BackendQueueWindow : Window
         return Task.CompletedTask;
     }
 
+    private static Brush PrimaryBrush => SystemParameters.HighContrast
+        ? SystemColors.HighlightBrush : Brushes.DarkSlateGray;
+
+    private void ApplyTheme()
+    {
+        // Retain the platform's accessible colors/templates in high contrast.
+        if (SystemParameters.HighContrast) return;
+        Background = new SolidColorBrush(Color.FromRgb(248, 250, 252));
+        Resources = (ResourceDictionary)XamlReader.Parse("""
+            <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+              <Style TargetType="Button">
+                <Setter Property="Background" Value="White"/>
+                <Setter Property="Foreground" Value="#1F2937"/>
+                <Setter Property="BorderBrush" Value="#CBD5E1"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="MinHeight" Value="34"/>
+                <Setter Property="Template">
+                  <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                      <Border x:Name="Surface" Background="{TemplateBinding Background}"
+                              BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                              CornerRadius="5" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                      </Border>
+                      <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Opacity" Value="0.85"/></Trigger>
+                        <Trigger Property="IsPressed" Value="True"><Setter TargetName="Surface" Property="Opacity" Value="0.7"/></Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Surface" Property="BorderThickness" Value="2"/><Setter TargetName="Surface" Property="BorderBrush" Value="#334155"/></Trigger>
+                        <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Surface" Property="Opacity" Value="0.5"/></Trigger>
+                      </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                  </Setter.Value>
+                </Setter>
+              </Style>
+              <Style TargetType="DataGrid">
+                <Setter Property="Background" Value="White"/>
+                <Setter Property="BorderBrush" Value="#CBD5E1"/>
+                <Setter Property="GridLinesVisibility" Value="None"/>
+                <Setter Property="RowHeight" Value="30"/>
+                <Setter Property="AlternatingRowBackground" Value="#F8FAFC"/>
+              </Style>
+              <Style TargetType="DataGridColumnHeader">
+                <Setter Property="Background" Value="#F1F5F9"/>
+                <Setter Property="Padding" Value="8,8"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+                <Setter Property="BorderThickness" Value="0"/>
+              </Style>
+              <Style TargetType="DataGridCell">
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="Padding" Value="4"/>
+                <Style.Triggers>
+                  <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#E2E8F0"/><Setter Property="Foreground" Value="#111827"/></Trigger>
+                </Style.Triggers>
+              </Style>
+            </ResourceDictionary>
+            """);
+    }
+
     private static Button Button(string label, Func<Task> action)
     {
         var button = new Button { Content = label, Padding = new Thickness(12, 7, 12, 7), Margin = new Thickness(0, 6, 8, 0) };
@@ -397,14 +528,20 @@ internal sealed class BackendQueueWindow : Window
 
     private void UpdateInvestigationControls()
     {
-        _investigate.Content = _retryJobId is null ? "Continue investigation / answer saved messages" : "Retry investigation";
+        _investigate.Content = _retryJobId is null ? "Investigate this item" : "Retry investigation";
+        _investigate.Visibility = _suggestInvestigation || _retryJobId is not null ? Visibility.Visible : Visibility.Collapsed;
         var repository = (_queue.SelectedItem as QueueProposal)?.Evidence["repository"]?.GetValue<string>();
-        _investigate.IsEnabled = !_busy && !_shutdownRequested && !_scheduledRunning && !_refreshRequired && _investigationCancellation is null
+        _investigate.IsEnabled = !_busy && !_shutdownRequested && !_scheduledRunning && !_refreshRequired && !_savedInvestigationActive && _investigationCancellation is null
             && _selectedLaunchPolicy?.Configured == true && repository == _launchPolicyRepository
             && repository is not null && _supervisorDigests.GetValueOrDefault(repository) == _launchPolicyDigest;
         _send.IsEnabled = _investigate.IsEnabled && !string.IsNullOrWhiteSpace(_message.Text)
             && Encoding.UTF8.GetByteCount(_message.Text) <= 8192;
-        _prepare.IsEnabled = !_busy && !_shutdownRequested && !_scheduledRunning && _investigationCancellation is null && CanPrepareSelected();
+        _prepare.IsEnabled = !_busy && !_shutdownRequested && !_scheduledRunning && _investigationCancellation is null
+            && CanPrepareSelected() && (_currentAgentReady || _supervisionDisabled);
+        _prepare.Background = _prepare.IsEnabled ? PrimaryBrush : SystemColors.ControlBrush;
+        _prepare.Foreground = _prepare.IsEnabled ? SystemColors.HighlightTextBrush : SystemColors.GrayTextBrush;
+        _investigate.Background = _investigate.IsEnabled ? PrimaryBrush : SystemColors.ControlBrush;
+        _investigate.Foreground = _investigate.IsEnabled ? SystemColors.HighlightTextBrush : SystemColors.GrayTextBrush;
         _confirm.IsEnabled = !_busy && !_shutdownRequested && !_scheduledRunning && _investigationCancellation is null;
     }
 
@@ -430,6 +567,7 @@ internal sealed class BackendQueueWindow : Window
         _accessRequests.Header = "Agent access requests — checking";
         _agentReplies.Text = "Agent replies need verification against this queue frame.";
         _latestAnswer.Visibility = Visibility.Collapsed;
+        ResetAgentGuidance();
         _agentUsage.Text = "Checking access and usage…";
         _selectedLaunchPolicy = null; _launchPolicyRepository = null; _launchPolicyDigest = null;
         _retryJobId = null;
@@ -481,9 +619,9 @@ internal sealed class BackendQueueWindow : Window
         var previous = _selectedId;
         var previousItem = (_queue.SelectedItem as QueueProposal)?.ItemIdentity;
         _summary.Text = (_client.DiagnosticTransport ? "SYNTHETIC TRANSPORT TEST — no real GitHub access or model jobs.\n" : "")
-            + $"{proposals.Count} saved recommendations · Evidence: {response["evidence_status"]}\nRecommended order within each repository. Pending = no local decision yet.\n"
-            + (executionEnabled ? "Exact single-PR approval is enabled. Nothing merges until you review and separately confirm."
-                : "Merging is disabled in this profile. Starting an investigation uses the configured agent; local queue decisions do not.");
+            + $"{proposals.Count} items · Evidence: {response["evidence_status"]} · "
+            + (executionEnabled ? "Approval required" : "Read-only")
+            + "\nPlanner order is a starting order, not an approved merge sequence.";
         _queue.ItemsSource = proposals;
         _queue.SelectedItem = QueueProposal.RestoreSelection(proposals, previous, previousItem);
         if (proposals.Count == 0)
@@ -515,16 +653,17 @@ internal sealed class BackendQueueWindow : Window
         _agentIdentity.Text = "Agent: checking configuration…";
         _agentUsage.Text = "Checking access and usage…";
         _latestAnswer.Visibility = Visibility.Collapsed;
+        ResetAgentGuidance(_investigationCancellation is null ? "Checking status…" : "Investigation running");
         _actions.IsEnabled = !_busy && !_shutdownRequested && !_refreshRequired && _selectedId is not null;
+        _agentReplies.Text = "No replies are being shown for the previous selection. Refresh after the active investigation finishes to read this item's saved conversation.";
         if (_queue.SelectedItem is not QueueProposal item) return;
         var step = item.Step;
         var feedback = item.Evidence["feedback"]!.AsArray();
         var messages = NativeDisplayText.Escape(string.Join("\n\n", feedback.Select(value =>
             $"{value!["created_at"]}: {value["message"]}\nSaved locally. Verified answers, when available, appear below.")));
         _recommendation.Text = NativeDisplayText.Escape(item.Identity["title"]?.GetValue<string>() ?? step["summary"]!.GetValue<string>());
-        _handling.Text = $"{item.Label}\nDecision: {item.Handling}"
-            + (item.Handling == "deferred" ? $"\nDeferred until {item.Evidence["resume_at"]}." : "")
-            + "\nThese controls change your local queue, not GitHub.";
+        _handling.Text = $"{item.Label}\nYour saved decision: {(item.Handling == "pending" ? "none yet" : item.Handling)}"
+            + (item.Handling == "deferred" ? $"\nDeferred until {item.Evidence["resume_at"]}." : "");
         _resume.Visibility = item.Handling == "pending" ? Visibility.Collapsed : Visibility.Visible;
         _prepare.Visibility = item.Kind == "PR" ? Visibility.Visible : Visibility.Collapsed;
         _prepare.IsEnabled = _executionEnabled && _evidenceComplete && item.Evidence["evidence_status"]?.GetValue<string>() == "complete"
@@ -686,8 +825,28 @@ internal sealed class BackendQueueWindow : Window
                 return;
             }
             _agentReplies.Text = view.Describe(item);
-            _latestReply.Text = view.LatestAnswer(item) ?? "";
-            _latestAnswer.Visibility = _latestReply.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+            var conversation = view.LatestConversation(item);
+            _latestQuestion.Text = conversation?.Question ?? "";
+            _latestReply.Text = conversation?.Answer ?? "";
+            _replySource.Text = conversation?.Source ?? "";
+            _replyFreshness.Text = conversation?.Freshness ?? "";
+            _latestAnswer.Visibility = conversation is null ? Visibility.Collapsed : Visibility.Visible;
+            var recommendation = view.CurrentRecommendation(item);
+            _currentAgentReady = recommendation?.Ready == true;
+            _savedInvestigationActive = view.HasActiveInvestigation;
+            _suggestInvestigation = view.SuggestsInvestigation(item);
+            _supervisionDisabled = response["configured_launch"]?["mode"]?.GetValue<string>() == "off";
+            _agentRecommendation.Text = recommendation?.Heading ?? "Needs investigation";
+            _agentRecommendation.Foreground = SystemColors.WindowTextBrush;
+            _nextStep.Text = view.ActionGuidance(item, _executionEnabled);
+            var followUp = item.Kind == "PR" && item.Step["action"]?.GetValue<string>() == "validate_then_merge"
+                ? "After an approved merge: Watcher records the outcome and refreshes PR/alert evidence.\nNot included: updating your local checkout, publishing repairs or promoting to production."
+                : "Investigation may identify tests, repairs or a related PR. It does not itself resolve this item or authorize changes.";
+            var actionDetail = item.Kind == "PR" && item.Step["action"]?.GetValue<string>() == "validate_then_merge"
+                ? $"Merge review: PR #{item.Identity["number"]} into {NativeDisplayText.Escape(item.Identity["expected_base"]?.GetValue<string>() ?? "the configured branch")}. The next screen checks the exact head and merge method. A separate confirmation performs the merge."
+                : "This item cannot be merged directly. The investigation determines the required work.";
+            _agentReason.Text = "Current assessment\n" + (recommendation?.Explanation ?? "No current accepted agent recommendation. Earlier replies are retained in conversation history.")
+                + "\n\nAction scope\n" + actionDetail + "\n\nAfterward\n" + followUp;
             _selectedLaunchPolicy = view.LaunchPolicy;
             _retryJobId = view.RetryJobId;
             _launchPolicyRepository = repository; _launchPolicyDigest = expectedDigest;
@@ -696,6 +855,14 @@ internal sealed class BackendQueueWindow : Window
                 ? "Agent: " + policy.AgentLabel
                 : "No agent configured for this repository";
             _agentUsage.Text = view.LaunchPolicy?.UsageSummary ?? "Sending is unavailable.";
+            if (view.LaunchPolicy?.Configured != true)
+                _nextStep.Text = "Agent not configured. Review saved evidence.";
+            if (_savedInvestigationActive)
+            {
+                _agentRecommendation.Text = "Investigation in progress";
+                _nextStep.Text = "Wait for results, then refresh saved queue.";
+                _latestAnswer.Visibility = Visibility.Collapsed;
+            }
             UpdateInvestigationControls();
             App.Record("supervisor_replies_loaded", new { proposal_id = item.Id, version = item.Version });
         }
@@ -710,9 +877,22 @@ internal sealed class BackendQueueWindow : Window
                 _agentIdentity.Text = "Agent configuration could not be verified";
                 _agentUsage.Text = "Sending is unavailable until configuration is verified.";
                 _latestAnswer.Visibility = Visibility.Collapsed;
+                ResetAgentGuidance("Current agent recommendation could not be verified");
                 UpdateInvestigationControls();
             }
         }
+    }
+
+    private void ResetAgentGuidance(string heading = "Checking status…")
+    {
+        _agentRecommendation.Text = heading;
+        _agentRecommendation.Foreground = SystemColors.WindowTextBrush;
+        _currentAgentReady = false;
+        _suggestInvestigation = false;
+        _supervisionDisabled = false;
+        _savedInvestigationActive = false;
+        _agentReason.Text = "";
+        _nextStep.Text = "";
     }
 
     private async Task InvestigateAsync()
@@ -740,10 +920,13 @@ internal sealed class BackendQueueWindow : Window
         _investigationCancellation = cancellation;
         _agentReadSequence++;
         _retryJobId = null;
-        if (explicitItem is not null)
+        if (_queue.SelectedItem is QueueProposal activeItem
+            && string.Equals(activeItem.Evidence["repository"]?.GetValue<string>(), repository, StringComparison.OrdinalIgnoreCase))
         {
             _agentReplies.Text = "Investigation is running. Earlier results are not this attempt's answer; verified saved replies will refresh after completion.";
             _latestAnswer.Visibility = Visibility.Collapsed;
+            ResetAgentGuidance("Investigation running");
+            _nextStep.Text = "Waiting for agent results.";
         }
         _investigationFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _investigationRepository = repository;
@@ -770,6 +953,9 @@ internal sealed class BackendQueueWindow : Window
                         var identity = frame.Value["request"]!;
                         _permissionPreviews.Add(identity["connection_id"] + "/" + identity["permission_id"], frame.Value);
                         _launchProgress.Text = $"The agent investigating {repository} needs access. Review the exact request below; this does not approve a merge.";
+                        if (_actionInFlight)
+                            _actionSummary.Text = NativeDisplayText.Escape(repository)
+                                + "\nMerge complete. The post-merge check is waiting for an access decision in Agent access requests.";
                         _launchRefreshPending = true;
                         if (scheduledRunId is not null && notify) App.NotifyInvestigation("permission");
                         if (!_busy && !_launchRefreshInFlight) _ = RefreshInvestigationScopeAsync();
@@ -890,7 +1076,12 @@ internal sealed class BackendQueueWindow : Window
         var unresolved = _reviews.Count(NeedsOutcomeCheck);
         _history.Header = unresolved == 0 ? "Recent action results" : $"Saved action recovery — {unresolved} outcome(s) need checking";
         if (unresolved > 0) _history.IsExpanded = true;
-        var latestResult = _reviews.LastOrDefault(r => r.Status == "completed");
+        var latestResult = _reviews.Where(r => r.Status == "completed")
+            .OrderBy(r => DateTimeOffset.Parse(r.Value["consented_at"]!.GetValue<string>())).LastOrDefault();
+        var latestAction = _reviews.Where(r => r.Status is "completed" or "recovery_required")
+            .OrderBy(r => DateTimeOffset.Parse(r.Value["consented_at"]!.GetValue<string>())).LastOrDefault();
+        if (latestAction is not null && !_actionInFlight)
+            ShowActionResult(latestAction);
         if (string.IsNullOrWhiteSpace(_historyStatus.Text) && latestResult is not null)
             _historyStatus.Text = $"Last saved result: {latestResult.Binding["repository"]} · PR #{latestResult.Binding["pull_request"]}\n{DescribeOutcome(latestResult)}";
         if (displayed.Count == 0) _activity.Children.Add(new TextBlock { Text = "No approved action has been recorded." });
@@ -908,6 +1099,27 @@ internal sealed class BackendQueueWindow : Window
     private static bool NeedsOutcomeCheck(NativeActionReview review) => review.Status == "recovery_required"
         || review.Value["outcome_recorded"]?.GetValue<bool>() == false;
 
+    private void ShowActionNotice(string headline, string summary)
+    {
+        _actionHeadline.Text = NativeDisplayText.Escape(headline);
+        _actionSummary.Text = NativeDisplayText.Escape(summary);
+        _actionNotice.Visibility = Visibility.Visible;
+    }
+
+    private void ShowActionResult(NativeActionReview review)
+    {
+        var target = $"{review.Binding["repository"]} · PR #{review.Binding["pull_request"]}";
+        var merged = review.Status == "completed"
+            && review.Value["result"]?["status"]?.GetValue<string>() == "merged";
+        ShowActionNotice(merged ? $"PR #{review.Binding["pull_request"]} merged successfully"
+            : "Action outcome needs review", target + "\n" + (merged
+                ? $"Merged into {review.Binding["expected_base"]}. "
+                    + (review.Value["outcome_recorded"]?.GetValue<bool>() == false
+                        ? "Outcome needs recovery; check saved action results."
+                        : "Outcome saved. No further merge will start automatically.")
+                : DescribeOutcome(review)));
+    }
+
     private void StoreReview(NativeActionReview review)
     {
         _reviews.RemoveAll(r => r.Id == review.Id);
@@ -919,7 +1131,8 @@ internal sealed class BackendQueueWindow : Window
         if (_shutdownRequested || _busy || _investigationCancellation is not null || _refreshRequired || !_executionEnabled || _queue.SelectedItem is not QueueProposal item) return;
         var request = Request("prepare_action"); request["proposal_id"] = item.Id; request["version"] = item.Version;
         _prepared = null; _confirmation.Visibility = Visibility.Collapsed;
-        SetBusy(true); _outcome.Text = "Checking the exact PR, current policy and required checks. No merge or AI call is being made…";
+        SetBusy(true); _outcome.Text = "Checking merge readiness…\nRechecking the exact PR, current policy and required checks. Nothing is being merged.";
+        _ = Dispatcher.BeginInvoke(new Action(() => _outcomeSurface.BringIntoView()));
         try
         {
             var response = await _client.SendAsync(request);
@@ -928,9 +1141,13 @@ internal sealed class BackendQueueWindow : Window
             if (review.Status == "already_applied") { _outcome.Text = DescribeOutcome(review); return; }
             if (review.Status != "awaiting_confirmation") throw new InvalidDataException("No confirmable action was returned.");
             _prepared = review; StoreReview(review);
-            _confirmationText.Text = NativeDisplayText.Escape(review.Describe() + $"\nConfirmation expires at {DateTimeOffset.Parse(review.Value["expires_at"]!.GetValue<string>()).ToLocalTime():g}.\nConfirm merges only this PR. GitHub will be rechecked again before the action.");
+            var mergeVerb = review.Binding["merge_method"]!.GetValue<string>() switch {
+                "squash" => "Squash-merge", "rebase" => "Rebase-merge", _ => "Merge"
+            };
+            _confirmationText.Text = NativeDisplayText.Escape(review.Describe() + $"\nConfirmation expires at {DateTimeOffset.Parse(review.Value["expires_at"]!.GetValue<string>()).ToLocalTime():g}.\n\nWhen you confirm:\n1. Recheck that the approval, PR and agent evidence are still valid.\n2. {mergeVerb} only #{review.Binding["pull_request"]} into {review.Binding["expected_base"]}.\n3. Record the outcome and refresh PRs and alerts.\n\nWith AI enabled, a successful complete refresh is followed by an agent check using the selected model allowance. Blocked checks are reported here. This does not authorize another merge or update your local checkout.");
             _confirmation.Visibility = Visibility.Visible;
-            _outcome.Text = "Review prepared. Nothing has been approved or merged.";
+            _outcome.Text = "Ready for confirmation. Nothing has been approved or merged.";
+            _ = Dispatcher.BeginInvoke(new Action(() => _confirmation.BringIntoView()));
         }
         catch (Exception ex) { _outcome.Text = $"Cannot prepare this PR: {ex.Message}\nNo approval was submitted."; }
         finally { SetBusy(false); }
@@ -943,6 +1160,7 @@ internal sealed class BackendQueueWindow : Window
         var request = Request("confirm_action"); request["review_id"] = reviewId;
         _prepared = null; _confirmation.Visibility = Visibility.Collapsed;
         _actionInFlight = true; SetBusy(true);
+        ShowActionNotice($"Merging PR #{item.Identity["number"]}…", "Rechecking your exact approval and GitHub state. Please wait; do not confirm again.");
         _outcome.Text = "Your exact approval was submitted. Watcher is rechecking and executing this one action. You can hide the window; it will not retry automatically.";
         try
         {
@@ -951,6 +1169,7 @@ internal sealed class BackendQueueWindow : Window
             review.RequireSelection(item);
             if (review.Id != reviewId) throw new InvalidDataException("Outcome returned for a different review.");
             StoreReview(review); _outcome.Text = DescribeOutcome(review);
+            ShowActionResult(review);
             _check.Visibility = review.Status == "recovery_required" || review.Value["outcome_recorded"]?.GetValue<bool>() == false
                 ? Visibility.Visible : Visibility.Collapsed;
             // Preserve the exact result independently of the next selection,
@@ -959,18 +1178,83 @@ internal sealed class BackendQueueWindow : Window
             if (review.Status == "completed")
             {
                 _historyStatus.Text = $"{review.Binding["repository"]} · PR #{review.Binding["pull_request"]}\n{DescribeOutcome(review)}";
-                if (!_shutdownRequested) await CollectCoreAsync();
+                if (!_shutdownRequested)
+                {
+                    await CollectCoreAsync();
+                    ShowActionResult(review);
+                    _actionSummary.Text += _refreshRequired
+                        ? "\nPost-merge assessment not started: queue refresh failed."
+                        : !_evidenceComplete ? "\nPost-merge assessment not started: refreshed evidence is incomplete."
+                        : "\nQueue refreshed. This merge is complete.";
+                    _detailsScroll.ScrollToTop();
+                    if (!_refreshRequired && _evidenceComplete && review.Value["outcome_recorded"]?.GetValue<bool>() != false
+                        && review.Value["result"]?["status"]?.GetValue<string>() == "merged")
+                        await ContinueAfterMergeAsync(review);
+                    else if (review.Value["outcome_recorded"]?.GetValue<bool>() == false)
+                        _actionSummary.Text += "\nPost-merge assessment not started: the action outcome needs recovery.";
+                }
             }
         }
         catch (Exception ex)
         {
             _refreshRequired = true;
             _summary.Text = "Approval outcome needs checking. No automatic retry will occur.";
+            ShowActionNotice("Merge outcome needs checking", "Do not approve again. Check the saved action outcome; nothing will be retried automatically.");
             _outcome.Text = $"The reply could not be verified: {ex.Message}\nRefresh saved state to check the outcome; do not approve again.";
         }
         finally
         {
             _actionInFlight = false; SetBusy(false);
+        }
+    }
+
+    private async Task ContinueAfterMergeAsync(NativeActionReview review)
+    {
+        var repository = review.Binding["repository"]!.GetValue<string>();
+        var merged = $"PR #{review.Binding["pull_request"]} merged successfully";
+        var scope = $"{repository} · PR #{review.Binding["pull_request"]}\n";
+        // Only a just-confirmed, recorded merge enters here. Reopening history
+        // never replays this continuation; the backend owns job deduplication,
+        // policy checks, workspace freshness and deliberate failed-job recovery.
+        try
+        {
+            if (_shutdownRequested) return;
+            if (!_supervisorDigests.TryGetValue(repository, out var digest))
+                throw new InvalidDataException("The refreshed repository context is unavailable.");
+            var status = await _client.SendAsync(new JsonObject {
+                ["schema_version"] = 1, ["request_id"] = "read_" + Guid.NewGuid().ToString("N"),
+                ["operation"] = "supervisor_status", ["repository"] = repository
+            });
+            var before = NativeSupervisorView.Parse(status, repository, digest);
+            if (status["configured_launch"]?["mode"]?.GetValue<string>() == "off")
+            {
+                ShowActionNotice(merged, scope + "Queue refreshed. Automatic agent assessment is disabled in this profile.");
+                return;
+            }
+            if (before.LaunchPolicy?.Configured != true || before.HasActiveInvestigation || before.RetryJobId is not null)
+                throw new InvalidDataException("Agent continuation is blocked by its saved configuration or recovery state.");
+            ShowActionNotice(merged, scope + "Checking updated PRs, alerts and next steps with your configured agent… No additional merge is authorized.");
+            var confirmed = await RunInvestigationAsync(repository, digest, null, null, null);
+            if (_shutdownRequested) return;
+            if (!confirmed || !_supervisorDigests.TryGetValue(repository, out var currentDigest))
+                throw new InvalidDataException("The post-merge assessment was not confirmed.");
+            var saved = await _client.SendAsync(new JsonObject {
+                ["schema_version"] = 1, ["request_id"] = "read_" + Guid.NewGuid().ToString("N"),
+                ["operation"] = "supervisor_status", ["repository"] = repository
+            });
+            var after = NativeSupervisorView.Parse(saved, repository, currentDigest);
+            var summary = after.CurrentAssessmentSummary
+                ?? throw new InvalidDataException("No accepted assessment covers the refreshed repository state.");
+            _historyStatus.Text += "\n\n" + NativeDisplayText.Escape(scope) + "Post-merge agent assessment:\n" + summary;
+            ShowActionNotice(merged, scope + "Agent checked the updated state.\n"
+                + (summary.Length <= 240 ? summary : "Full assessment is saved under Recent action results."));
+            _detailsScroll.ScrollToTop();
+        }
+        catch (Exception exception)
+        {
+            if (!_shutdownRequested)
+                ShowActionNotice(merged, scope + "Post-merge assessment could not finish. The merge remains complete.\n"
+                    + exception.Message + "\nNo additional merge or local checkout update was performed by Watcher.");
         }
     }
 
@@ -994,6 +1278,7 @@ internal sealed class BackendQueueWindow : Window
             if (checkedReview.Id != reviewId || !JsonNode.DeepEquals(checkedReview.Preparation, review.Preparation))
                 throw new InvalidDataException("Outcome belongs to a different exact historical action.");
             StoreReview(checkedReview); _historyStatus.Text = $"{target}\n{DescribeOutcome(checkedReview)}";
+            ShowActionResult(checkedReview);
             if ((_queue.SelectedItem as QueueProposal)?.Id == checkedReview.ProposalId)
                 _outcome.Text = DescribeOutcome(checkedReview);
             _check.Visibility = checkedReview.Status == "recovery_required" ? Visibility.Visible : Visibility.Collapsed;
@@ -1006,9 +1291,9 @@ internal sealed class BackendQueueWindow : Window
     {
         var saved = (_queue.SelectedItem as QueueProposal)?.Evidence["feedback"]?.AsArray().Count ?? 0;
         _messageStatus.Text = _message.Text.Length > 0
-            ? "Draft for this item. Send to agent saves it and starts a checked investigation of this repository; it does not approve a merge."
-            : saved > 0 ? $"{saved} saved message(s) on this revision. Verified answers appear below; you can ask a follow-up here."
-            : "Ask a question, change the suggested order, or leave a direction. Sending uses the configured model; it never authorizes a merge.";
+            ? "Draft — not sent. Sending does not approve a merge."
+            : saved > 0 ? $"{saved} saved messages · Replies below"
+            : "Optional: ask a question or leave a direction.";
         UpdateInvestigationControls();
     }
 
@@ -1023,7 +1308,7 @@ internal sealed class BackendQueueWindow : Window
             if (status is not ("complete" or "partial")) throw new InvalidDataException("Fresh collection returned an invalid completion status.");
             Apply(response);
             _historyStatus.Text = savedResult + (status == "complete"
-                ? "\nFresh recommendations collected. Further actions still need their own exact confirmation."
+                ? "\nQueue refreshed. No merge was started by this refresh."
                 : "\nCollection is incomplete. Approvals remain disabled until complete evidence is available.");
         }
         catch (Exception ex)
@@ -1059,13 +1344,19 @@ internal sealed class BackendQueueWindow : Window
         finally { SetBusy(false); }
     }
 
-    private async Task SendToAgentAsync()
+    private Task StartItemInvestigationAsync() => _retryJobId is not null
+        ? InvestigateAsync() : SaveAndStartAgentAsync(investigateItem: true);
+
+    private Task SendToAgentAsync() => SaveAndStartAgentAsync(investigateItem: false);
+
+    private async Task SaveAndStartAgentAsync(bool investigateItem)
     {
-        if (!_send.IsEnabled || _queue.SelectedItem is not QueueProposal selected) return;
+        if (!(investigateItem ? _investigate.IsEnabled : _send.IsEnabled) || _queue.SelectedItem is not QueueProposal selected) return;
         var saved = false;
         try
         {
-            saved = await SaveDecisionAsync("feedback", holdBusy: true);
+            saved = await SaveDecisionAsync("feedback", holdBusy: true,
+                messageOverride: investigateItem ? selected.InvestigationRequest : null);
             if (!saved || _shutdownRequested) return;
             // Keep selection and other controls locked while verifying the
             // post-save policy/digest. A saved message is not a launch receipt.
@@ -1084,10 +1375,10 @@ internal sealed class BackendQueueWindow : Window
 
     private async Task DecideAsync(string operation) => await SaveDecisionAsync(operation);
 
-    private async Task<bool> SaveDecisionAsync(string operation, bool holdBusy = false)
+    private async Task<bool> SaveDecisionAsync(string operation, bool holdBusy = false, string? messageOverride = null)
     {
         if (_shutdownRequested || _busy || _refreshRequired || _queue.SelectedItem is not QueueProposal item) return false;
-        var message = _message.Text;
+        var message = messageOverride ?? _message.Text;
         if (operation == "feedback" && (string.IsNullOrWhiteSpace(message) || Encoding.UTF8.GetByteCount(message) > 8192))
         { _outcome.Text = "Enter a message of at most 8192 UTF-8 bytes."; return false; }
         var request = Request(operation);
@@ -1099,7 +1390,7 @@ internal sealed class BackendQueueWindow : Window
         {
             var response = await _client.SendAsync(request);
             Apply(response);
-            if (operation == "feedback") { _drafts.Remove(item.Id); SelectProposal(); }
+            if (operation == "feedback" && messageOverride is null) { _drafts.Remove(item.Id); SelectProposal(); }
             _outcome.Text = operation == "feedback" ? "Message saved locally. Saving did not launch an agent; verified replies appear below when available."
                 : "Local decision saved. No PR or security alert was changed.";
             App.Record("backend_queue_decision", new { operation, replayed = response["replayed"]?.GetValue<bool>() });

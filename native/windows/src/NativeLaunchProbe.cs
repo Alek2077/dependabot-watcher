@@ -187,6 +187,29 @@ internal static class NativeLaunchProbe
         var full = Policy(); full["access"] = "full"; full["full_access_acknowledged"] = true;
         if (!NativeLaunchPolicy.Parse(full).Description.Contains("outside Watcher's guarded executor"))
             throw new InvalidDataException("Full access concealed its weaker mutation boundary.");
+        var prepared = Policy(); prepared["validation_authorized"] = true;
+        prepared["validation"] = new JsonObject {
+            ["preparation_authorized"] = true, ["network_authorized"] = false,
+            ["maximum_bytes"] = 268435456L, ["minimum_free_bytes"] = 536870912L,
+            ["command_timeout_seconds"] = 120, ["storage_reserve_paths"] = new JsonArray("/mnt/c")
+        };
+        var preparation = NativeLaunchPolicy.Parse(prepared);
+        if (!preparation.Description.Contains("dependency installation") || !preparation.Description.Contains("network is disabled"))
+            throw new InvalidDataException("Validation preparation was not disclosed.");
+        foreach (var fault in new[] { "tests_disabled", "budget", "network_type", "extra_scope" })
+        {
+            var invalid = (JsonObject)prepared.DeepClone();
+            var options = (JsonObject)invalid["validation"]!;
+            switch (fault) {
+                case "tests_disabled": invalid["validation_authorized"] = false; break;
+                case "budget": options["maximum_bytes"] = 0; break;
+                case "network_type": options["network_authorized"] = "yes"; break;
+                case "extra_scope": options["host_mount"] = "/home"; break;
+            }
+            var rejected = false;
+            try { NativeLaunchPolicy.Parse(invalid); } catch (InvalidDataException) { rejected = true; }
+            if (!rejected) throw new InvalidDataException("Unsafe preparation policy was accepted: " + fault);
+        }
         foreach (var fault in new[] { "model", "account", "ack", "full_ack", "restricted_profile", "live_claim", "mutation_claim", "extra", "timeout" })
         {
             var invalid = Policy();

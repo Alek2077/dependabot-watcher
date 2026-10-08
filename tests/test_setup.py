@@ -10,7 +10,8 @@ import pytest
 
 import dependabot_watcher.setup as setup_implementation
 from dependabot_watcher import diagnostics
-from dependabot_watcher.config import SupervisorConfig, SupervisorWorkspaceConfig, load_config
+from dependabot_watcher.config import SupervisorConfig, SupervisorValidationConfig, SupervisorWorkspaceConfig, load_config
+from dependabot_watcher.operational_output import render_operational
 from dependabot_watcher.diagnostics import CommandResult
 from dependabot_watcher.setup import (
     SetupError,
@@ -419,6 +420,25 @@ def _supervisor_policy(tmp_path: Path, **changes) -> SupervisorConfig:
         model_use_acknowledged=True,
         workspaces=(SupervisorWorkspaceConfig("example-org/example-app", str(tmp_path / "work=tree"),
                     (str(tmp_path / "trusted instructions" / "AGENTS.md"),)),)), **changes)
+
+
+@pytest.mark.parametrize("output_format", ["text", "markdown"])
+@pytest.mark.parametrize("network", [False, True])
+def test_setup_discloses_validation_preparation_and_resource_policy(tmp_path: Path, output_format: str, network: bool) -> None:
+    policy = _supervisor_policy(tmp_path, validation_authorized=True,
+        validation=SupervisorValidationConfig(preparation_authorized=True,
+            network_authorized=network, maximum_bytes=12345678,
+            minimum_free_bytes=87654321, command_timeout_seconds=83,
+            storage_reserve_paths=(str(tmp_path),)))
+    report = create_profile(tmp_path / 'config.toml', SetupRequest(
+        repositories=('example-org/example-app',), branches={}, offline=True, supervisor=policy))
+    rendered = render_operational(report, output_format)
+    assert 'dependency installation' in rendered
+    assert '12345678' in rendered and '87654321' in rendered and '83 seconds' in rendered
+    assert str(tmp_path) in rendered and 'not a kernel quota' in rendered
+    assert ('including reachable local services' in rendered) is network
+    assert ('disabled inside the validation sandbox' in rendered) is not network
+    assert 'caches and execution receipts are retained' in rendered
 
 
 @pytest.mark.parametrize("access", ["inherit", "restricted", "full"])

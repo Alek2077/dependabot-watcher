@@ -23,14 +23,18 @@ internal static class ConversationContracts
                 ExceptionDispatchInfo.Capture(failure.InnerException).Throw(); throw;
             }
         }
-        object Proposal(string id, string repository = Repository, int number = 42, string kind = "pull_request") =>
+        object Proposal(string id, string repository = Repository, int number = 42, string kind = "pull_request", string action = "validate_then_merge") =>
             Call(proposalType, null, "Parse", JsonNode.Parse(new JsonObject {
                 ["proposal_id"] = id, ["version"] = 0, ["plan_id"] = "plan_" + new string('a', 16),
                 ["repository"] = repository, ["handling"] = "pending", ["evidence_status"] = "complete", ["feedback"] = new JsonArray(),
-                ["step"] = new JsonObject { ["kind"] = kind, ["order"] = 1, ["summary"] = "Refreshed recommendation",
+                ["step"] = new JsonObject { ["kind"] = kind, ["action"] = action, ["order"] = 1, ["summary"] = "Refreshed recommendation",
                     ["identity"] = new JsonObject { ["repository"] = repository, ["number"] = number, ["head_sha"] = new string('e', 40) } }
             }.ToJsonString()), "plan_" + new string('a', 16))!;
         var item = Proposal(CurrentId);
+        var investigationRequest = (string)proposalType.GetProperty("InvestigationRequest", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(item)!;
+        if (!investigationRequest.Contains("PR #42") || !investigationRequest.Contains(Repository)
+            || !investigationRequest.Contains("does not authorize merging"))
+            throw new InvalidDataException("One-click investigation is not item scoped or fails to preserve action authority.");
         var originalItem = new JsonObject { ["repository"] = Repository, ["kind"] = "pull_request", ["number"] = 42,
             ["head_sha"] = new string('d', 40), ["expected_base"] = "main", ["observed_base"] = "main" };
         var response = JsonNode.Parse(new JsonObject {
@@ -55,11 +59,78 @@ internal static class ConversationContracts
         var view = Call(viewType, null, "Parse", response, Repository, Context)!;
         var text = (string)Call(viewType, view, "Describe", item)!;
         var latest = (string)Call(viewType, view, "LatestAnswer", item)!;
+        if (Call(viewType, view, "CurrentRecommendation", item) is not null)
+            throw new InvalidDataException("Historical advice became a current recommendation.");
+        var conversation = ((string, string, string, string))Call(viewType, view, "LatestConversation", item)!;
+        if (!conversation.Item1.Contains("original question") || !conversation.Item2.Contains("No GitHub changes")
+            || !conversation.Item4.Contains("Earlier conversation"))
+            throw new InvalidDataException("Structured conversation lost its authorship or freshness.");
+        var currentResponse = (JsonObject)response.DeepClone();
+        var currentJob = currentResponse["jobs"]![0]!;
+        currentJob["context_digest"] = Context; currentJob["current_context"] = true;
+        currentJob["messages"] = new JsonArray(); currentJob["result"]!["replies"] = new JsonArray();
+        var currentAdvice = currentJob["result"]!["recommendations"]![0]!;
+        currentAdvice["proposal_id"] = CurrentId; currentAdvice["conclusion"] = "recommend"; currentAdvice["ready_for_action"] = true;
+        var currentView = Call(viewType, null, "Parse", currentResponse, Repository, Context)!;
+        if (viewType.GetProperty("CurrentAssessmentSummary", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(view) is not null
+            || (string?)viewType.GetProperty("CurrentAssessmentSummary", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(currentView) != "Saved answer")
+            throw new InvalidDataException("Post-merge summary promoted historical context or lost accepted current assessment.");
+        var recommendation = ((string, string, bool))Call(viewType, currentView, "CurrentRecommendation", item)!;
+        if (!recommendation.Item3 || recommendation.Item1 != "Ready for merge review")
+            throw new InvalidDataException("Verified current readiness was not displayed.");
+        var guidance = (string)Call(viewType, currentView, "ActionGuidance", item, true)!;
+        if (!guidance.StartsWith("Next: review merge into ") || guidance.Length > 120)
+            throw new InvalidDataException("Action guidance is not a concise merge-review step.");
+        if (!((string)Call(viewType, currentView, "ActionGuidance", item, false)!).Contains("disabled"))
+            throw new InvalidDataException("Read-only guidance incorrectly offers merge approval.");
+        foreach (var nonMerge in new[] { Proposal(CurrentId, kind: "alert", action: "investigate"), Proposal(CurrentId, action: "human_attention") })
+        {
+            var advice = ((string, string, bool))Call(viewType, currentView, "CurrentRecommendation", nonMerge)!;
+            if (advice.Item3 || advice.Item1 == "Ready for merge review")
+                throw new InvalidDataException("Non-merge advice was presented as PR merge approval.");
+            if (((string)Call(viewType, currentView, "ActionGuidance", nonMerge, true)!).Contains("merge"))
+                throw new InvalidDataException("Non-merge guidance offers merge consent.");
+        }
+        if (Call(viewType, currentView, "CurrentRecommendation", Proposal(OriginalId)) is not null)
+            throw new InvalidDataException("Current advice leaked to a different proposal revision.");
+        currentAdvice["ready_for_action"] = false;
+        currentView = Call(viewType, null, "Parse", currentResponse, Repository, Context)!;
+        if (((string, string, bool))Call(viewType, currentView, "CurrentRecommendation", item)! is var notReady && notReady.Item3)
+            throw new InvalidDataException("A recommendation without readiness was promoted.");
+        if ((string)Call(viewType, currentView, "ActionGuidance", item, true)! != "Next: continue investigation."
+            || (string)Call(viewType, currentView, "ActionGuidance", Proposal(OriginalId), true)! != "Next: start investigation.")
+            throw new InvalidDataException("Completed partial investigation was mislabeled as not started.");
+        foreach (var quietConclusion in new[] { "hold", "no_action" })
+        {
+            currentAdvice["conclusion"] = quietConclusion;
+            currentView = Call(viewType, null, "Parse", currentResponse, Repository, Context)!;
+            if ((bool)Call(viewType, currentView, "SuggestsInvestigation", item)!
+                || ((string)Call(viewType, currentView, "ActionGuidance", item, true)!).Contains("investigation"))
+                throw new InvalidDataException("A hold/no-action result encouraged paid reinvestigation.");
+        }
+        if (!(bool)Call(viewType, view, "SuggestsInvestigation", item)!)
+            throw new InvalidDataException("Missing current advice did not offer investigation.");
+        foreach (var activeStatus in new[] { "prepared", "running" })
+        {
+            var activeResponse = (JsonObject)currentResponse.DeepClone();
+            var activeJob = activeResponse["jobs"]![0]!;
+            activeJob["status"] = activeStatus; activeJob["result"] = null;
+            activeJob["provenance"] = null; activeJob["provider_completion_observed"] = false;
+            var activeView = Call(viewType, null, "Parse", activeResponse, Repository, Context)!;
+            if (!(bool)viewType.GetProperty("HasActiveInvestigation", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(activeView)!
+                || (bool)Call(viewType, activeView, "SuggestsInvestigation", item)!)
+                throw new InvalidDataException("An active saved job offered another investigation.");
+        }
+        currentAdvice["ready_for_action"] = true; currentAdvice["conclusion"] = "hold";
+        var contradictionRefused = false;
+        try { Call(viewType, null, "Parse", currentResponse, Repository, Context); }
+        catch (InvalidDataException) { contradictionRefused = true; }
+        if (!contradictionRefused) throw new InvalidDataException("Contradictory readiness was accepted.");
         if (!text.Contains("Did you receive my original question?") || !latest.Contains("Yes, I received it.")
             || !latest.Contains("earlier saved context") || text.Contains("Old revision advice"))
             throw new InvalidDataException("Refreshed item lost its historical conversation or promoted old advice.");
         foreach (var other in new[] { Proposal(CurrentId, "other/repository"), Proposal(CurrentId, number: 43), Proposal(CurrentId, kind: "alert") })
-            if (Call(viewType, view, "LatestAnswer", other) is not null)
+            if (Call(viewType, view, "LatestAnswer", other) is not null || Call(viewType, view, "LatestConversation", other) is not null)
                 throw new InvalidDataException("Historical answer leaked across repository, item number or kind.");
         var interrupted = (JsonObject)response.DeepClone();
         var interruptedJob = interrupted["jobs"]![0]!;

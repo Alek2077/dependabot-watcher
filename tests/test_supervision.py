@@ -13,9 +13,9 @@ from dependabot_watcher.config import PathPolicyOverrides, SupervisorConfig, Sup
 from dependabot_watcher.planning import _overall_plan_identifier, _repository_plan_identifier, _step_identifier
 from dependabot_watcher.review_queue import ReviewQueue, ReviewQueueError
 from dependabot_watcher.runtime_state import RuntimeStateError, load_private_json, save_private_json
-from dependabot_watcher.supervision import SupervisorJobs
+from dependabot_watcher.supervision import SupervisorJobs, _validate_context
 from test_execution import refresh_plan_identities, saved_plan
-from test_review_queue import decision, file_bound_queue, persist_plan, snapshot, workspace_receipt
+from test_review_queue import decision, file_bound_queue, persist_plan, queue_case, snapshot, workspace_receipt
 
 
 @pytest.fixture
@@ -35,6 +35,34 @@ def result_for(job: dict[str, Any]) -> dict[str, Any]:
             "replies": [{"proposal_id": item["proposal_id"], "request_id": message["request_id"],
                          "message": "This question belongs to this saved revision."}
                         for item in job["context"]["proposals"] for message in item["feedback"]]}
+
+
+def test_recent_action_context_is_bound_and_malformed_or_cross_repository_actions_are_rejected(queue_case: tuple[ReviewQueue, dict[str, Any]]) -> None:
+    queue, _ = queue_case
+    context = queue.supervision_context("example-org/example-app")
+    action = {"action_id": "action_" + "a" * 24, "repository": "example-org/example-app",
+              "pull_request": 42, "head_sha": "b" * 40, "status": "success_observed", "recovery_required": False}
+    context["recent_actions"] = [action]
+    _validate_context(context)
+    for field, value in (("repository", "other/repository"), ("pull_request", True),
+                         ("action_id", "invalid"), ("head_sha", "unknown"),
+                         ("status", "ready_to_merge"), ("recovery_required", "false")):
+        context["recent_actions"] = [{**action, field: value}]
+        with pytest.raises(ReviewQueueError, match="maintenance action"):
+            _validate_context(context)
+    context["recent_actions"] = [action]
+    prior = {"source_job_id": "job_" + "b" * 32, "source_context_digest": "c" * 64,
+             "repository": "example-org/example-app", "provider": "fixture", "model": "fixture-model",
+             "reasoning_effort": "low", "applicability": "historical_recheck_before_use", "summary": "Earlier reasoning.",
+             "recommendations": [], "recommendations_omitted": 0}
+    context["previous_assessment"] = prior
+    _validate_context(context)
+    for field, value in (("repository", "other/repository"), ("applicability", "currently_approved"),
+                         ("source_context_digest", "unknown"), ("recommendations_omitted", True),
+                         ("recommendations", [{"command": "not evidence"}])):
+        context["previous_assessment"] = {**prior, field: value}
+        with pytest.raises(ReviewQueueError, match="Historical supervisor"):
+            _validate_context(context)
 
 
 def test_instruction_fingerprint_change_invalidates_prepared_job_and_preserves_saved_feedback(
@@ -435,7 +463,7 @@ def test_failed_or_interrupted_job_is_not_mistaken_for_completed_analysis(
     assert jobs.prepare(job["repository"], retry_job_id=job["job_id"])["job_id"] != job["job_id"]
 
 
-def test_retry_cannot_resume_even_a_previous_completed_owner(jobs_case: tuple[SupervisorJobs, dict[str, Any]]) -> None:
+def test_retry_resumes_a_previous_completed_owner_with_separate_attempt(jobs_case: tuple[SupervisorJobs, dict[str, Any]]) -> None:
     jobs, _ = jobs_case
     first = jobs.prepare("example-org/example-app")
     jobs.start(first["job_id"])
@@ -446,10 +474,8 @@ def test_retry_cannot_resume_even_a_previous_completed_owner(jobs_case: tuple[Su
     jobs.start(second["job_id"], resume_session_id="completed-session")
     jobs.fail(second["job_id"])
     retry = jobs.prepare(first["repository"], retry_job_id=second["job_id"])
-    with pytest.raises(ReviewQueueError, match="fresh session"):
-        jobs.start(retry["job_id"], resume_session_id="completed-session")
-    assert jobs.read(retry["job_id"])["status"] == "prepared"
-    assert jobs.start(retry["job_id"])["session_id"] is None
+    assert jobs.start(retry["job_id"], resume_session_id="completed-session")["session_id"] == "completed-session"
+    assert jobs.read(second["job_id"])["status"] == "failed"
     jobs.fail(retry["job_id"])
 
 

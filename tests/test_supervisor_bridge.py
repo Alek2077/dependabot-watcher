@@ -14,11 +14,14 @@ from dependabot_watcher.github import ExecutionGitHubClient, GitHubClient
 from dependabot_watcher.review_actions import ActionReviews
 from dependabot_watcher.review_bridge import exchange
 from dependabot_watcher.review_queue import ReviewQueueError, supervisor_context_digest
+from dependabot_watcher.runtime_state import load_run_state, save_run_state
 from dependabot_watcher.supervision import SupervisorJobs
 from dependabot_watcher.supervisor_bridge import _Frames, _preview, launch_exchange
 from dependabot_watcher.supervisor_permissions import SupervisorPermissions
 from test_supervisor_launch import launch_case
-from test_supervisor_workspace import workspace_case
+from test_supervisor_workspace import git, workspace_case
+from test_execution import refresh_plan_identities
+from test_review_queue import persist_plan
 
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX/WSL live client pipes")
@@ -66,9 +69,62 @@ def test_failed_launch_is_exposed_and_explicit_retry_crosses_the_actual_bridge(l
     assert len(case["launches"]) == 2
 
 
+@pytest.mark.parametrize("changed_base", [False, True])
+def test_post_merge_observation_reaches_actual_protocol_and_completed_context_is_reused(launch_case: dict[str, Any], changed_base: bool) -> None:
+    case = launch_case
+    client = cast(GitHubClient, object())
+    first = io.BytesIO()
+    assert launch_exchange(case["queue"], client, request(case), first) == 0
+    before = json.loads(first.getvalue().splitlines()[-1])
+    state = load_run_state(case["queue"].directory)
+    state["last_attempt"] = {"execution_observation": {"observations": [{
+        "action_id": "action_" + "a" * 24, "repository": "example-org/example-app", "pull_request": 42,
+        "head_sha": "a" * 40, "status": "success_observed", "recovery_required": False,
+    }]}}
+    save_run_state(case["queue"].directory, state)
+    # Simulate refreshed evidence with another exact head, not an actual merge.
+    step = case["report"]["repositories"][0]["recommended_order"][0]
+    step["identity"]["head_sha"] = "c" * 40
+    step["freshness"]["head_sha"] = "c" * 40
+    if changed_base:
+        git(case["worktree"], "commit", "--allow-empty", "-m", "Synthetic post-merge base")
+        head = git(case["worktree"], "rev-parse", "HEAD")
+        case["report"]["repositories"][0]["evidence_snapshot"]["base_sha"] = head
+        step["freshness"]["base_sha"] = head
+    case["report"].update(refresh_plan_identities(case["report"]))
+    persist_plan(case["queue"].directory, case["report"])
+    code = case["program"].read_text().replace("proposals=data['context']['proposals']",
+        "assert data['context']['recent_actions'][0]['pull_request']==42\n"
+        "        assert data['context']['recent_actions'][0]['status']=='success_observed'\n"
+        "        assert data['context']['previous_assessment']['applicability']=='historical_recheck_before_use'\n"
+        "        assert data['context']['previous_assessment']['recommendations'][0]['item']['head_sha']=='" + "a" * 40 + "'\n"
+        "        assert data['context']['mutation_authorized'] is False\n"
+        "        proposals=data['context']['proposals']")
+    case["program"].write_text(code)
+    for reused in (False, True):
+        output = io.BytesIO()
+        assert launch_exchange(case["queue"], client, request(case), output) == 0, output.getvalue().decode()
+        terminal = json.loads(output.getvalue().splitlines()[-1])
+        assert terminal["job_status"] == "completed" and terminal["reused"] is reused
+        assert terminal["job_id"] != before["job_id"]
+        job = SupervisorJobs(case["queue"]).read(terminal["job_id"])
+        assert job["context"]["recent_actions"][0]["pull_request"] == 42
+        assert job["context"]["previous_assessment"]["source_job_id"] == before["job_id"]
+        assert job["session_id"] == "thread1"
+    assert len(case["launches"]) == 2
+
+
 def test_session_only_access_has_no_supported_preview() -> None:
     with pytest.raises(ReviewQueueError, match="no supported"):
         _preview({"command": "cat fixture.txt", "cwd": "/worktree", "availableDecisions": ["acceptForSession"]})
+
+
+def test_explicit_local_environment_preserves_the_exact_command_preview() -> None:
+    params = {"command": "gh pr view 42", "cwd": "/worktree", "environmentId": "local"}
+    assert _preview(params) == _preview({key: value for key, value in params.items() if key != "environmentId"})
+    for environment in ("remote1", "LOCAL", "", 42, {}):
+        with pytest.raises(ReviewQueueError):
+            _preview({**params, "environmentId": environment})
 
 
 def test_preview_follows_saved_exact_permission_and_reaches_deny_without_persisting_command(

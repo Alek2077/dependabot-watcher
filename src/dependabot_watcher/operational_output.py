@@ -51,6 +51,20 @@ def _setup_ai_lines(advisory: dict[str, Any], supervisor: dict[str, Any] | None 
         if supervisor.get("access") == "full":
             lines.append("Full-access tools may bypass Watcher's guarded executor; instructions alone do not isolate mutation credentials.")
         lines.append("Workspace tests/builds: " + ("authorized for later investigation" if supervisor.get("validation_authorized") else "not authorized"))
+        validation = supervisor.get("validation")
+        if isinstance(validation, dict) and validation.get("preparation_authorized"):
+            lines.append("Validation preparation: disposable exact-revision copies; dependency installation and probes authorized inside the validation sandbox.")
+            lines.append("Sandbox limits apply to Watcher's validation tools, not every tool available to the agent under its chosen Codex access. Inherited/full access is not agent-wide isolation.")
+            lines.append("Validation network: " + (
+                "enabled, including reachable local services; private code may communicate over the host network."
+                if validation.get("network_authorized") else "disabled inside the validation sandbox."))
+            lines.append(
+                f"Validation limits: {_plain(validation.get('maximum_bytes'))} bytes monitored storage (not a kernel quota); "
+                f"{_plain(validation.get('minimum_free_bytes'))} bytes minimum free reserve; "
+                f"{_plain(validation.get('command_timeout_seconds'))} seconds per command.")
+            paths = validation.get("storage_reserve_paths") or []
+            lines.append("Additional reserve paths: " + (", ".join(_plain(path) for path in paths) or "none"))
+            lines.append("Disposable copies are cleaned after the job; reusable validation caches and execution receipts are retained.")
         return lines
     mode = str(advisory.get("mode") or "off")
     if mode == "off":

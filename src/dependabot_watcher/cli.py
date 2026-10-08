@@ -11,7 +11,7 @@ from typing import Iterator, TextIO
 
 from . import __version__
 from .advisory import AdvisoryError, advise
-from .config import ConfigError, SupervisorConfig, SupervisorWorkspaceConfig, WatcherConfig, default_config_path, load_config
+from .config import ConfigError, SupervisorConfig, SupervisorValidationConfig, SupervisorWorkspaceConfig, WatcherConfig, default_config_path, load_config
 from .diagnostics import doctor
 from .execution import ExecutionError, execute_approved, load_plan, preflight_execution
 from .github import GhCliClient, GitHubError, public_github_error_message
@@ -352,6 +352,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Acknowledge broad agent tools may bypass Watcher's guarded executor; no merge is authorized here.")
     setup_parser.add_argument("--supervisor-validation-authorized", action="store_true",
         help="Authorize later workspace tests/builds, not repository publication or merges.")
+    setup_parser.add_argument("--supervisor-prepare-validation", action="store_true",
+        help="Authorize exact-revision isolated validation copies and disposable dependency installation.")
+    setup_parser.add_argument("--supervisor-validation-network", action="store_true",
+        help="Allow validation network access, including local services and package downloads; no host credentials are mounted, but unknown secrets embedded in code are not detected.")
+    setup_parser.add_argument("--supervisor-validation-max-bytes", type=int)
+    setup_parser.add_argument("--supervisor-validation-reserve-bytes", type=int)
+    setup_parser.add_argument("--supervisor-validation-command-timeout", type=int)
+    setup_parser.add_argument("--supervisor-validation-reserve-path", action="append", default=[],
+        help="Additional physical host volume whose free-space reserve must hold, e.g. /mnt/c for a WSL virtual disk backed by C:.")
     setup_parser.add_argument("--supervisor-timeout-seconds", type=int)
     setup_parser.add_argument("--supervisor-max-jobs-per-run", type=int)
     setup_parser.add_argument("--supervisor-workspace", action="append", default=[], metavar="OWNER/REPO=PATH",
@@ -616,8 +625,11 @@ def _setup_supervisor(args: argparse.Namespace) -> SupervisorConfig:
     supplied = any(getattr(args, name) for name in (
         "supervisor_model", "supervisor_reasoning", "supervisor_account", "supervisor_access",
         "supervisor_permission_profile", "acknowledge_supervisor_use", "acknowledge_supervisor_full_access",
-        "supervisor_validation_authorized", "supervisor_workspace", "supervisor_instruction", "supervisor_refresh_workspace"))
+        "supervisor_validation_authorized", "supervisor_prepare_validation", "supervisor_validation_network", "supervisor_validation_reserve_path",
+        "supervisor_workspace", "supervisor_instruction", "supervisor_refresh_workspace"))
     supplied = supplied or args.supervisor_timeout_seconds is not None or args.supervisor_max_jobs_per_run is not None
+    supplied = supplied or any(getattr(args, name) is not None for name in (
+        "supervisor_validation_max_bytes", "supervisor_validation_reserve_bytes", "supervisor_validation_command_timeout"))
     if args.supervisor_mode == "off":
         if supplied:
             raise SetupError("Supervisor choices require --supervisor-mode approval_first; nothing was saved.")
@@ -653,7 +665,14 @@ def _setup_supervisor(args: argparse.Namespace) -> SupervisorConfig:
         timeout_seconds=args.supervisor_timeout_seconds if args.supervisor_timeout_seconds is not None else 900,
         max_jobs_per_run=args.supervisor_max_jobs_per_run if args.supervisor_max_jobs_per_run is not None else 1,
         workspaces=tuple(SupervisorWorkspaceConfig(name, path, tuple(instructions.get(name, [])), name.casefold() in refresh_names)
-                         for name, path in workspaces.items()))
+                         for name, path in workspaces.items()),
+        validation=SupervisorValidationConfig(
+            preparation_authorized=args.supervisor_prepare_validation,
+            network_authorized=args.supervisor_validation_network,
+            maximum_bytes=args.supervisor_validation_max_bytes if args.supervisor_validation_max_bytes is not None else 256 * 1024**2,
+            minimum_free_bytes=args.supervisor_validation_reserve_bytes if args.supervisor_validation_reserve_bytes is not None else 512 * 1024**2,
+            command_timeout_seconds=args.supervisor_validation_command_timeout if args.supervisor_validation_command_timeout is not None else 120,
+            storage_reserve_paths=tuple(args.supervisor_validation_reserve_path)))
 
 
 def _run_reconciliation(args: argparse.Namespace, presentation: TerminalPresentation) -> int:
