@@ -366,6 +366,8 @@ The run-once reconciler remains scheduler-independent. GitHub Actions or another
 
 Unreleased source adds a tool-capable Codex supervisor and one optional aggregate Windows review window. Python owns the saved context, messages, attempts, permissions and exact-action recovery; the window is an interaction channel, not a browser page or a second policy engine. AI-supervised maintenance is the intended primary automation path; the existing deterministic/manual and bounded metadata-advice modes remain available.
 
+The basic CLI works without the Windows component. The current WSL scheduled AI supervisor requires it installed, although the window can stay hidden. Component-free AI operation is post-release work; optional window visibility does not mean the current component is optional for that route.
+
 The development WSL entry can open an already built, deliberately selected component:
 
 ```bash

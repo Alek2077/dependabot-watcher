@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 from .config import (
     ConfigError,
     SupervisorConfig,
+    SupervisorWorkspaceConfig,
     default_config_path,
     normalize_branch_name,
     normalize_repository_name,
@@ -26,9 +27,20 @@ from .diagnostics import (
 )
 from .runtime_state import (
     RuntimeStateError,
+    default_state_directory,
     ensure_private_directory,
     ensure_user_owned_directory,
     secure_private_file,
+)
+from .supervisor_workspace import verify_supervisor_workspace
+from .supervisor_workspace_provisioning import (
+    DEFAULT_WORKSPACE_MAX_BYTES,
+    WorkspaceProvisionRequest,
+    WorkspaceProvisioningError,
+    provision_supervisor_workspaces,
+    source_checkout_git_directory,
+    workspace_directory_for,
+    workspace_root_for_state,
 )
 
 
@@ -58,6 +70,11 @@ class SetupRequest:
     acknowledge_mutation: bool = False
     offline: bool = False
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
+    supervisor_provision_sources: Mapping[str, Path] = field(default_factory=dict)
+    supervisor_provision_instructions: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    supervisor_provision_refresh: tuple[str, ...] = ()
+    supervisor_workspace_root: Path | None = None
+    supervisor_workspace_max_bytes: int = DEFAULT_WORKSPACE_MAX_BYTES
 
 
 def _utc_now() -> datetime:
@@ -314,6 +331,131 @@ def _write_exclusive(path: Path, content: str) -> None:
             temporary_path.unlink(missing_ok=True)
 
 
+def _provision_root(request: SetupRequest) -> Path:
+    return request.supervisor_workspace_root or workspace_root_for_state(default_state_directory())
+
+
+def _resolved_setup_path(path: Path, *, strict: bool = False) -> Path:
+    try:
+        return path.expanduser().resolve(strict=strict)
+    except (OSError, RuntimeError) as exc:
+        raise SetupError("Setup paths could not be resolved safely before provisioning.") from exc
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    return first == second or first.is_relative_to(second) or second.is_relative_to(first)
+
+
+def _validate_output_separation(output_path: Path, request: SetupRequest) -> None:
+    """Keep the eventual configuration write outside every provisioning input/output tree."""
+
+    if not request.supervisor_provision_sources:
+        return
+    output = _resolved_setup_path(output_path)
+    protected: list[tuple[Path, str]] = []
+    root = _resolved_setup_path(_provision_root(request))
+    protected.append((root, "private workspace root"))
+    for repository, source_path in request.supervisor_provision_sources.items():
+        source = _resolved_setup_path(source_path, strict=True)
+        try:
+            source_common = _resolved_setup_path(
+                source_checkout_git_directory(source_path, repository),
+                strict=True,
+            )
+        except WorkspaceProvisioningError as exc:
+            raise SetupError(str(exc)) from exc
+        if _paths_overlap(root, source_common):
+            raise SetupError(
+                "Private workspace root overlaps the source Git metadata directory."
+            )
+        protected.append((source, "source checkout"))
+        protected.append((source_common, "source Git metadata directory"))
+        workspace = _resolved_setup_path(workspace_directory_for(root, repository))
+        protected.extend((
+            (workspace.parent, "generated repository store"),
+            (workspace.parent / "source-clone", "generated private clone"),
+            (workspace, "maintenance worktree"),
+        ))
+    for directory, label in protected:
+        if _paths_overlap(output, directory):
+            raise SetupError(
+                f"Configuration output path overlaps the {label}; choose a separate configuration location."
+            )
+
+
+def _canonicalize_provisioning(request: SetupRequest) -> SetupRequest:
+    selected = {name.casefold(): name for name in request.repositories}
+
+    def canonical_paths(values: Mapping[str, Path], label: str) -> dict[str, Path]:
+        result: dict[str, Path] = {}
+        for name, raw_path in values.items():
+            repository = selected.get(name.casefold())
+            if repository is None:
+                raise SetupError(f"{label} references a repository not selected for setup: {name}.")
+            if repository in result:
+                raise SetupError(f"{label} repeats a case-insensitive repository alias.")
+            if not isinstance(raw_path, Path):
+                raw_path = Path(raw_path)
+            expanded = raw_path.expanduser()
+            if not expanded.is_absolute() or ".." in expanded.parts:
+                raise SetupError(f"{label} paths must be absolute and traversal-free.")
+            result[repository] = expanded
+        return result
+
+    sources = canonical_paths(request.supervisor_provision_sources, "Supervisor provisioning source")
+    selected_instructions: dict[str, tuple[str, ...]] = {}
+    for name, raw_sources in request.supervisor_provision_instructions.items():
+        repository = selected.get(name.casefold())
+        if repository is None or repository not in sources:
+            raise SetupError("Provisioning instruction choices must name a provisioned repository.")
+        if repository in selected_instructions:
+            raise SetupError("Provisioning instructions repeat a case-insensitive repository alias.")
+        selected_instructions[repository] = tuple(raw_sources)
+    refresh: list[str] = []
+    for name in request.supervisor_provision_refresh:
+        repository = selected.get(name.casefold())
+        if repository is None or repository not in sources or repository in refresh:
+            raise SetupError("--supervisor-refresh-workspace must name one provisioned repository exactly once.")
+        refresh.append(repository)
+    root = request.supervisor_workspace_root
+    if root is not None:
+        root = root.expanduser()
+        if not root.is_absolute() or ".." in root.parts:
+            raise SetupError("--supervisor-workspace-root must be absolute and traversal-free.")
+        if not sources:
+            raise SetupError("--supervisor-workspace-root requires at least one --supervisor-provision source.")
+    if not sources and request.supervisor_workspace_max_bytes != DEFAULT_WORKSPACE_MAX_BYTES:
+        raise SetupError("--supervisor-workspace-max-bytes requires at least one --supervisor-provision source.")
+    return replace(
+        request,
+        supervisor_provision_sources=sources,
+        supervisor_provision_instructions=selected_instructions,
+        supervisor_provision_refresh=tuple(refresh),
+        supervisor_workspace_root=root,
+    )
+
+
+def _validation_supervisor(request: SetupRequest) -> SupervisorConfig:
+    policy = request.supervisor
+    if not request.supervisor_provision_sources:
+        return policy
+    manual = {item.repository.casefold() for item in policy.workspaces}
+    overlap = manual & {name.casefold() for name in request.supervisor_provision_sources}
+    if overlap:
+        raise SetupError("A repository cannot use both --supervisor-workspace and --supervisor-provision.")
+    root = _provision_root(request)
+    generated = tuple(
+        SupervisorWorkspaceConfig(
+            repository=name,
+            directory=str(workspace_directory_for(root, name)),
+            instruction_sources=request.supervisor_provision_instructions.get(name, ()),
+            refresh_authorized=name in request.supervisor_provision_refresh,
+        )
+        for name in request.supervisor_provision_sources
+    )
+    return replace(policy, workspaces=policy.workspaces + generated)
+
+
 def _validate_request(request: SetupRequest) -> None:
     if not request.repositories:
         raise SetupError("Setup requires at least one --repo owner/repository value.")
@@ -402,11 +544,21 @@ def _validate_request(request: SetupRequest) -> None:
         )
     if request.supervisor.mode != "off" and request.advisory_mode != "off":
         raise SetupError("Choose tool-capable supervision or metadata advice, not both for the same profile.")
+    if request.supervisor_provision_sources and request.supervisor.mode == "off":
+        raise SetupError("Supervisor provisioning requires --supervisor-mode approval_first.")
+    if request.supervisor_provision_instructions and not request.supervisor_provision_sources:
+        raise SetupError("Provisioning instruction choices require --supervisor-provision.")
+    if request.supervisor_provision_refresh and not request.supervisor_provision_sources:
+        raise SetupError("Workspace refresh authority requires --supervisor-provision.")
+    if type(request.supervisor_workspace_max_bytes) is not int or not (
+        1 <= request.supervisor_workspace_max_bytes <= 16 * 1024**3
+    ):
+        raise SetupError("--supervisor-workspace-max-bytes must be between one byte and 16 GiB.")
     # Validate saved supervisor scope/consent before any authentication or
     # repository call. This is parsing, not workspace or runtime attestation.
     try:
         parse_config({"schema_version": 1, "repositories": [{"name": name} for name in request.repositories],
-                      "supervisor": _supervisor_data(request.supervisor)})
+                      "supervisor": _supervisor_data(_validation_supervisor(request))})
     except ConfigError as exc:
         raise SetupError(f"Supervisor choices are invalid: {exc}") from exc
 
@@ -435,12 +587,14 @@ def setup(
     request = replace(request, branches=canonical(request.branches, "Branch"),
                       merge_methods=canonical(request.merge_methods, "Merge method"),
                       required_checks=canonical(request.required_checks, "Required check"))
+    request = _canonicalize_provisioning(request)
     _validate_request(request)
     expanded = output_path.expanduser()
     if expanded.exists():
         raise SetupError(
             f"Configuration already exists at {expanded}; setup will not overwrite it."
         )
+    _validate_output_separation(expanded, request)
 
     observed_branches: dict[str, str] = {}
     verification: dict[str, Any] = {
@@ -517,6 +671,38 @@ def setup(
                 )
         verified = True
 
+    provisioned_workspaces = ()
+    if request.supervisor_provision_sources:
+        specs: list[WorkspaceProvisionRequest] = []
+        root = _provision_root(request)
+        for repository, source_path in request.supervisor_provision_sources.items():
+            branch = request.branches.get(repository) or observed_branches.get(repository) or "main"
+            verified_repository = verification["repositories"].get(repository, {})
+            base_sha = verified_repository.get("configured_branch_head_sha")
+            specs.append(WorkspaceProvisionRequest(
+                repository=repository,
+                source_checkout=source_path,
+                workspace_directory=workspace_directory_for(root, repository),
+                branch=branch,
+                collected_base_sha=base_sha,
+                explicit_instruction_sources=request.supervisor_provision_instructions.get(repository, ()),
+                refresh_authorized=repository in request.supervisor_provision_refresh,
+            ))
+        try:
+            provisioned_workspaces = provision_supervisor_workspaces(
+                specs,
+                root=root,
+                offline=request.offline,
+                maximum_bytes=request.supervisor_workspace_max_bytes,
+                minimum_free_bytes=request.supervisor.validation.minimum_free_bytes,
+                reserve_paths=tuple(Path(path) for path in request.supervisor.validation.storage_reserve_paths),
+            )
+        except WorkspaceProvisioningError as exc:
+            raise SetupError(str(exc)) from exc
+        combined = list(request.supervisor.workspaces)
+        combined.extend(result.registration for result in provisioned_workspaces)
+        request = replace(request, supervisor=replace(request.supervisor, workspaces=tuple(combined)))
+
     generated_at = _timestamp(clock)
     data = _config_data(
         request,
@@ -528,6 +714,27 @@ def setup(
         parsed_config = parse_config(data)
     except ConfigError as exc:
         raise SetupError(f"Setup choices are invalid: {exc}") from exc
+    if provisioned_workspaces:
+        try:
+            for result in provisioned_workspaces:
+                verify_supervisor_workspace(
+                    parsed_config,
+                    result.registration.repository,
+                    {
+                        "repository": result.registration.repository,
+                        "evidence_snapshot": {"base_sha": result.base_sha},
+                    },
+                )
+                verification.setdefault("provisioned_workspace_bases", {})[result.registration.repository] = {
+                    "status": result.base_provenance,
+                    "base_sha": result.base_sha,
+                    "workspace_structure": "verified_by_existing_read_only_verifier",
+                    "runtime_instruction_discovery_verified": False,
+                }
+        except Exception as exc:
+            raise SetupError(
+                "Provisioned workspace failed the existing supervisor verifier; owned files were preserved."
+            ) from exc
     _write_exclusive(expanded, _render_config(data))
     automatically_loaded = expanded.resolve() == default_config_path().expanduser().resolve()
     config_argument = (
@@ -581,6 +788,30 @@ def setup(
                              else "subscription_or_api_usage_if_launched"),
             "evidence_privacy": ("not_applicable_ai_off" if request.supervisor.mode == "off"
                                  else "repository_evidence_and_saved_questions_sent_to_selected_provider_if_launched"),
+            "workspace_provisioning": [
+                {
+                    "status": result.status,
+                    "source_checkout": result.source_checkout,
+                    "directory": result.registration.directory,
+                    "base_sha": result.base_sha,
+                    "base_provenance": result.base_provenance,
+                    "estimated_bytes": result.estimated_bytes,
+                    "setup_wide_maximum_bytes": result.maximum_bytes,
+                    "minimum_free_bytes": result.minimum_free_bytes,
+                    "reserve_paths": list(result.reserve_paths),
+                    "discovered_instruction_sources": list(result.discovered_instruction_sources),
+                    "expected_instruction_sources": list(result.instruction_sources),
+                    "source_checkout_ancestor_instruction_sources": list(
+                        result.source_ancestor_instruction_sources
+                    ),
+                    "maintenance_path_ancestor_instruction_sources": list(
+                        result.workspace_ancestor_instruction_sources
+                    ),
+                    "runtime_instruction_discovery_verified": False,
+                    "retention": result.retention,
+                }
+                for result in provisioned_workspaces
+            ],
         },
         "verification": verification,
         "capabilities": {
@@ -598,6 +829,8 @@ def setup(
             "Run one read-only reconciliation before scheduling recurring operation.",
             "Choose a schedule cadence and notification mode before installing a native schedule.",
             (
+                "Supervisor policy is saved, not launched. Persistent provisioned copies passed the local workspace verifier; confirm the runtime instruction chain and account/model before investigation."
+                if provisioned_workspaces else
                 "Supervisor choices are saved, not launched. Verify the isolated workspaces, instructions and runtime before investigation; scheduled initiation is a separate check."
                 if request.supervisor.mode != "off" else
                 "AI advice is off; decide whether deterministic operation is sufficient before enabling model use."

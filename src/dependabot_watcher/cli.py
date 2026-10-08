@@ -32,6 +32,7 @@ from .schedulers.common import ScheduleError
 from .scheduling import inventory_schedules, manage_schedule, recurring_profile_summary
 from .scheduling_output import render_schedule
 from .setup import SetupError, SetupRequest, setup
+from .supervisor_workspace_provisioning import DEFAULT_WORKSPACE_MAX_BYTES
 from .terminal import (
     ProgressMode,
     TerminalPresentation,
@@ -365,6 +366,12 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--supervisor-max-jobs-per-run", type=int)
     setup_parser.add_argument("--supervisor-workspace", action="append", default=[], metavar="OWNER/REPO=PATH",
         help="Register an existing isolated linked worktree; repeat per supervised repository.")
+    setup_parser.add_argument("--supervisor-provision", action="append", default=[], metavar="OWNER/REPO=LOCAL_CHECKOUT",
+        help="Provision a persistent private maintenance copy from this read-only local checkout; repeat per repository.")
+    setup_parser.add_argument("--supervisor-workspace-root", type=Path,
+        help="Private persistent workspace root (default: the Watcher state directory).")
+    setup_parser.add_argument("--supervisor-workspace-max-bytes", type=int,
+        help="Setup-wide ceiling for estimated new private Git object stores plus checkouts (default: 1 GiB).")
     setup_parser.add_argument("--supervisor-instruction", action="append", default=[], metavar="OWNER/REPO=PATH",
         help="Expected trusted instruction source in discovery order; repeat as needed.")
     setup_parser.add_argument("--supervisor-refresh-workspace", action="append", default=[], metavar="OWNER/REPO",
@@ -621,41 +628,63 @@ def _run_notification(args: argparse.Namespace, presentation: TerminalPresentati
     return ExitCode.NOTIFICATION_ERROR if receipt["status"] == "unavailable" else ExitCode.SUCCESS
 
 
-def _setup_supervisor(args: argparse.Namespace) -> SupervisorConfig:
+def _setup_supervisor(args: argparse.Namespace):
     supplied = any(getattr(args, name) for name in (
         "supervisor_model", "supervisor_reasoning", "supervisor_account", "supervisor_access",
         "supervisor_permission_profile", "acknowledge_supervisor_use", "acknowledge_supervisor_full_access",
         "supervisor_validation_authorized", "supervisor_prepare_validation", "supervisor_validation_network", "supervisor_validation_reserve_path",
-        "supervisor_workspace", "supervisor_instruction", "supervisor_refresh_workspace"))
+        "supervisor_workspace", "supervisor_provision", "supervisor_instruction", "supervisor_refresh_workspace",
+        "supervisor_workspace_root"))
     supplied = supplied or args.supervisor_timeout_seconds is not None or args.supervisor_max_jobs_per_run is not None
+    supplied = supplied or args.supervisor_workspace_max_bytes is not None
     supplied = supplied or any(getattr(args, name) is not None for name in (
         "supervisor_validation_max_bytes", "supervisor_validation_reserve_bytes", "supervisor_validation_command_timeout"))
     if args.supervisor_mode == "off":
         if supplied:
             raise SetupError("Supervisor choices require --supervisor-mode approval_first; nothing was saved.")
-        return SupervisorConfig()
+        return SupervisorConfig(), {}, {}, ()
     if args.supervisor_access is None:
         raise SetupError("Choose --supervisor-access inherit, restricted or full explicitly.")
     workspaces: dict[str, str] = {}
     instructions: dict[str, list[str]] = {}
+    provision_sources: dict[str, Path] = {}
+    provision_instructions: dict[str, list[str]] = {}
     for raw in args.supervisor_workspace:
         name, separator, path = raw.partition("=")
         if not separator or not name or not path or name.casefold() in {key.casefold() for key in workspaces}:
             raise SetupError("Use one --supervisor-workspace OWNER/REPO=PATH per repository.")
         workspaces[name] = path
+    for raw in args.supervisor_provision:
+        name, separator, source = raw.partition("=")
+        if (not separator or not name or not source
+                or name.casefold() in {key.casefold() for key in workspaces}
+                or name.casefold() in {key.casefold() for key in provision_sources}):
+            raise SetupError("Use one --supervisor-provision OWNER/REPO=LOCAL_CHECKOUT per repository; do not mix duplicate registrations.")
+        source_path = Path(source).expanduser()
+        if not source_path.is_absolute() or ".." in source_path.parts:
+            raise SetupError("Provisioning source checkouts must use absolute paths without traversal.")
+        provision_sources[name] = source_path
     for raw in args.supervisor_instruction:
         name, separator, path = raw.partition("=")
-        keys = [key for key in workspaces if key.casefold() == name.casefold()]
-        if not separator or not path or len(keys) != 1:
-            raise SetupError("Each --supervisor-instruction must name a registered supervisor workspace.")
-        instructions.setdefault(keys[0], []).append(path)
+        workspace_keys = [key for key in workspaces if key.casefold() == name.casefold()]
+        provision_keys = [key for key in provision_sources if key.casefold() == name.casefold()]
+        if not separator or not path or len(workspace_keys) + len(provision_keys) != 1:
+            raise SetupError("Each --supervisor-instruction must name one registered or provisioned workspace.")
+        if workspace_keys:
+            instructions.setdefault(workspace_keys[0], []).append(path)
+        else:
+            provision_instructions.setdefault(provision_keys[0], []).append(path)
     refresh_names: set[str] = set()
+    provision_refresh: list[str] = []
     for name in args.supervisor_refresh_workspace:
-        keys = [key for key in workspaces if key.casefold() == name.casefold()]
-        if len(keys) != 1 or keys[0].casefold() in refresh_names:
+        workspace_keys = [key for key in workspaces if key.casefold() == name.casefold()]
+        provision_keys = [key for key in provision_sources if key.casefold() == name.casefold()]
+        if len(workspace_keys) + len(provision_keys) != 1 or name.casefold() in refresh_names:
             raise SetupError("Each --supervisor-refresh-workspace must name one registered workspace exactly once.")
-        refresh_names.add(keys[0].casefold())
-    return SupervisorConfig(mode="approval_first", provider="codex_app_server",
+        refresh_names.add(name.casefold())
+        if provision_keys:
+            provision_refresh.append(provision_keys[0])
+    policy = SupervisorConfig(mode="approval_first", provider="codex_app_server",
         model=args.supervisor_model, reasoning_effort=args.supervisor_reasoning,
         expected_account_type=args.supervisor_account, access=args.supervisor_access,
         permission_profile=args.supervisor_permission_profile,
@@ -673,6 +702,9 @@ def _setup_supervisor(args: argparse.Namespace) -> SupervisorConfig:
             minimum_free_bytes=args.supervisor_validation_reserve_bytes if args.supervisor_validation_reserve_bytes is not None else 512 * 1024**2,
             command_timeout_seconds=args.supervisor_validation_command_timeout if args.supervisor_validation_command_timeout is not None else 120,
             storage_reserve_paths=tuple(args.supervisor_validation_reserve_path)))
+    return policy, provision_sources, {
+        name: tuple(paths) for name, paths in provision_instructions.items()
+    }, tuple(provision_refresh)
 
 
 def _run_reconciliation(args: argparse.Namespace, presentation: TerminalPresentation) -> int:
@@ -747,6 +779,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "setup":
             repository_count = len(args.repositories)
             repository_word = "repository" if repository_count == 1 else "repositories"
+            supervisor, provision_sources, provision_instructions, provision_refresh = _setup_supervisor(args)
             setup_message = (
                 "Creating the local operational profile..."
                 if args.offline
@@ -780,7 +813,16 @@ def main(argv: list[str] | None = None) -> int:
                         autonomy=args.autonomy,
                         acknowledge_mutation=args.acknowledge_mutation,
                         offline=args.offline,
-                        supervisor=_setup_supervisor(args),
+                        supervisor=supervisor,
+                        supervisor_provision_sources=provision_sources,
+                        supervisor_provision_instructions=provision_instructions,
+                        supervisor_provision_refresh=provision_refresh,
+                        supervisor_workspace_root=args.supervisor_workspace_root,
+                        supervisor_workspace_max_bytes=(
+                            args.supervisor_workspace_max_bytes
+                            if args.supervisor_workspace_max_bytes is not None
+                            else DEFAULT_WORKSPACE_MAX_BYTES
+                        ),
                     ),
                 )
             _write_report(render_operational(report, args.output_format), presentation)

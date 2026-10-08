@@ -54,9 +54,9 @@ Add `--require-advice-before-execution` only when approval-gated execution must 
 ### Tool-capable supervisor setup (development)
 
 The unreleased supervisor can be selected during ordinary setup rather than by
-hand-editing TOML. Setup saves policy only: it does not create a workspace, start
-an agent or install a schedule. Register an existing isolated
-POSIX/WSL linked worktree and its expected trusted instruction sources:
+hand-editing TOML. Setup never starts an agent or installs a schedule. To let
+setup create a persistent maintenance copy, provide an existing local checkout
+as a read-only Git object source:
 
 ```bash
 dependabot-watcher setup \
@@ -66,21 +66,87 @@ dependabot-watcher setup \
   --supervisor-reasoning low \
   --supervisor-account chatgpt \
   --supervisor-access inherit \
-  --supervisor-workspace owner/repository=/absolute/isolated/worktree \
-  --supervisor-instruction owner/repository=/absolute/isolated/worktree/AGENTS.md \
+  --supervisor-provision owner/repository=/absolute/local/checkout \
   --acknowledge-supervisor-use
 ```
 
+The source may have dirty or untracked developer work. Watcher does not change
+its branch, index, checkout, files, or Git configuration, and does not copy
+dirty files or execute its hooks or filters. It creates a separate private
+clone and detached linked worktree at the exact configured-branch SHA collected
+from GitHub. The source must already contain that commit; this setup path does
+not fetch missing commits. With `--offline`, setup pins only the source's local
+HEAD and labels it unverified; it does not claim the network or GitHub base
+was checked.
+
+By default, persistent copies live under the Watcher state directory's
+`supervisor-workspaces/` folder. `--supervisor-workspace-root` selects another
+absolute private root. The default setup-wide maximum estimated size for all
+new copies' Git object stores plus checkouts is 1 GiB;
+`--supervisor-workspace-max-bytes` can set a bounded limit up to 16 GiB. Each
+individual copy must also fit within that ceiling. Setup requires the
+configured free-space reserve (`--supervisor-validation-reserve-bytes`, default
+512 MiB) after the estimated copies. Repeat `--supervisor-validation-reserve-path` for physical
+volumes that must retain the same reserve. WSL setup requires an explicit path
+to the virtual disk's physical backing volume, such as `/mnt/c`. The estimate
+rounds files to the target allocation unit and reserves per-file, per-directory,
+Git-object and loose/packed-reference metadata; it allows up to a twofold line-ending expansion and
+refuses pinned `ident` or `working-tree-encoding` rules whose output size is
+not bounded here. Reference metadata is bounded to 100,000 entries and a
+256 MiB estimate; non-files Git ref storage is unsupported. A configured
+physical reserve is read-only: its mount mode
+is never changed. The generated configuration path and private workspace root
+must remain outside the source checkout and its common Git metadata directory;
+the configuration path must also remain outside persistent workspace storage.
+
+Copies and ownership receipts persist for session continuity and do not expire
+or get deleted by setup. The report gives the exact workspace path, estimated
+copy size, maximum, free-space reserve, and retention behavior. Disposable
+exact-PR validation copies remain a separate capability and are cleaned after
+their job; their reusable caches and receipts follow the validation policy.
+
+Setup discovers repository-root and maintenance-path ancestor `AGENTS.md`
+sources without creating an instruction file. An existing absolute root
+`AGENTS.md` symlink is preserved. A relative link is accepted only when it
+still targets a file inside the repository after relocation; a relative link
+that points outside the checkout is refused before workspace creation. If no
+repository or maintenance-path instruction files are found, the expected list
+is explicitly empty; setup does not claim that this matches Codex's later
+global/runtime discovery. The report shows the discovered and expected paths,
+including when the source checkout and maintenance path inherit different
+ancestor instructions. Launch still requires the exact runtime instruction
+list to match. For a provisioned repository, repeated
+`--supervisor-instruction owner/repository=/absolute/path` values replace the
+discovered expected list in the supplied order; they do not make Codex load
+those paths. Verify them against the later runtime response.
+
+To continue registering a worktree you created yourself, use the existing
+explicit-path form:
+
+    dependabot-watcher setup \
+      --repo owner/repository \
+      --supervisor-mode approval_first \
+      --supervisor-model MODEL_ID \
+      --supervisor-reasoning low \
+      --supervisor-account chatgpt \
+      --supervisor-access inherit \
+      --supervisor-workspace owner/repository=/absolute/isolated/worktree \
+      --supervisor-instruction owner/repository=/absolute/isolated/worktree/AGENTS.md \
+      --acknowledge-supervisor-use
+
 Replace the model/path placeholders deliberately. Repeat workspace flags for
 each supervised repository and instruction flags in the expected discovery
-order. Selected sources are checked during launch; saving their paths is not
-proof that a runtime loaded them. Quote shell paths containing spaces.
+order. This path remains available alongside automatic provisioning for
+different repositories. Selected sources are checked during launch; saving
+their paths is not proof that a runtime loaded them. Quote shell paths
+containing spaces.
 
 Optionally add `--supervisor-refresh-workspace owner/repository` to permit
 refreshing that registered detached maintenance copy after initial verification
 at the collected base. This does not move your development branch or overwrite
 unfinished maintenance work. Without it, a stale workspace still blocks launch.
-Workspace creation and developer-checkout integration remain separate capabilities.
+The flag grants future refresh authority; setup does not advance an existing
+receipt-backed copy automatically.
 
 Access choices are `inherit`, `restricted` with an existing
 `--supervisor-permission-profile NAME`, or `full` with the separate
@@ -93,9 +159,13 @@ Timeout and job limits can be saved with `--supervisor-timeout-seconds` and
 
 Supervisor and metadata advice cannot both be selected in this setup route.
 Online setup checks existing CLI authentication without launching a model;
-`--offline` skips that check. Neither verifies the actual runtime, workspace,
-account/model selection or scheduled operation. Setup still refuses to overwrite
-an existing profile. The separate [configuration contract](configuration.md#development-supervisor-configuration)
+`--offline` skips that check. A provisioned copy is checked locally by the
+existing linked-worktree verifier, but neither mode verifies the actual
+Codex runtime's instruction discovery, account/model selection or scheduled
+operation. An existing unowned path, changed base, invalid receipt, dirty
+workspace, or inadequate space fails closed and is preserved. Setup still
+refuses to overwrite an existing profile. The separate
+[configuration contract](configuration.md#development-supervisor-configuration)
 describes current operating limits.
 
 The development scheduled-supervisor route requires WSL and a deliberately
@@ -104,8 +174,9 @@ supervision enabled, `run` submits that existing owner quietly, without an open
 terminal or automatically showing the window. The owner starts eligible
 configured investigations, saves answers and exposes access or recovery needs.
 `--notify desktop` enables attention notices; `--notify off` keeps them off.
-Process submission is not proof of agent completion. Installed scheduled/live-
-provider acceptance and automatic workspace management remain open.
+Process submission is not proof of agent completion. Automatic initial-copy
+creation and reuse have installed acceptance; scheduled/live-provider operation,
+missing-commit acquisition and broader workspace lifecycle remain separate gaps.
 
 ### Reconciliation and native schedule
 
