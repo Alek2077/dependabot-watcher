@@ -6,11 +6,11 @@ Dependabot Watcher is a local-first, provider-neutral control plane for Dependab
 
 The current `0.3` release line has one narrow approval-gated action. Inspection, advice, and planning remain non-mutating. An explicitly enabled `execute` command can merge one exact, freshly revalidated Dependabot pull request only after a separate preflight produces an action-bound approval confirmation token.
 
-It does not close, comment, approve, label, rebase an open PR branch, create remediation changes, clone target repositories, or execute mutations unattended. It may use GitHub's `rebase` merge method when explicitly configured. The default setup remains model-off and read-only. Optional `run` and `schedule` commands can persist bounded private reconciliation state, register a same-user native schedule, and deliver sparse desktop notifications; none of those capabilities authorizes GitHub mutation.
+It does not close, comment, approve, label, rebase an open PR branch, create remediation changes, or execute mutations unattended. Opt-in supervisor setup can prepare a private maintenance copy from an existing local checkout without changing the developer checkout. It may use GitHub's `rebase` merge method when explicitly configured. The default setup remains model-off and read-only. Optional `run` and `schedule` commands can persist bounded private reconciliation state, register a same-user native schedule, and deliver sparse desktop notifications; none of those capabilities authorizes GitHub mutation.
 
 ## Direction: complete agent-led maintenance
 
-The intended end state is a closed maintenance loop: scheduled agents investigate dependency changes, prepare isolated environments, run the checks they judge necessary, choose an evidenced order, perform policy-authorized merges or repairs, reconcile selected local working copies and report outcomes. Users choose capabilities and approval levels during setup; routine work should not become repeated technical homework. The Windows review window is optional, not the automation engine; unattended policies and other reporting channels, including email, remain future work.
+The intended end state is a closed maintenance loop: scheduled agents investigate dependency changes, prepare isolated environments, run the checks they judge necessary, choose an evidenced order, perform policy-authorized merges or repairs, reconcile selected local working copies and report outcomes. Users choose capabilities and approval levels during setup; routine work should not become repeated technical homework. The window need not remain visible, but the current WSL scheduled AI path requires the Windows component. Component-free supervision, unattended policies and other reporting channels, including email, remain post-release work.
 
 This is the product direction, not a claim that the current release completes that loop. The development supervisor can prepare isolated PR copies and run agent-selected validation under explicit resource limits; repair publication, developer-branch synchronization and unattended mutation remain separate capabilities. The [roadmap](docs/roadmap.md#agreed-supervisor-architecture--development-path-operating-acceptance-open) records the boundaries and delivery gaps. Future provider adapters may use an officially supported subscription-authenticated CLI or an API credential. Shared evidence and reusable investigation should keep ordinary runs efficient without assuming every repository needs the strongest model.
 
@@ -122,7 +122,7 @@ A capable agent can investigate a dependency update directly. Watcher supplies r
 - one-action execution followed by reinspection and replanning; and
 - auditable execution, reconciliation, and recovery evidence.
 
-The agent supplies judgment; Watcher supplies dependable evidence and authority boundaries. Revision deduplication, bounded run history, native scheduling adapters, and sparse desktop notifications are available in the current release line. Deeper tool-capable investigation and unattended mutation remain roadmap capabilities rather than current claims.
+The agent supplies judgment; Watcher supplies dependable evidence and authority boundaries. Revision deduplication, bounded run history, native scheduling adapters, and sparse desktop notifications are available in the current release line. The development supervisor supports tool-capable investigation and bounded isolated validation; complete operating acceptance remains in progress. Unattended mutation remains future work.
 
 Common output and scope options:
 
