@@ -2,17 +2,21 @@
 
 **Turn scattered Dependabot pull requests and security alerts into one clear action list, then safely execute one approved update at a time.**
 
-Dependabot Watcher is a local-first, provider-neutral control plane for Dependabot activity. It focuses on open pull requests authored by Dependabot, connects them to security alerts and recent sensitive changes, and can provide raw inspection facts, optional model-assisted advice, or a deterministic order of actions for handling the queue.
+Dependabot Watcher helps you keep track of dependency updates across your repositories. It brings together Dependabot pull requests, security alerts and check results, connects related updates, and records what was approved and what happened.
 
-The current `0.3` release line has one narrow approval-gated action. Inspection, advice, and planning remain non-mutating. An explicitly enabled `execute` command can merge one exact, freshly revalidated Dependabot pull request only after a separate preflight produces an action-bound approval confirmation token.
+Use it with your existing AI agent, or try Watcher's development supervisor to investigate updates and run checks in the background. **Merges require your approval for the specific PR.** Watcher checks it again before merging. It does not currently merge unattended or complete every maintenance task automatically.
 
-It does not close, comment, approve, label, rebase an open PR branch, create remediation changes, or execute mutations unattended. Opt-in supervisor setup can prepare a private maintenance copy from an existing local checkout without changing the developer checkout. It may use GitHub's `rebase` merge method when explicitly configured. The default setup remains model-off and read-only. Optional `run` and `schedule` commands can persist bounded private reconciliation state, register a same-user native schedule, and deliver sparse desktop notifications; none of those capabilities authorizes GitHub mutation.
+## Choose how to use Watcher
 
-## Direction: complete agent-led maintenance
+| Your goal | Path |
+|---|---|
+| Work with your existing agent | Give it Watcher's CLI tools and structured evidence. Your agent investigates within the workflow and permissions you choose. |
+| Have Watcher investigate in the background | Try the unreleased [Codex supervisor](docs/setup.md#tool-capable-supervisor-setup-development) from reviewed source. The current WSL path needs the Windows component. |
+| Ask AI about the collected facts | Choose `economy` advice or `reviewed` advice with a second pass for selected items. These modes cannot research or run tests. |
 
-The intended end state is a closed maintenance loop: scheduled agents investigate dependency changes, prepare isolated environments, run the checks they judge necessary, choose an evidenced order, perform policy-authorized merges or repairs, reconcile selected local working copies and report outcomes. Users choose capabilities and approval levels during setup; routine work should not become repeated technical homework. The window need not remain visible, but the current WSL scheduled AI path requires the Windows component. Component-free supervision, unattended policies and other reporting channels, including email, remain post-release work.
+We recommend an agent that can investigate and test updates—your own or Watcher's supervisor—rather than relying on opinions about collected facts alone. You choose the supported model, permissions and validation limits. You can also use Watcher without AI. Setup starts read-only and makes no AI calls until you explicitly enable them. Watcher should fit your workflow, not impose ours. See the [agent operator guide](docs/agent-operator-guide.md) and [setup choices](docs/setup.md#choose-the-operating-path).
 
-This is the product direction, not a claim that the current release completes that loop. The development supervisor can prepare isolated PR copies and run agent-selected validation under explicit resource limits; repair publication, developer-branch synchronization and unattended mutation remain separate capabilities. The [roadmap](docs/roadmap.md#agreed-supervisor-architecture--development-path-operating-acceptance-open) records the boundaries and delivery gaps. Future provider adapters may use an officially supported subscription-authenticated CLI or an API credential. Shared evidence and reusable investigation should keep ordinary runs efficient without assuming every repository needs the strongest model.
+We are working toward [complete agent-led maintenance](#direction-complete-agent-led-maintenance): investigate, validate, handle approved changes, update selected working copies and report the results. That full loop is not finished yet.
 
 ## Install and set up
 
@@ -80,7 +84,7 @@ Choose the command that matches the result you want:
 | `dependabot-watcher advise` | Adds optional per-PR or per-alert model recommendations when advice is explicitly configured. |
 | `dependabot-watcher plan` | Produces an ordered action list for the complete queue, using optional advice if configured; it does not execute the actions. |
 | `dependabot-watcher execute` | Revalidates one saved plan step, then either prints its exact approval confirmation token or uses that token to merge only the bound PR head. |
-| `dependabot-watcher run` | Performs one durable, non-mutating inspect/advice/plan reconciliation for manual or scheduled use. |
+| `dependabot-watcher run` | Performs durable reconciliation; with supervision configured on WSL, can submit background investigation through the registered Windows owner. It does not authorize a merge. |
 | `dependabot-watcher schedule` | Inventories, previews, or manages Watcher-owned native host schedules without granting mutation authority. |
 
 Run the preflight, then exercise one durable read-only reconciliation before scheduling. Direct inspection and planning remain available when that is the result you need:
@@ -360,6 +364,12 @@ Experimental scheduler adapters remain available for evaluation, but they are no
 
 The run-once reconciler remains scheduler-independent. GitHub Actions or another always-on remote runner, additional model providers, richer notification destinations, and unattended mutation remain later separately tested capabilities.
 
+## Direction: complete agent-led maintenance
+
+The intended end state is a closed maintenance loop: scheduled agents investigate dependency changes, prepare isolated environments, run relevant checks, choose an evidenced order, perform policy-authorized merges or repairs, reconcile selected working copies and report outcomes. Users choose capabilities and approval levels; routine work should not become repeated technical homework. Full unattended operation and broader provider support remain future capabilities, not current claims.
+
+Developer-checkout synchronization is not implemented yet; bounded opt-in clean fast-forward integration is now planned before the first versioned release. Repair publication, general conflict resolution, production-health orchestration, unattended merges, component-free supervision and email remain post-release work. Watcher's own executor currently only merges an exact approved PR; it does not comment, label, rebase a PR branch or publish repairs. Configured GitHub `rebase` merge is a separate supported merge method. The [roadmap](docs/roadmap.md#agreed-supervisor-architecture--development-path-operating-acceptance-open) records scope and evidence. A remote merge does not update your developer checkout or establish deployment health.
+
 ## Development
 
 ### Development supervisor and optional Windows review
@@ -384,7 +394,7 @@ that profile's link/notices. Supply the same `--config` and `--state-dir` as
 `review`. The toast has one action—open this saved queue—not approve a merge.
 See the [native component guide](native/windows/README.md#notification-link-and-diagnostics).
 
-The development queue, feedback, permissions and installed entry have Windows/WSL evidence, including one founder-confirmed supervised merge, agent-directed isolated validation and owned maintenance-worktree refresh. Ordinary setup saves supervisor policy; the WSL `run` route can submit the registered native owner quietly for configured investigations. Compatible runs retain one repository conversation rather than discarding history after a commit or merge. Supervised merge readiness requires current verified affirmative agent reasoning as well as separate exact approval and fresh GitHub checks. Companion distribution/update, workspace provisioning, complete installed automatic post-merge and crash recovery acceptance, reliable foreground activation and other publication gates remain open. This is a private development checkpoint, not an unattended-maintenance release. See [architecture](docs/architecture.md#planned-supervisor-access-and-approval-boundary), [validation evidence](docs/validation.md#installed-agent-directed-validation--2026-10-07) and [native component source](native/windows/README.md).
+The development queue, feedback, permissions and installed entry have Windows/WSL evidence, including one founder-confirmed supervised merge, agent-directed isolated validation and owned maintenance-worktree refresh. Ordinary setup saves supervisor policy; the WSL `run` route can submit the registered native owner quietly for configured investigations. Compatible runs retain one repository conversation rather than discarding history after a commit or merge. Supervised merge readiness requires current verified affirmative agent reasoning as well as separate exact approval and fresh GitHub checks. Maintenance-copy provisioning and packaged entry/lifecycle have installed evidence. Guided updates, complete installed automatic post-merge and crash recovery acceptance, reliable foreground activation and other publication gates remain open. This is a private development checkpoint, not an unattended-maintenance release. See [architecture](docs/architecture.md#planned-supervisor-access-and-approval-boundary), [validation evidence](docs/validation.md#installed-agent-directed-validation--2026-10-07) and [native component source](native/windows/README.md).
 
 ```bash
 python -m pip install -e '.[dev]'
