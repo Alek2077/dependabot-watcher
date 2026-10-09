@@ -12,6 +12,31 @@ Before installation, use `gh auth status` to confirm the active account and `gh 
 
 The default product path issues read-only GitHub requests. The sole mutating edge is the explicitly enabled exact-head PR merge in `execute`; a user's existing `gh` credential may carry broader authority than either path needs. Before public release, document and validate least-privilege credential profiles for the selected repositories, required read surfaces, and the optional merge capability. Future GitHub adapters may support a directly supplied fine-grained token, OAuth/device flow, or a GitHub App when their added complexity is justified. These adapters can remove the hard GitHub CLI dependency, but not the underlying authorization requirement.
 
+### Restricted GitHub access
+
+For narrower access, GitHub supports [fine-grained personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens). Create the token on GitHub, choose only the repositories Watcher should inspect, and use a short expiry for a trial. An onboarding agent may explain the steps, but must not receive the token in chat, screenshots, logs or the Watcher configuration.
+
+This [read-only token template](https://github.com/settings/personal-access-tokens/new?name=Watcher%20read-only%20trial&description=Restricted%20Watcher%20inspection%20trial&expires_in=7&contents=read&pull_requests=read&statuses=read&vulnerability_alerts=read) prefills a seven-day expiry and candidate read permissions. Select the correct resource owner and **Only select repositories** yourself before generating it; the link does not select repositories or create a token. Metadata access is included by GitHub. **This profile is not sufficient for complete inspection:** an installed private-repository trial passed repository/alert readiness and basic PR reads, but GitHub denied the PR `statusCheckRollup` field; full inspection correctly remained partial. GitHub also documents fine-grained-token Checks API limitations. Do not use this template as a supported complete-maintenance credential or increase permissions to administrator merely to clear an error. Organization approval and token feature limitations may apply.
+
+[GitHub CLI recommends `GH_TOKEN`](https://cli.github.com/manual/gh_auth_login) for fine-grained tokens. For a one-off Bash/WSL check, enter it privately in your own terminal:
+
+```bash
+(
+  set +x
+  read -r -s -p 'Temporary GitHub token (hidden): ' watcher_trial_token
+  printf '\n'
+  test -n "$watcher_trial_token" || exit 1
+  export GH_TOKEN="$watcher_trial_token"
+  unset watcher_trial_token GH_DEBUG
+  dependabot-watcher doctor --config /absolute/path/to/config.toml
+  dependabot-watcher inspect --config /absolute/path/to/config.toml --repo OWNER/REPOSITORY
+)
+```
+
+Use an existing read-only profile and replace the placeholders. No token literal enters shell history; it is held in this subprocess environment, not saved by these commands. Closing the subprocess leaves the parent shell and existing `gh` login unchanged. Do not run this through an agent-controlled terminal or enable shell tracing. Local processes with sufficient access may still read process environments; this is not credential isolation from a full-access agent.
+
+An interactive shell's `GH_TOKEN` does **not** establish that Windows Task Scheduler or a native background owner receives it. Durable restricted-token storage and scheduled retrieval remain an unverified integration boundary. Do not put tokens in task arguments, checked-in files or the operational profile. Existing `gh` login remains the established recurring path; GitHub CLI may fall back to plaintext storage when the OS credential store is unavailable, so do not describe that fallback as encrypted. Revoking or expiring a trial token does not remove saved Watcher evidence.
+
 ## Recommended setup
 
 ```bash
@@ -175,8 +200,10 @@ terminal or automatically showing the window. The owner starts eligible
 configured investigations, saves answers and exposes access or recovery needs.
 `--notify desktop` enables attention notices; `--notify off` keeps them off.
 Process submission is not proof of agent completion. Automatic initial-copy
-creation and reuse have installed acceptance; scheduled/live-provider operation,
-missing-commit acquisition and broader workspace lifecycle remain separate gaps.
+creation/reuse and a completed run-triggered live investigation have installed
+acceptance, including one naturally timed Windows invocation. Recurring cadence,
+sleep/offline recovery, missing-commit acquisition and broader workspace lifecycle
+remain separate checks or gaps.
 
 ### Reconciliation and native schedule
 
