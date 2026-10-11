@@ -37,6 +37,23 @@ def result_for(job: dict[str, Any]) -> dict[str, Any]:
                         for item in job["context"]["proposals"] for message in item["feedback"]]}
 
 
+@pytest.mark.parametrize("conclusion", ["ready_for_completion", "blocked", "needs_attention"])
+def test_post_merge_assessment_is_explicit_action_bound_and_not_action_authority(conclusion: str) -> None:
+    context = {"proposals": [], "retired_proposals": [],
+               "maintenance_completion": {"obligation": {"action_id": "action_" + "a" * 24}}}
+    result = {"summary": "An assessment was returned.", "recommendations": [], "replies": [],
+              "maintenance_assessment": {"action_id": "action_" + "a" * 24,
+                                         "conclusion": conclusion, "explanation": "Actual evidence and remaining scope."}}
+    supervision._validate_result(result, context)
+    missing = {key: value for key, value in result.items() if key != "maintenance_assessment"}
+    with pytest.raises(ReviewQueueError, match="bounded schema"):
+        supervision._validate_result(missing, context)
+    for field, value in (("action_id", "action_" + "b" * 24), ("conclusion", "merged"), ("explanation", "")):
+        changed = {**result, "maintenance_assessment": {**result["maintenance_assessment"], field: value}}
+        with pytest.raises(ReviewQueueError, match="exact action purpose"):
+            supervision._validate_result(changed, context)
+
+
 def test_recent_action_context_is_bound_and_malformed_or_cross_repository_actions_are_rejected(queue_case: tuple[ReviewQueue, dict[str, Any]]) -> None:
     queue, _ = queue_case
     context = queue.supervision_context("example-org/example-app")

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .planning import PlanningError, _overall_plan_identifier, validate_plan_identities
+from .maintenance_completion import obligation_scope, validate_obligation
 from .review_queue import (ReviewQueue, ReviewQueueError, _validate_proposal,
                            _validate_workspace_evidence, _workspace_matches_context)
 from .review_queue import supervisor_context_digest as _digest
@@ -37,12 +38,25 @@ def _time(value: object) -> datetime:
 
 def _validate_result(result: object, context: Mapping[str, Any]) -> None:
     """Agent statements remain advice; they cannot supply executable commands."""
-    if (not isinstance(result, dict) or set(result) != {"summary", "recommendations", "replies"}
+    fields = {"summary", "recommendations", "replies"}
+    completion = context.get("maintenance_completion")
+    if completion is not None:
+        fields.add("maintenance_assessment")
+    if (not isinstance(result, dict) or set(result) != fields
             or not isinstance(result["summary"], str) or not result["summary"].strip()
             or len(result["summary"].encode()) > 8192
             or not isinstance(result["recommendations"], list) or len(result["recommendations"]) > 1000
             or not isinstance(result["replies"], list) or len(result["replies"]) > 2000):
         raise ReviewQueueError("Supervisor result has an invalid bounded schema.")
+    if completion is not None:
+        assessment = result["maintenance_assessment"]
+        if (not isinstance(assessment, dict) or set(assessment) != {"action_id", "conclusion", "explanation"}
+                or assessment["action_id"] != completion["obligation"]["action_id"]
+                or not isinstance(assessment["conclusion"], str)
+                or assessment["conclusion"] not in {"ready_for_completion", "blocked", "needs_attention"}
+                or not isinstance(assessment["explanation"], str) or not assessment["explanation"].strip()
+                or len(assessment["explanation"].encode()) > 8192):
+            raise ReviewQueueError("Supervisor maintenance assessment does not match its exact action purpose.")
     proposals = {item["proposal_id"]: item for item in context["proposals"]}
     messages = {(item["proposal_id"], message["request_id"])
                 for item in context["proposals"] + context["retired_proposals"]
@@ -78,7 +92,7 @@ def _validate_context(context: Mapping[str, Any]) -> None:
               "repository_plan", "evidence_status", "proposals", "retired_proposals", "mutation_authorized"}
     # Preserve existing development journals; new jobs bind the configured
     # supervisor policy as well. Missing legacy policy is never launch consent.
-    if (not fields <= set(context) or set(context) - fields - {"supervisor", "workspace_evidence", "recent_actions", "previous_assessment"}
+    if (not fields <= set(context) or set(context) - fields - {"supervisor", "workspace_evidence", "recent_actions", "previous_assessment", "local_sync_observations", "maintenance_completion", "validation_capability_revision"}
             or ("supervisor" in context and not isinstance(context["supervisor"], dict))
             or type(context["schema_version"]) is not int or context["schema_version"] != 1
             or not isinstance(context["repository"], str)
@@ -92,6 +106,47 @@ def _validate_context(context: Mapping[str, Any]) -> None:
             or not isinstance(context["proposals"], list) or len(context["proposals"]) > 1000
             or not isinstance(context["retired_proposals"], list) or len(context["retired_proposals"]) > 100):
         raise ReviewQueueError("Supervisor context has an invalid bounded schema.")
+    if ("validation_capability_revision" in context
+            and context["validation_capability_revision"] != "merged_action_v1"):
+        raise ReviewQueueError("Supervisor validation capability revision is invalid.")
+    completion = context.get("maintenance_completion")
+    if completion is not None:
+        if (not isinstance(completion, dict) or set(completion) != {"review_id", "obligation"}
+                or not isinstance(completion["review_id"], str)
+                or not re.fullmatch(r"review_[a-f0-9]{32}", completion["review_id"])
+                or not isinstance(completion["obligation"], dict)):
+            raise ReviewQueueError("Supervisor completion purpose has an invalid identity.")
+        obligation = completion["obligation"]
+        if (not isinstance(obligation.get("repository"), str)
+                or obligation["repository"].casefold() != context["repository"].casefold()):
+            raise ReviewQueueError("Supervisor completion purpose is outside repository scope.")
+        validate_obligation(obligation, {"action_id": obligation.get("action_id"),
+            "decision": {"completion_scope": obligation_scope(obligation)}, "binding": {
+            "repository": obligation["repository"], "expected_base": context["repository_config"].get("default_branch")}})
+        if (obligation["evidence"] is not None or obligation["assessment"] is not None or obligation["local_results"]
+                or obligation["finalization"] is not None
+                or not isinstance(obligation["action_id"], str)
+                or not re.fullmatch(r"action_[a-f0-9]{24}", obligation["action_id"])):
+            raise ReviewQueueError("Supervisor completion purpose contains mutable progress or invalid action identity.")
+    observations = context.get("local_sync_observations", [])
+    if not isinstance(observations, list) or len(observations) > 20:
+        raise ReviewQueueError("Supervisor local synchronization evidence is invalid.")
+    registrations = context["repository_config"].get("local_sync", [])
+    for observation in observations:
+        if (not isinstance(observation, dict) or set(observation) != {
+                "review_id", "target_id", "directory", "branch", "from_sha", "target_sha", "status", "outcome", "applicability"}
+                or observation["applicability"] != "historical_recheck_before_use"
+                or not isinstance(observation["review_id"], str) or not re.fullmatch(r"sync_[a-f0-9]{32}", observation["review_id"])
+                or not isinstance(observation["target_id"], str) or not re.fullmatch(r"[a-f0-9]{32}", observation["target_id"])
+                or not isinstance(registrations, (list, tuple))
+                or not any(isinstance(item, dict) and item.get("directory") == observation["directory"]
+                           and item.get("branch") == observation["branch"] for item in registrations)
+                or any(not isinstance(observation[key], str) or not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", observation[key])
+                       for key in ("from_sha", "target_sha"))
+                or not isinstance(observation["status"], str)
+                or observation["status"] not in {"awaiting_confirmation", "executing", "completed", "failed", "recovery_required"}
+                or observation["outcome"] not in (None, "synchronized", "observed_applied", "observed_not_applied", "manual_repair_required")):
+            raise ReviewQueueError("Supervisor local synchronization observation is malformed or out of scope.")
     actions = context.get("recent_actions", [])
     if not isinstance(actions, list) or len(actions) > 20:
         raise ReviewQueueError("Supervisor maintenance actions exceed their bounded schema.")

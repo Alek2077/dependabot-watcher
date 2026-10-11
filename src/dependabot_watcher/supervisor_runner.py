@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import re
+import traceback
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
@@ -61,6 +62,30 @@ class SupervisorRunner:
         self.jobs = jobs
         self.provider = provider
 
+    def _record_failure_location(self, job: Mapping[str, Any], error: Exception) -> None:
+        """Best-effort internal locations, never exception text or frame locals."""
+        try:
+            package = Path(__file__).resolve().parent
+            locations = []
+            for frame, line in traceback.walk_tb(error.__traceback__):
+                try:
+                    relative = Path(frame.f_code.co_filename).resolve().relative_to(package).as_posix()
+                except ValueError:
+                    continue
+                if len(relative) > 160 or not relative.endswith(".py"):
+                    continue
+                name = frame.f_code.co_name
+                locations.append({"file": relative, "line": line,
+                                  "function": name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", name) else "internal"})
+            save_private_json(self.jobs.queue.directory, Path("supervisor-failures") / f'{job["job_id"]}.json',
+                              {"schema_version": 1, "job_id": job["job_id"],
+                               "context_digest": job["context_digest"], "locations": locations[-32:]},
+                              maximum_bytes=16_384)
+        except Exception:
+            # Diagnostics must not replace the original failure or weaken the
+            # durable lifecycle/recovery gates, including when storage fails.
+            pass
+
     def run(self, job_id: str) -> dict[str, Any]:
         self.jobs.queue.require_current_configuration()
         prepared = self.jobs.read(job_id)
@@ -90,6 +115,7 @@ class SupervisorRunner:
             else:
                 observation = self.provider.analyze(copy.deepcopy(job))
         except Exception as exc:
+            self._record_failure_location(job, exc)
             self.jobs.fail(job_id, interrupted=isinstance(exc, ReviewConfigurationChanged))
             raise
         # The trusted adapter returns only normalized evidence. No UI-controlled
@@ -99,7 +125,8 @@ class SupervisorRunner:
             if job["session_id"] is not None and observation["session_id"] != job["session_id"]:
                 raise ReviewQueueError("Supervisor returned a different session than its scoped continuation.")
             self.jobs.attach_session(job_id, observation["session_id"])
-        except ReviewQueueError:
+        except ReviewQueueError as exc:
+            self._record_failure_location(job, exc)
             self.jobs.fail(job_id)
             raise
         # Persist observed output before acknowledging completion. A failed disk

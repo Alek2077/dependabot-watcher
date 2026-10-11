@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from dependabot_watcher import cli
-from dependabot_watcher.config import ConfigError, SupervisorConfig, load_config
+from dependabot_watcher.config import ConfigError, SupervisorConfig, load_config, parse_config
 from dependabot_watcher.operational_output import render_operational
 
 
@@ -216,7 +216,8 @@ def test_cli_schedule_preview_routes_without_local_scheduler_mutation(
     capsys,
 ) -> None:
     observed: dict[str, object] = {}
-    monkeypatch.setattr(cli, "load_config", lambda path: object())
+    config = parse_config({"schema_version": 1, "repositories": [{"name": "example-org/example-app"}]})
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
     monkeypatch.setattr(
         cli,
         "recurring_profile_summary",
@@ -514,12 +515,14 @@ def test_cli_execute_without_token_runs_read_only_preflight(
         step_id,
         *,
         state_directory,
+        config_path,
     ):
         observed.update(
             config=config_arg,
             plan=plan_arg,
             step_id=step_id,
             state_directory=state_directory,
+            config_path=config_path,
         )
         return {
             "mode": "execute_preflight",
@@ -557,6 +560,7 @@ def test_cli_execute_without_token_runs_read_only_preflight(
         "plan": saved_plan,
         "step_id": "step_exact",
         "state_directory": cli.default_state_directory(),
+        "config_path": config_path,
     }
     assert "Mutation performed: no" in captured.out
     assert "approve_test" in captured.out

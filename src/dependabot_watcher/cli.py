@@ -11,7 +11,7 @@ from typing import Iterator, TextIO
 
 from . import __version__
 from .advisory import AdvisoryError, advise
-from .config import ConfigError, SupervisorConfig, SupervisorValidationConfig, SupervisorWorkspaceConfig, WatcherConfig, default_config_path, load_config
+from .config import ConfigError, LocalSyncCheckout, SupervisorConfig, SupervisorValidationConfig, SupervisorWorkspaceConfig, WatcherConfig, default_config_path, load_config
 from .diagnostics import doctor
 from .execution import ExecutionError, execute_approved, load_plan, preflight_execution
 from .github import GhCliClient, GitHubError, public_github_error_message
@@ -33,6 +33,7 @@ from .scheduling import inventory_schedules, manage_schedule, recurring_profile_
 from .scheduling_output import render_schedule
 from .setup import SetupError, SetupRequest, setup
 from .supervisor_workspace_provisioning import DEFAULT_WORKSPACE_MAX_BYTES
+from .local_sync import LocalSyncError, confirm_sync, prepare_sync, recover_sync, selected_checkouts, validate_control_locations
 from .terminal import (
     ProgressMode,
     TerminalPresentation,
@@ -173,6 +174,15 @@ def build_parser() -> argparse.ArgumentParser:
         "execute",
         help="Preflight or perform one exact approval-gated plan action.",
     )
+    sync_parser = commands.add_parser("sync", help="Review, confirm or observe one selected local clean fast-forward.")
+    sync_parser.add_argument("--config", type=Path, default=default_config_path())
+    sync_parser.add_argument("--state-dir", type=Path, default=default_state_directory())
+    sync_parser.add_argument("--repo", help="Configured GitHub repository to synchronize.")
+    sync_parser.add_argument("--checkout", type=Path, help="One configured local checkout when several are selected.")
+    sync_parser.add_argument("--review-id", help="Exact synchronization review returned by preflight.")
+    sync_parser.add_argument("--approval-token", help="Exact token after separate user approval of that local update.")
+    sync_parser.add_argument("--recover", action="store_true", help="Observe the saved review without replaying integration.")
+    sync_parser.add_argument("--format", choices=("text", "json"), default="text", dest="output_format")
     review_parser = commands.add_parser(
         "review",
         help="Open the optional aggregate Windows review window (WSL).",
@@ -227,6 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
         doctor_parser,
         setup_parser,
         execute_parser,
+        sync_parser,
         review_parser,
         notification_parser,
         run_parser,
@@ -324,6 +335,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="OWNER/REPO=BRANCH",
         help="Explicit branch override for one selected repository.",
     )
+    setup_parser.add_argument("--sync-checkout", action="append", default=[], metavar="OWNER/REPO=PATH",
+        help="Select a developer checkout for separately confirmed clean fast-forward updates; repeat for more copies.")
+    setup_parser.add_argument("--sync-branch", action="append", default=[], metavar="OWNER/REPO=BRANCH",
+        help="Select the branch for local updates; otherwise use the configured repository branch.")
+    setup_parser.add_argument("--acknowledge-local-sync", action="store_true",
+        help="Allow local-sync preflight/object acquisition. Each integration still needs exact confirmation.")
+    setup_parser.add_argument("--require-local-completion", action="append", default=[], metavar="OWNER/REPO",
+        help="Require the selected base-branch checkouts to finish each maintenance action before another merge. Each update still needs separate approval.")
     setup_parser.add_argument(
         "--verbosity",
         choices=("concise", "standard", "detailed"),
@@ -748,6 +767,71 @@ def _run_reconciliation(args: argparse.Namespace, presentation: TerminalPresenta
     return ExitCode.PARTIAL_INSPECTION if report["status"] == "partial" else ExitCode.SUCCESS
 
 
+def _setup_local_sync(args: argparse.Namespace) -> dict[str, tuple[LocalSyncCheckout, ...]]:
+    branches = _branch_overrides(args.sync_branch)
+    configured_branches = _branch_overrides(args.branch)
+    selected: dict[str, list[LocalSyncCheckout]] = {}
+    for value in args.sync_checkout:
+        if "=" not in value:
+            raise SetupError("--sync-checkout requires OWNER/REPO=/absolute/path.")
+        repository, directory = value.split("=", 1)
+        if repository not in args.repositories:
+            raise SetupError("Local synchronization must name an explicitly selected repository.")
+        # Default branch discovery happens later in setup; no implicit 'main'.
+        branch = branches.get(repository) or configured_branches.get(repository)
+        selected.setdefault(repository, []).append(LocalSyncCheckout(directory, branch or ""))
+    if set(branches) - set(selected):
+        raise SetupError("--sync-branch requires a selected checkout for that repository.")
+    return {name: tuple(targets) for name, targets in selected.items()}
+
+
+def _run_local_sync(args: argparse.Namespace, presentation: TerminalPresentation) -> int:
+    config = None if args.recover else load_config(args.config)
+    if args.review_id:
+        if args.repo or args.checkout or (args.recover == bool(args.approval_token)):
+            raise LocalSyncError("Select either exact confirmation or read-only recovery for a saved review.")
+        if args.recover:
+            report = recover_sync(None, args.config, args.state_dir, args.review_id)
+        else:
+            assert config is not None
+            client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
+            report = confirm_sync(config, args.config, args.state_dir, client, args.review_id, args.approval_token)
+    else:
+        if args.recover or args.approval_token or not args.repo:
+            raise LocalSyncError("Begin with sync --repo OWNER/REPO; confirmation needs its saved review ID.")
+        assert config is not None
+        client = GhCliClient(timeout_seconds=config.collection.command_timeout_seconds)
+        targets = selected_checkouts(config, args.repo)
+        if args.checkout:
+            targets = [target for target in targets if target["directory"] == str(args.checkout)]
+        if len(targets) != 1:
+            raise LocalSyncError("Select one configured checkout with --checkout when several are registered.")
+        report = prepare_sync(config, args.config, args.state_dir, client, targets[0]["target_id"])
+    if args.output_format == "json":
+        rendered = json.dumps(report, indent=2)
+    else:
+        binding = report["binding"]
+        lines = [f"Local checkout: {binding['directory']}", f"Repository: {binding['repository']} · branch: {binding['branch']}",
+                 f"Status: {report['status']}"]
+        if report["status"] == "ready":
+            lines.extend([f"Fast-forward: {binding['head_sha']} -> {binding['target_sha']} ({binding['commits']} commits)",
+                "Confirmation updates only this local branch, index and tracked files. No push, stash, reset or branch switch.",
+                "Preflight may download missing Git objects; it has not integrated the branch.",
+                f"Review ID: {report['review_id']}", f"Approval token: {report['approval_token']}",
+                "After separate approval, rerun sync with --review-id and --approval-token using these exact values."])
+        elif report["status"] == "synchronized":
+            lines.append("Local branch and tracked files updated. No GitHub change, dependency installation or deployment was performed.")
+        elif report["status"] == "up_to_date":
+            lines.append("This checkout already matches the remote branch. Nothing was changed.")
+        elif (report.get("result") or {}).get("status") == "manual_repair_required":
+            lines.append("Local changes make the outcome uncertain. Repair is required through your normal workflow; nothing was rolled back or retried.")
+        else:
+            lines.append("Saved outcome observed. No integration was retried.")
+        rendered = "\n".join(lines)
+    _write_report(rendered, presentation)
+    return ExitCode.EXECUTION_ERROR if (report.get("result") or {}).get("status") == "manual_repair_required" else ExitCode.SUCCESS
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -823,6 +907,9 @@ def main(argv: list[str] | None = None) -> int:
                             if args.supervisor_workspace_max_bytes is not None
                             else DEFAULT_WORKSPACE_MAX_BYTES
                         ),
+                        local_sync=_setup_local_sync(args),
+                        acknowledge_local_sync=args.acknowledge_local_sync,
+                        require_local_completion=tuple(args.require_local_completion),
                     ),
                 )
             _write_report(render_operational(report, args.output_format), presentation)
@@ -857,15 +944,19 @@ def main(argv: list[str] | None = None) -> int:
                         saved_plan,
                         args.step_id,
                         state_directory=args.state_dir,
+                        config_path=args.config,
                     )
             _write_report(render_execution(report, args.output_format), presentation)
             return ExitCode.SUCCESS
+        if args.command == "sync":
+            return _run_local_sync(args, presentation)
         if args.command == "run":
             return _run_reconciliation(args, presentation)
         if args.command == "schedule":
             schedule_config: WatcherConfig | None = None
             if args.schedule_action in {"preview", "install"}:
                 schedule_config = load_config(args.config)
+                validate_control_locations(schedule_config, args.config, args.state_dir)
             schedule_progress = {
                 "inventory": "Discovering current-user Watcher schedules...",
                 "preview": "Preparing the native Watcher schedule preview...",
@@ -955,6 +1046,9 @@ def main(argv: list[str] | None = None) -> int:
         return ExitCode.CONFIGURATION_ERROR
     except ExecutionError as exc:
         _write_error("Execution", exc, presentation)
+        return ExitCode.EXECUTION_ERROR
+    except LocalSyncError as exc:
+        _write_error("Local synchronization", exc, presentation)
         return ExitCode.EXECUTION_ERROR
     except NativeReviewError as exc:
         _write_error("Review", exc, presentation)

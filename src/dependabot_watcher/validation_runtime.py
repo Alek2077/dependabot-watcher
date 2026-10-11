@@ -57,7 +57,8 @@ class ValidationCommandResult:
     allocated_bytes: int
 
 
-def allocated_bytes(root: Path, *, maximum_entries: int = 250_000) -> int:
+def allocated_bytes(root: Path, *, maximum_entries: int = 250_000,
+                    ensure_current: Callable[[], None] = lambda: None) -> int:
     """Count owned allocation without following links or crossing filesystems.
 
     Hard links count once. Polling is an operational budget, not a kernel quota;
@@ -67,6 +68,13 @@ def allocated_bytes(root: Path, *, maximum_entries: int = 250_000) -> int:
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     descriptor = os.open(root, flags)
     device = os.fstat(descriptor).st_dev
+    last_check = 0.0
+
+    def checkpoint() -> None:
+        nonlocal last_check
+        if time.monotonic() - last_check >= .05:
+            ensure_current()
+            last_check = time.monotonic()
 
     def count(metadata: os.stat_result) -> int:
         identity = metadata.st_dev, metadata.st_ino
@@ -78,11 +86,13 @@ def allocated_bytes(root: Path, *, maximum_entries: int = 250_000) -> int:
         return metadata.st_blocks * 512
 
     def descend(current: int, depth: int = 0) -> int:
+        checkpoint()
         if depth > 256:
             raise ValidationRuntimeError('Validation storage nesting exceeds its bound.')
         total = count(os.fstat(current))
         with os.scandir(current) as entries:
             for entry in entries:
+                checkpoint()
                 try:
                     metadata = entry.stat(follow_symlinks=False)
                     if stat.S_ISDIR(metadata.st_mode):
@@ -98,7 +108,9 @@ def allocated_bytes(root: Path, *, maximum_entries: int = 250_000) -> int:
         return total
 
     try:
-        return descend(descriptor)
+        result = descend(descriptor)
+        ensure_current()
+        return result
     except OSError as exc:
         raise ValidationRuntimeError('Validation storage changed during its bounded scan.') from exc
     finally:
@@ -154,6 +166,7 @@ def sandbox_command(snapshot: Path, cache: Path, command: str, limits: Validatio
 def run_validation_command(
     snapshot: Path, cache: Path, command: str, limits: ValidationLimits,
     *, ensure_current: Callable[[], None], storage_reserve_paths: tuple[Path, ...] = (),
+    storage_roots: tuple[Path, ...] = (),
 ) -> ValidationCommandResult:
     """Run with bounded pipes/lifetime and authority/storage checks throughout.
 
@@ -163,10 +176,13 @@ def run_validation_command(
     """
     argv = sandbox_command(snapshot, cache, command, limits)
     roots = (snapshot, cache)
+    # Backend-selected job roots include other admitted copies and revision
+    # caches. They are budget inputs only, not extra sandbox mounts.
+    budget_roots = storage_roots or roots
 
     def check() -> int:
         ensure_current()
-        usage = sum(allocated_bytes(path) for path in roots)
+        usage = sum(allocated_bytes(path, ensure_current=ensure_current) for path in budget_roots)
         if usage > limits.maximum_bytes:
             raise ValidationRuntimeError("Validation reached its storage budget.")
         for path in (*roots, *storage_reserve_paths):
@@ -199,7 +215,7 @@ def run_validation_command(
                     raise ValidationRuntimeError("Validation command exceeded its lifetime.")
                 if now - last_budget_check >= .25:
                     check()
-                    last_budget_check = now
+                    last_budget_check = time.monotonic()
                 for key, _ in selector.select(.05):
                     block = os.read(key.fd, 8192)
                     if not block:

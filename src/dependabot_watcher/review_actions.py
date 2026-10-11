@@ -10,9 +10,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, cast
 
-from .config import ConfigError, load_config, repository_names_equal
+from .config import ConfigError, WatcherConfig, load_config, repository_names_equal
 from .execution import approval_token, exact_action_audit, execute_approved, preflight_execution
 from .github import ExecutionGitHubClient, GitHubClient
+from .maintenance_completion import new_obligation, obligation_scope, pending_stage, validate_obligation
 from .reconciliation import reconcile
 from .review_queue import ReviewQueue, ReviewQueueError
 from .runtime_state import RuntimeStateError, load_private_json, run_lock, save_private_json
@@ -67,6 +68,16 @@ def _digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _config_digest(queue: ReviewQueue) -> str:
+    # Omitted new default workflow policy must preserve pre-upgrade approvals.
+    # All other authority/configuration changes continue to invalidate them.
+    value = asdict(queue.config)
+    for repository in value["repositories"]:
+        if repository["completion_policy"] == "remote_only":
+            repository.pop("completion_policy")
+    return _digest(value)
+
+
 def _time(value: object) -> datetime:
     if not isinstance(value, str):
         raise ReviewQueueError("Action record has an invalid timestamp.")
@@ -95,7 +106,7 @@ def _load_reviews(directory: Path, now: datetime) -> dict[str, Any]:
     for key, record in state["reviews"].items():
         if (not isinstance(key, str) or not _REVIEW_ID.fullmatch(key)
                 or not isinstance(record, dict)
-                or set(record) != {"review_id", "preparation", "preparation_digest", "selection_digest", "config_digest",
+                or set(record) - {"completion"} != {"review_id", "preparation", "preparation_digest", "selection_digest", "config_digest",
                                    "created_at", "expires_at", "status", "consented_at", "result"}
                 or record["review_id"] != key or not isinstance(record["status"], str)
                 or record["status"] not in _STATUSES
@@ -110,6 +121,8 @@ def _load_reviews(directory: Path, now: datetime) -> dict[str, Any]:
             raise ReviewQueueError("Action history contains a malformed review.")
         created, expires = _time(record["created_at"]), _time(record["expires_at"])
         _validate_preparation(record["preparation"])
+        if "completion" in record:
+            validate_obligation(record["completion"], record["preparation"])
         if expires - created != timedelta(minutes=15):
             raise ReviewQueueError("Action confirmation has an invalid lifetime.")
         if record["consented_at"] is not None:
@@ -128,6 +141,12 @@ def _load_reviews(directory: Path, now: datetime) -> dict[str, Any]:
                     or result.get("binding") != record["preparation"]["binding"]
                     or result.get("mutation_performed") is not (result["status"] == "merged")):
                 raise ReviewQueueError("Completed action has an invalid executor result.")
+        if "completion" in record and record["status"] != "completed":
+            completion = record["completion"]
+            if (completion["merge_commit_sha"] is not None or completion["evidence"] is not None
+                    or completion["assessment"] is not None or completion["local_results"]
+                    or completion["finalization"] is not None):
+                raise ReviewQueueError("Uncompleted action contains maintenance completion evidence.")
         if record["status"] == "awaiting_confirmation" and now >= expires:
             record["status"] = "expired"
     return state
@@ -138,8 +157,10 @@ def _save_reviews(directory: Path, state: dict[str, Any], *, keep: str) -> None:
     # Unknown/in-flight actions and unconsumed confirmations are never silently
     # pruned. An evicted terminal review ID cannot be used to execute again.
     while len(reviews) > _MAX_REVIEWS:
-        retired = next((key for key, item in reviews.items() if key != keep
-                        and item["status"] in {"completed", "invalidated", "expired"}), None)
+        retired = next((key for key, item in sorted(reviews.items(), key=lambda pair: _time(pair[1]["created_at"])) if key != keep
+                        and item["status"] in {"completed", "invalidated", "expired"}
+                        and (item["status"] != "completed" or "completion" not in item
+                             or item["completion"]["finalization"] is not None)), None)
         if retired is None:
             raise ReviewQueueError("Action history is full; resolve outstanding reviews before continuing.")
         del reviews[retired]
@@ -153,6 +174,54 @@ def _require_current_config(queue: ReviewQueue, path: Path) -> None:
         raise ReviewQueueError("Configuration is unavailable; request a fresh review.") from exc
     if current != queue.config:
         raise ReviewQueueError("Configuration changed; request a fresh review.")
+
+
+def completion_purpose(directory: Path, repository: str, now: datetime) -> dict[str, Any] | None:
+    """Stable post-merge task identity, independent of its own progress receipts.
+
+    The last exact action remains in context after completion so accepting an
+    assessment or recording a local update cannot invalidate that assessment by
+    changing this projection. No new job or conversation is started here.
+    """
+    state = _load_reviews(directory, now)
+    records = [record for record in state["reviews"].values()
+               if record["status"] == "completed" and "completion" in record
+               and record["completion"]["merge_commit_sha"] is not None
+               and repository_names_equal(record["completion"]["repository"], repository)]
+    if not records:
+        return None
+    record = max(records, key=lambda item: (_time(item["consented_at"]), item["review_id"]))
+    obligation = copy.deepcopy(record["completion"])
+    obligation.update(evidence=None, assessment=None, local_results={}, finalization=None)
+    return {"review_id": record["review_id"], "obligation": obligation}
+
+
+class PendingMaintenanceError(ReviewQueueError):
+    """Known pending workflow, distinct from corrupt or unreadable history."""
+
+
+def require_prior_completion(directory: Path, repository: str, now: datetime) -> None:
+    """Caller holds the operation lock at execution; no network or Git reads."""
+    state = _load_reviews(directory, now)
+    for record in state["reviews"].values():
+        if not repository_names_equal(record["preparation"]["binding"]["repository"], repository):
+            continue
+        if record["status"] in {"executing", "recovery_required"}:
+            raise PendingMaintenanceError("An earlier action needs its exact outcome checked before another merge.")
+        if (record["status"] == "completed" and "completion" in record
+                and record["completion"]["finalization"] is None):
+            raise PendingMaintenanceError("Finish the saved post-merge assessment and selected completion steps before another merge in this repository.")
+
+
+def require_completion_intent(config: WatcherConfig, directory: Path, action_id: str) -> None:
+    """A callback is not a substitute for a durable selected-loop obligation."""
+    state = _load_reviews(directory, datetime.now(timezone.utc))
+    for record in state["reviews"].values():
+        if (record["status"] == "executing" and record["preparation"]["action_id"] == action_id
+                and "completion" in record
+                and obligation_scope(record["completion"]) == obligation_scope(new_obligation(config, record["preparation"]))):
+            return
+    raise ReviewQueueError("Selected maintenance requires a saved exact completion obligation before merging.")
 
 
 def prepare_review_action(
@@ -174,12 +243,13 @@ def prepare_review_action(
     plan, selected = queue.current_selection(proposal_id, version)
     prepared = preflight_execution(
         queue.config, client, plan, selected["step"]["step_id"], state_directory=queue.directory,
+        config_path=config_path, completion_controller=True,
     )
     _require_current_config(queue, config_path)
     current_plan, current_selection = queue.current_selection(proposal_id, version)
     if current_plan != plan or current_selection != selected:
         raise ReviewQueueError("Review context changed during preparation; refresh the queue.")
-    return {
+    result = {
         "schema_version": 1,
         "proposal_id": proposal_id,
         "version": version,
@@ -192,6 +262,10 @@ def prepare_review_action(
         "mutation_authorized": False,
         "capabilities": {"github_mutations": False, "model_calls": False},
     }
+    if prepared["status"] == "ready":
+        result["decision"] = copy.deepcopy(result["decision"])
+        result["decision"]["completion_scope"] = obligation_scope(new_obligation(queue.config, result))
+    return result
 
 
 class ActionReviews:
@@ -225,6 +299,9 @@ class ActionReviews:
             view["status"] = "recovery_required"
             view["message"] = "The outcome is not recorded yet. It may still be running; do not approve again."
         view["schema_version"] = 1
+        if "completion" in record:
+            view["completion"] = copy.deepcopy(record["completion"])
+            view["completion_stage"] = pending_stage(record["completion"])
         view["outcome_recorded"] = outcome_recorded
         return view
 
@@ -241,7 +318,7 @@ class ActionReviews:
         if (type(request.get("schema_version")) is not int or request["schema_version"] != 1
                 or not isinstance(request_id, str) or not re.fullmatch(r"action_[a-f0-9]{32}", request_id)
                 or not isinstance(operation, str)
-                or operation not in {"prepare_action", "confirm_action", "check_action", "action_history", "collect_queue"}):
+                or operation not in {"prepare_action", "confirm_action", "check_action", "check_completion", "action_history", "collect_queue"}):
             raise ReviewQueueError("Action request has an invalid version, ID or operation.")
         fields = {"schema_version", "request_id", "operation"}
         fields |= {"proposal_id", "version"} if operation == "prepare_action" else (
@@ -269,6 +346,10 @@ class ActionReviews:
             response["review"] = self.prepare(request["proposal_id"], request["version"])
         elif operation == "confirm_action":
             response["review"] = self.confirm(request["review_id"])
+        elif operation == "check_completion":
+            # Runtime import avoids controller/executor initialization cycles.
+            from .maintenance_completion_runtime import observe_completion
+            response["completion"] = observe_completion(self, request["review_id"])
         else:
             response["review"] = self.check_outcome(request["review_id"])
         return response
@@ -288,7 +369,9 @@ class ActionReviews:
             record = state["reviews"].get(review_id)
             if record is None:
                 raise ReviewQueueError("The saved review is absent or retired.")
-            if record["status"] not in {"executing", "recovery_required"}:
+            revision_recovery = (record["status"] == "completed" and "completion" in record
+                                 and record["completion"]["merge_commit_sha"] is None)
+            if record["status"] not in {"executing", "recovery_required"} and not revision_recovery:
                 return self._view(record)
             binding = record["preparation"]["binding"]
             configured = next((repo for repo in self.queue.config.repositories
@@ -302,13 +385,19 @@ class ActionReviews:
                        and live.get("headRefOid") == binding["head_sha"]
                        and live.get("baseRefName") == binding["expected_base"])
             if matches and live.get("state") == "MERGED":
-                record.update(status="completed", result={
-                    "status": "already_applied", "mutation_performed": False,
-                    "binding": copy.deepcopy(binding), "action_id": record["preparation"]["action_id"],
-                    "watcher_success_recorded": audit["success_recorded"],
-                    "next": "GitHub confirms this exact head is merged. This check made no changes; refresh the queue.",
-                })
-            else:
+                if not revision_recovery:
+                    record.update(status="completed", result={
+                        "status": "already_applied", "mutation_performed": False,
+                        "binding": copy.deepcopy(binding), "action_id": record["preparation"]["action_id"],
+                        "watcher_success_recorded": audit["success_recorded"],
+                        "next": "GitHub confirms this exact head is merged. This check made no changes; refresh the queue.",
+                    })
+                merge_commit = live.get("mergeCommit")
+                merge_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+                if ("completion" in record and isinstance(merge_sha, str)
+                        and re.fullmatch(r"[a-fA-F0-9]{40}|[a-fA-F0-9]{64}", merge_sha)):
+                    record["completion"]["merge_commit_sha"] = merge_sha.lower()
+            elif not revision_recovery:
                 record.update(status="recovery_required", result={
                     "status": "recovery_required", "mutation_performed": None,
                     "binding": copy.deepcopy(binding), "action_id": record["preparation"]["action_id"],
@@ -332,6 +421,7 @@ class ActionReviews:
                 raise ReviewQueueError("Plan changed before confirmation was saved; prepare again.")
             state = _load_reviews(self.queue.directory, now)
             repository = selected["repository"]
+            require_prior_completion(self.queue.directory, repository, now)
             for item in state["reviews"].values():
                 if (repository_names_equal(item["preparation"]["binding"]["repository"], repository)
                         and item["status"] in {"executing", "recovery_required"}):
@@ -339,9 +429,10 @@ class ActionReviews:
             record = {
                 "review_id": review_id, "preparation": prepared,
                 "preparation_digest": _digest(prepared), "selection_digest": _digest(selected),
-                "config_digest": _digest(asdict(self.queue.config)),
+                "config_digest": _config_digest(self.queue),
                 "created_at": _timestamp(now), "expires_at": _timestamp(now + timedelta(minutes=15)),
                 "status": "awaiting_confirmation", "consented_at": None, "result": None,
+                "completion": new_obligation(self.queue.config, prepared),
             }
             state["reviews"][review_id] = record
             _save_reviews(self.queue.directory, state, keep=review_id)
@@ -365,7 +456,7 @@ class ActionReviews:
         plan, selected = self.queue.current_selection(prepared["proposal_id"], prepared["version"])
         if (_digest(selected) != record["selection_digest"]
                 or plan["plan_id"] != prepared["plan_id"]
-                or _digest(asdict(self.queue.config)) != record["config_digest"]):
+                or _config_digest(self.queue) != record["config_digest"]):
             raise ReviewQueueError("Saved confirmation no longer matches current context; prepare again.")
         consumed = False
         consented_at: str | None = None
@@ -403,6 +494,11 @@ class ActionReviews:
                 "post_action_state", "audit_path", "recovery", "next",
             ) if key in execution}
             record.update(status="completed", result=result)
+            merge_result = execution.get("result") or {}
+            merge_sha = merge_result.get("merge_commit_sha")
+            if ("completion" in record and isinstance(merge_sha, str)
+                    and re.fullmatch(r"[a-fA-F0-9]{40}|[a-fA-F0-9]{64}", merge_sha)):
+                record["completion"]["merge_commit_sha"] = merge_sha.lower()
         except Exception:
             # After consumption an exception can follow a remote success or
             # terminal audit failure. Never report no mutation or retry it.

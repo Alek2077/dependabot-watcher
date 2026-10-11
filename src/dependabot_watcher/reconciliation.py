@@ -19,6 +19,7 @@ from .config import WatcherConfig
 from .execution import ExecutionError, execution_observation
 from .github import GitHubClient, GitHubError
 from .inspector import Clock, _utc_now, inspect
+from .local_sync import validate_control_locations
 from .planning import plan_from_advisory
 from .runtime_state import (
     RuntimeStateError,
@@ -44,7 +45,7 @@ class ReconciliationError(RuntimeError):
 
 
 def _timestamp(value: datetime) -> str:
-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+    return value.astimezone(timezone.utc).isoformat().replace(
         "+00:00", "Z"
     )
 
@@ -587,6 +588,8 @@ def reconcile(
             "Expected schedule interval must be between 15 minutes and 7 days."
         )
     state_path = (state_directory or default_state_directory()).expanduser()
+    # Validate before the refresh lease or queue lock creates/chmods anything.
+    validate_control_locations(config, config_path, state_path)
     now = clock().astimezone(timezone.utc)
     completed_at = _timestamp(now)
     advisory_policy_id = str(advisory_action_policy(config)["policy_id"])

@@ -16,7 +16,8 @@ from dependabot_watcher import supervision, supervisor_permissions
 from dependabot_watcher.config import parse_config
 from dependabot_watcher.review_queue import ReviewConfigurationChanged, ReviewQueue, ReviewQueueError
 from dependabot_watcher.review_bridge import exchange
-from dependabot_watcher.runtime_state import RuntimeStateError, load_private_json
+from dependabot_watcher.runtime_state import RuntimeStateError, load_private_json, run_lock
+from dependabot_watcher.supervisor_events import SupervisorEvents
 from dependabot_watcher.supervision import SupervisorJobs
 from dependabot_watcher.supervisor_permissions import SupervisorPermissions, permission_digest
 from test_execution import saved_plan
@@ -171,6 +172,44 @@ def test_exact_decision_persists_then_consumes_once_and_resolves(permissions_cas
         journal.consume(connection, requested["permission_id"], requested["digest"])
     journal.resolve(connection, requested["permission_id"])
     assert journal.snapshot("example-org/example-app")["connections"][0]["requests"][requested["permission_id"]]["status"] == "resolved"
+
+
+@pytest.mark.parametrize("decided", [False, True])
+def test_event_poll_defers_contention_without_consuming_or_ignoring_later_revocation(
+    permissions_case: tuple[SupervisorJobs, SupervisorPermissions, str], decided: bool,
+) -> None:
+    jobs, journal, connection = permissions_case
+    requested = ask(journal, connection)
+    job = next(iter(jobs._load()["jobs"].values()))
+    events = SupervisorEvents(jobs, job)
+    events.connection_id = connection
+    if decided:
+        journal.decide(connection, requested["permission_id"], requested["digest"], "allow_once")
+    with run_lock(jobs.queue.directory):
+        assert events.permission_decision(requested["permission_id"], requested["digest"]) is None
+    saved = journal._load()["connections"][connection]["requests"][requested["permission_id"]]
+    assert saved["status"] == ("decided" if decided else "waiting")
+    if decided:
+        assert events.permission_decision(requested["permission_id"], requested["digest"]) == "allow_once"
+        with pytest.raises(ReviewQueueError, match="consumed"):
+            events.permission_decision(requested["permission_id"], requested["digest"])
+    else:
+        jobs.queue.handle(decision(jobs.queue, "feedback", message="Changed investigation context"))
+        with pytest.raises(ReviewQueueError, match="context changed"):
+            events.permission_decision(requested["permission_id"], requested["digest"])
+
+
+def test_event_poll_does_not_hide_storage_failure(
+    permissions_case: tuple[SupervisorJobs, SupervisorPermissions, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs, _journal, connection = permissions_case
+    events = SupervisorEvents(jobs, next(iter(jobs._load()["jobs"].values())))
+    events.connection_id = connection
+    def broken(*args: Any) -> str | None:
+        raise RuntimeStateError("Controlled storage failure")
+    monkeypatch.setattr(events.permissions, "consume", broken)
+    with pytest.raises(RuntimeStateError, match="storage failure"):
+        events.permission_decision("permission_fixture", "a" * 64)
 
 
 @pytest.mark.parametrize("state", ["waiting", "decided", "consumed"])

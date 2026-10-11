@@ -74,7 +74,7 @@ internal sealed class QueueProposal
 
 // The window has no GitHub, model or state-file implementation. All local
 // choices are acknowledged by a fresh Python controller process after saving.
-internal sealed class BackendQueueWindow : Window
+internal sealed partial class BackendQueueWindow : Window
 {
     private readonly BackendClient _client;
     private readonly DataGrid _queue = new();
@@ -327,6 +327,8 @@ internal sealed class BackendQueueWindow : Window
             : new SolidColorBrush(Color.FromRgb(226, 232, 240));
         DockPanel.SetDock(_actionNotice, Dock.Top);
         inspector.Children.Add(_actionNotice);
+        InitializeCompletion(inspector);
+        InitializeLocalSync(inspector);
         inspector.Children.Add(scroll);
         Grid.SetColumn(inspector, 1); split.Children.Add(inspector);
         root.Children.Add(split); Content = root;
@@ -352,10 +354,9 @@ internal sealed class BackendQueueWindow : Window
     internal async Task<string> RunScheduledAsync(string runId, bool notify)
     {
         await InitializeAsync();
-        if (_investigationCancellation is not null && _investigationFinished is not null)
-            await _investigationFinished.Task;
-        await WaitForIdleAsync();
-        if (_shutdownRequested) return "quiet";
+        if (!await NativeInvestigationCoordination.WaitAsync(WaitForIdleAsync,
+            () => _investigationCancellation is not null ? _investigationFinished?.Task : null,
+            () => _shutdownRequested)) return "quiet";
         _scheduledRunning = true;
         SetBusy(true);
         try
@@ -390,6 +391,7 @@ internal sealed class BackendQueueWindow : Window
             {
                 if (_shutdownRequested) return "quiet";
                 var finished = await RunInvestigationAsync(slot.Repository, slot.ContextDigest, null, null, runId, notify);
+                if (_shutdownRequested) return "quiet";
                 confirmed |= finished;
                 if (!finished) { attention = true; break; }
             }
@@ -505,7 +507,7 @@ internal sealed class BackendQueueWindow : Window
 
     private JsonObject Request(string operation) => new() {
         ["schema_version"] = 1,
-        ["request_id"] = operation is "prepare_action" or "confirm_action" or "check_action" or "action_history" or "collect_queue"
+        ["request_id"] = operation is "prepare_action" or "confirm_action" or "check_action" or "check_completion" or "action_history" or "collect_queue"
             ? "action_" + Guid.NewGuid().ToString("N")
             : operation == "snapshot" ? "read_" + Guid.NewGuid().ToString("N")
             : $"decision_{_sequence}_" + Guid.NewGuid().ToString("N"),
@@ -522,6 +524,7 @@ internal sealed class BackendQueueWindow : Window
         _activity.IsEnabled = !busy && !_shutdownRequested;
         _permissions.IsEnabled = !busy && !_shutdownRequested && !_refreshRequired;
         _collect.IsEnabled = !busy && !_shutdownRequested && !_scheduledRunning && _investigationCancellation is null;
+        _localSyncPanel.IsEnabled = !busy && !_shutdownRequested && !_scheduledRunning && _investigationCancellation is null;
         UpdateInvestigationControls();
         if (!busy && !_shutdownRequested && _launchRefreshPending && !_launchRefreshInFlight) _ = RefreshInvestigationScopeAsync();
     }
@@ -549,7 +552,7 @@ internal sealed class BackendQueueWindow : Window
         && _executionEnabled && _evidenceComplete && item.Evidence["evidence_status"]?.GetValue<string>() == "complete"
         && item.Handling == "pending" && item.Step["action"]?.GetValue<string>() == "validate_then_merge"
         && !_reviews.Any(review => review.MatchesRepository(item.Evidence["repository"]?.GetValue<string>())
-            && (review.Status == "recovery_required" || (review.Status == "completed"
+            && (review.Status == "recovery_required" || review.HasPendingCompletion || (review.Status == "completed"
                 && review.Preparation["plan_id"]?.GetValue<string>() == item.Evidence["plan_id"]?.GetValue<string>())));
 
     private async Task WaitForIdleAsync()
@@ -616,6 +619,7 @@ internal sealed class BackendQueueWindow : Window
         _supervisorDigests = supervisorDigests;
         _evidenceComplete = evidenceStatus == "complete";
         RenderActivity();
+        RenderCompletion();
         var previous = _selectedId;
         var previousItem = (_queue.SelectedItem as QueueProposal)?.ItemIdentity;
         _summary.Text = (_client.DiagnosticTransport ? "SYNTHETIC TRANSPORT TEST — no real GitHub access or model jobs.\n" : "")
@@ -722,10 +726,20 @@ internal sealed class BackendQueueWindow : Window
             && _supervisorDigests.TryGetValue(repository, out var digest) && digest == expectedDigest;
         try
         {
-            var response = await _client.SendAsync(new JsonObject {
-                ["schema_version"] = 1, ["request_id"] = "read_" + Guid.NewGuid().ToString("N"),
-                ["operation"] = "supervisor_permissions", ["repository"] = repository
-            });
+            JsonObject? response = null;
+            Exception? readFailure = null;
+            await NativeScopeRefresh.RunAsync(async () => {
+                response = await _client.SendAsync(new JsonObject {
+                    ["schema_version"] = 1, ["request_id"] = "read_" + Guid.NewGuid().ToString("N"),
+                    ["operation"] = "supervisor_permissions", ["repository"] = repository
+                });
+            }, (exception, retry) => {
+                readFailure = exception;
+                if (retry && StillCurrent())
+                    _accessRequests.Header = "Agent access requests — checking current requests…";
+            }, () => !StillCurrent(), duration => Task.Delay(duration));
+            if (!StillCurrent()) return;
+            if (response is null) throw readFailure ?? new IOException("Access requests were not received.");
             var requests = NativePermissionView.Parse(response, repository, expectedDigest);
             if (!StillCurrent()) return;
             _permissions.Children.Clear();
@@ -911,7 +925,8 @@ internal sealed class BackendQueueWindow : Window
     private async Task<bool> RunInvestigationAsync(string repository, string digest, string? retryJobId,
         JsonObject? explicitItem, string? scheduledRunId, bool notify = true)
     {
-        if (_shutdownRequested || _investigationCancellation is not null) return false;
+        if (_shutdownRequested || _investigationCancellation is not null
+            || (_scheduledRunning && scheduledRunId is null)) return false;
         var confirmed = false;
         // Chosen policy is displayed above this explicit start control. No UI
         // field can supply a model, workspace, account or broader permissions.
@@ -973,19 +988,31 @@ internal sealed class BackendQueueWindow : Window
             SetBusy(true);
             try
             {
-                Apply(await _client.SendAsync(Request("snapshot")));
-                if (!_supervisorDigests.TryGetValue(repository, out var currentDigest))
-                    throw new InvalidDataException("The investigation repository is no longer in the saved queue scope.");
-                var saved = await _client.SendAsync(new JsonObject {
-                    ["schema_version"] = 1, ["request_id"] = "read_" + Guid.NewGuid().ToString("N"),
-                    ["operation"] = "supervisor_status", ["repository"] = repository
-                });
-                var view = NativeSupervisorView.Parse(saved, repository, currentDigest);
-                _launchProgress.Text = view.DescribeTerminal(terminal);
-                var verified = saved["jobs"]!.AsArray().Single(value => value!["job_id"]!.GetValue<string>() == terminal["job_id"]!.GetValue<string>());
-                confirmed = verified!["provider_completion_observed"]!.GetValue<bool>()
-                    && verified["status"]!.GetValue<string>() is "completed" or "superseded";
-                App.Record("native_investigation_receipt_checked", new { repository, job_id = terminal["job_id"]!.GetValue<string>() });
+                // Contention while reading a completed job is not failure of
+                // that investigation. Retry only these observation requests;
+                // never replay the launch, access decision or repository action.
+                await NativeScopeRefresh.RunAsync(async () => {
+                    Apply(await _client.SendAsync(Request("snapshot")));
+                    if (!_supervisorDigests.TryGetValue(repository, out var currentDigest))
+                        throw new InvalidDataException("The investigation repository is no longer in the saved queue scope.");
+                    var saved = await _client.SendAsync(new JsonObject {
+                        ["schema_version"] = 1, ["request_id"] = "read_" + Guid.NewGuid().ToString("N"),
+                        ["operation"] = "supervisor_status", ["repository"] = repository
+                    });
+                    if (_shutdownRequested) return;
+                    var view = NativeSupervisorView.Parse(saved, repository, currentDigest);
+                    var verified = saved["jobs"]!.AsArray().Single(value => value!["job_id"]!.GetValue<string>() == terminal["job_id"]!.GetValue<string>());
+                    confirmed = verified!["provider_completion_observed"]!.GetValue<bool>()
+                        && verified["status"]!.GetValue<string>() is "completed" or "superseded";
+                    _launchProgress.Text = view.DescribeTerminal(terminal);
+                    App.Record("native_investigation_receipt_checked", new { repository, job_id = terminal["job_id"]!.GetValue<string>() });
+                }, (exception, retry) => {
+                    confirmed = false;
+                    _launchProgress.Text = NativeDisplayText.Escape(
+                        "The investigation ended, but its saved outcome could not yet be verified. "
+                        + (retry ? "Retrying the read-only verification. " : "Refresh saved state to check its outcome. ")
+                        + "No investigation or repository action is being retried.\n" + exception.Message);
+                }, () => _shutdownRequested, duration => Task.Delay(duration));
             }
             finally { SetBusy(false); }
         }
@@ -1020,7 +1047,7 @@ internal sealed class BackendQueueWindow : Window
                     _latestAnswer.BringIntoView();
             }
         }
-        return confirmed;
+        return confirmed && !_shutdownRequested;
     }
 
     private async Task RefreshInvestigationScopeAsync()
@@ -1033,13 +1060,23 @@ internal sealed class BackendQueueWindow : Window
             {
                 _launchRefreshPending = false;
                 SetBusy(true);
-                try { Apply(await _client.SendAsync(Request("snapshot"))); }
-                catch (Exception exception)
+                try
                 {
-                    _refreshRequired = true;
-                    _permissions.Children.Clear();
-                    _accessRequests.Header = "Agent access requests — refresh required";
-                    _launchProgress.Text = $"Current investigation scope could not be verified: {exception.Message}\nAccess grants are unavailable until a successful refresh.";
+                    var refreshed = await NativeScopeRefresh.RunAsync(
+                        async () => Apply(await _client.SendAsync(Request("snapshot"))),
+                        (exception, retry) => {
+                            _refreshRequired = true;
+                            _permissions.Children.Clear();
+                            _accessRequests.Header = retry
+                                ? "Agent access requests — checking current scope…"
+                                : "Agent access requests — refresh required";
+                            _launchProgress.Text = NativeDisplayText.Escape(
+                                $"Current investigation scope could not be verified: {exception.Message}\n"
+                                + (retry ? "Retrying the read-only scope check. Access grants remain unavailable."
+                                    : "Access grants are unavailable until a successful refresh. Use Refresh saved queue."));
+                        }, () => _shutdownRequested, duration => Task.Delay(duration));
+                    if (refreshed && !_shutdownRequested && _investigationCancellation is not null)
+                        _launchProgress.Text = "Investigation scope verified. Checking current agent access requests; no merge is approved.";
                 }
                 finally { SetBusy(false); }
             }
@@ -1097,7 +1134,8 @@ internal sealed class BackendQueueWindow : Window
     }
 
     private static bool NeedsOutcomeCheck(NativeActionReview review) => review.Status == "recovery_required"
-        || review.Value["outcome_recorded"]?.GetValue<bool>() == false;
+        || review.Value["outcome_recorded"]?.GetValue<bool>() == false
+        || (review.Status == "completed" && review.Value["completion_stage"]?.GetValue<string>() == "merge_outcome");
 
     private void ShowActionNotice(string headline, string summary)
     {
@@ -1111,6 +1149,13 @@ internal sealed class BackendQueueWindow : Window
         var target = $"{review.Binding["repository"]} · PR #{review.Binding["pull_request"]}";
         var merged = review.Status == "completed"
             && review.Value["result"]?["status"]?.GetValue<string>() == "merged";
+        if (review.RecordedMaintenanceSummary is string completion)
+        {
+            ShowActionNotice("Maintenance action complete (saved)", target
+                + "\n" + completion
+                + "\nNo further merge will start automatically.");
+            return;
+        }
         ShowActionNotice(merged ? $"PR #{review.Binding["pull_request"]} merged successfully"
             : "Action outcome needs review", target + "\n" + (merged
                 ? $"Merged into {review.Binding["expected_base"]}. "
@@ -1123,7 +1168,7 @@ internal sealed class BackendQueueWindow : Window
     private void StoreReview(NativeActionReview review)
     {
         _reviews.RemoveAll(r => r.Id == review.Id);
-        _reviews.Add(review); RenderActivity();
+        _reviews.Add(review); RenderActivity(); RenderCompletion();
     }
 
     private async Task PrepareAsync()
@@ -1188,8 +1233,10 @@ internal sealed class BackendQueueWindow : Window
                         : "\nQueue refreshed. This merge is complete.";
                     _detailsScroll.ScrollToTop();
                     if (!_refreshRequired && _evidenceComplete && review.Value["outcome_recorded"]?.GetValue<bool>() != false
-                        && review.Value["result"]?["status"]?.GetValue<string>() == "merged")
+                        && review.Value["result"]?["status"]?.GetValue<string>() == "merged" && review.CanAssessCompletion)
                         await ContinueAfterMergeAsync(review);
+                    else if (review.HasPendingCompletion && !review.CanAssessCompletion)
+                        _actionSummary.Text += "\nThe exact merge revision needs outcome recovery before an agent assessment can start.";
                     else if (review.Value["outcome_recorded"]?.GetValue<bool>() == false)
                         _actionSummary.Text += "\nPost-merge assessment not started: the action outcome needs recovery.";
                 }
@@ -1219,6 +1266,8 @@ internal sealed class BackendQueueWindow : Window
         try
         {
             if (_shutdownRequested) return;
+            if (!review.CanAssessCompletion)
+                throw new InvalidDataException("The exact saved maintenance action and merge revision must be recovered before an assessment starts.");
             if (!_supervisorDigests.TryGetValue(repository, out var digest))
                 throw new InvalidDataException("The refreshed repository context is unavailable.");
             var status = await _client.SendAsync(new JsonObject {
@@ -1229,6 +1278,7 @@ internal sealed class BackendQueueWindow : Window
             if (status["configured_launch"]?["mode"]?.GetValue<string>() == "off")
             {
                 ShowActionNotice(merged, scope + "Queue refreshed. Automatic agent assessment is disabled in this profile.");
+                await CheckCompletionCoreAsync(review);
                 return;
             }
             if (before.LaunchPolicy?.Configured != true || before.HasActiveInvestigation || before.RetryJobId is not null)
@@ -1249,6 +1299,7 @@ internal sealed class BackendQueueWindow : Window
             ShowActionNotice(merged, scope + "Agent checked the updated state.\n"
                 + (summary.Length <= 240 ? summary : "Full assessment is saved under Recent action results."));
             _detailsScroll.ScrollToTop();
+            await CheckCompletionCoreAsync(review);
         }
         catch (Exception exception)
         {
@@ -1323,7 +1374,7 @@ internal sealed class BackendQueueWindow : Window
     {
         if (_shutdownRequested || _busy || _investigationCancellation is not null) return;
         SetBusy(true);
-        try { await CollectCoreAsync(); }
+        try { await CollectCoreAsync(); if (!_refreshRequired) await RecheckPendingCompletionsAsync(); }
         finally { SetBusy(false); }
     }
 
@@ -1341,7 +1392,7 @@ internal sealed class BackendQueueWindow : Window
             _outcome.Text = $"Cannot refresh: {ex.Message}\nAny previously displayed evidence is stale. Local decisions are disabled until refresh succeeds.";
             App.Record("backend_queue_error", new { operation = "snapshot" });
         }
-        finally { SetBusy(false); }
+        finally { await ReadLocalSyncTargetsAsync(); SetBusy(false); }
     }
 
     private Task StartItemInvestigationAsync() => _retryJobId is not null

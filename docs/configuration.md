@@ -75,6 +75,22 @@ Planning displays all workflow fields as evidence and never executes strings. Th
 
 ## Runtime state and audit
 
+### Selected local updates (development)
+
+The optional `repositories.local_sync` array registers up to ten absolute checkout paths and their selected attached branches per repository. Omitted/empty arrays retain remote-only behavior. Each path can belong to only one configured repository; registration is scope, not standing approval. These entries do not change `operation.mutation_enabled`, which governs the separate GitHub merge capability.
+
+```toml
+[[repositories.local_sync]]
+directory = "/absolute/path/to/selected-checkout"
+branch = "SELECTED_BRANCH"
+```
+
+Place the entry under the intended repository; replace placeholders with the user's workflow. The development `sync` command and native review channel require their own exact fresh confirmation for clean fast-forward integration. Saved intent/outcomes live in the private `local-sync.json` journal. Bounded historical observations enter supervisor context only when local targets are configured; they neither grant edit authority nor establish live readiness. See [setup and recovery boundaries](setup.md#selected-local-checkout-updates-development) and the [validation record](validation.md#selected-local-checkout-synchronization--development-checkpoint-2026-10-09) for reviewed installed checks and remaining live acceptance.
+
+For the connected development workflow, the repository-level `completion_policy` distinguishes `remote_only` (default) from `selected_local_sync`. Selected mode requires registered checkouts on that repository's configured base branch. It records the obligation with the exact approved merge, rather than treating registration as consent. Fresh remote evidence, configured post-merge agent assessment and live selected-checkout verification are separate from remote merge success. Required unfinished completion blocks another same-repository merge through the durable action-review route; direct `execute` cannot bypass selected completion. This integration is not yet release-accepted. Changing configuration does not erase a saved unfinished obligation or authorize replay. Neither mode implies deployment or production-health verification.
+
+### Reconciliation and execution
+
 `run` writes bounded reconciliation history, the latest private report, and retained current plans under the platform state directory. Records include evidence revision, queue synopsis completeness, advisory coverage and usage provenance, plan lineage, execution observation, notification delivery, missed-run timing, retry state, and sanitized failure categories. They exclude credentials, unrestricted provider transcripts, and raw GitHub errors. Unchanged revisions skip repeated model work; missed intervals produce one current-state catch-up rather than an interval backlog.
 
 Approved execution writes `execution-audit.jsonl` under the platform state directory. On ordinary Linux this defaults to `$XDG_STATE_HOME/dependabot-watcher` or `~/.local/state/dependabot-watcher`; `DEPENDABOT_WATCHER_STATE_DIR` provides an explicit override for isolated validation and managed environments. The directory and file must not be symbolic links or accessible to group/other users.

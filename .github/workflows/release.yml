@@ -91,10 +91,12 @@ jobs:
           --output "$env:RUNNER_TEMP/watcher-native-publish"
           -p:ContinuousIntegrationBuild=true
       - name: Check the built native contracts
-        run: >-
-          dotnet run --project native/windows/tests/NotificationContracts.csproj
-          --configuration Release --
-          "$env:RUNNER_TEMP/watcher-native-publish/WatcherNativeProof.dll"
+        # Complete the SDK's self-contained resource output before testing or packaging.
+        # The helper resolves the matching runtime from this build's assets file.
+        run: |
+          & ./native/windows/tests/Test-PublishCompletion.ps1 -Helper "$pwd/native/windows/complete-publish.ps1"
+          & ./native/windows/complete-publish.ps1 -PublishedDirectory "$env:RUNNER_TEMP/watcher-native-publish" -AssetsFile native/windows/src/obj/project.assets.json
+          dotnet run --project native/windows/tests/NotificationContracts.csproj --configuration Release -- "$env:RUNNER_TEMP/watcher-native-publish/WatcherNativeProof.dll"
       - name: Package the validated component
         run: |
           $version = python -c "import runpy; print(runpy.run_path('src/dependabot_watcher/__init__.py')['__version__'])"

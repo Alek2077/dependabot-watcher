@@ -10,7 +10,7 @@ import pytest
 
 import dependabot_watcher.setup as setup_implementation
 from dependabot_watcher import diagnostics
-from dependabot_watcher.config import SupervisorConfig, SupervisorValidationConfig, SupervisorWorkspaceConfig, load_config
+from dependabot_watcher.config import LocalSyncCheckout, SupervisorConfig, SupervisorValidationConfig, SupervisorWorkspaceConfig, load_config
 from dependabot_watcher.operational_output import render_operational
 from dependabot_watcher.diagnostics import CommandResult
 from dependabot_watcher.setup import (
@@ -75,6 +75,80 @@ def test_quick_setup_verifies_then_creates_model_off_profile(
     assert report["capabilities"]["github_mutations"] is False
     assert report["capabilities"]["persistent_local_writes"] is True
     assert not any(command[0] == "codex" for command in commands)
+
+
+def test_selected_local_sync_requires_consent_before_auth_or_profile_write(tmp_path):
+    commands: list[tuple[str, ...]] = []
+    config_path = tmp_path / "config.toml"
+    with pytest.raises(SetupError, match="acknowledge"):
+        create_profile(config_path, SetupRequest(repositories=("example-org/example-app",), branches={},
+            local_sync={"example-org/example-app": (LocalSyncCheckout(str(tmp_path / "checkout"), "integration"),)}),
+            runner=_runner(commands))
+    assert commands == []
+    assert not config_path.exists()
+
+
+@pytest.mark.parametrize("required_completion", [False, True])
+def test_selected_local_sync_discovers_branch_without_importing_maintainer_conventions(tmp_path, monkeypatch, required_completion):
+    commands: list[tuple[str, ...]] = []
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
+    path = tmp_path / "config.toml"
+    checkout = str(tmp_path / "checkout")
+    report = create_profile(path, SetupRequest(repositories=("example-org/example-app",), branches={},
+        local_sync={"example-org/example-app": (LocalSyncCheckout(checkout, ""),)},
+        acknowledge_local_sync=True,
+        require_local_completion=("example-org/example-app",) if required_completion else ()), runner=_runner(commands))
+    config = load_config(path)
+    assert config.repositories[0].local_sync == (LocalSyncCheckout(checkout, "trunk"),)
+    assert config.repositories[0].completion_policy == ("selected_local_sync" if required_completion else "remote_only")
+    assert config.operation.mutation_enabled is False
+    assert report["local_sync"]["checkout_readiness_verified"] is False
+    assert report["local_sync"]["integration_performed"] is False
+    assert not (tmp_path / "checkout").exists()
+
+
+@pytest.mark.parametrize("repositories", [("example-org/example-app",), ("outside/repository",)])
+def test_required_completion_without_selected_scope_fails_before_auth_or_write(tmp_path, repositories):
+    commands: list[tuple[str, ...]] = []
+    path = tmp_path / "config.toml"
+    with pytest.raises(SetupError, match="Required local completion"):
+        create_profile(path, SetupRequest(repositories=("example-org/example-app",), branches={},
+            require_local_completion=repositories), runner=_runner(commands))
+    assert not path.exists()
+    assert commands == []
+
+
+def test_offline_local_sync_requires_explicit_branch(tmp_path):
+    with pytest.raises(SetupError, match="explicit selected branch"):
+        create_profile(tmp_path / "config.toml", SetupRequest(repositories=("example-org/example-app",),
+            branches={}, offline=True, acknowledge_local_sync=True,
+            local_sync={"example-org/example-app": (LocalSyncCheckout(str(tmp_path / "checkout"), ""),)}))
+
+
+def test_local_sync_setup_rejects_configuration_inside_checkout(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    with pytest.raises(SetupError, match="separate"):
+        create_profile(checkout / "watcher.toml", SetupRequest(repositories=("example-org/example-app",),
+            branches={}, offline=True, acknowledge_local_sync=True,
+            local_sync={"example-org/example-app": (LocalSyncCheckout(str(checkout), "integration"),)}))
+
+
+def test_local_sync_setup_verifies_selected_nondefault_branch(tmp_path, monkeypatch):
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda executable: f"/bin/{executable}")
+    commands: list[tuple[str, ...]] = []
+    base_runner = _runner(commands)
+    def missing_branch(command, timeout):
+        if command[:2] == ["gh", "api"] and "/commits/integration" in command[2]:
+            commands.append(tuple(command))
+            return CommandResult(1, "")
+        return base_runner(command, timeout)
+    with pytest.raises(SetupError, match="synchronization branch verification"):
+        create_profile(tmp_path / "config.toml", SetupRequest(repositories=("example-org/example-app",), branches={},
+            acknowledge_local_sync=True,
+            local_sync={"example-org/example-app": (LocalSyncCheckout(str(tmp_path / "checkout"), "integration"),)}),
+            runner=missing_branch)
+    assert not (tmp_path / "config.toml").exists()
 
 
 def test_default_configuration_is_reused_without_redundant_flags(

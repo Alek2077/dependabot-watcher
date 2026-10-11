@@ -14,11 +14,13 @@ import select
 import selectors
 import stat
 import time
+from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 
 from .github import GitHubClient
 from .providers.codex_app_server_supervisor import _available_decisions
 from .review_queue import ReviewQueue, ReviewQueueError, supervisor_context_digest
+from .runtime_state import RuntimeLockBusyError, save_private_json
 from .supervisor_launch import run_configured_supervisor
 from .scheduled_triggers import consume_slot, finish_slot
 
@@ -35,6 +37,7 @@ class _Frames:
         self.total = 0
         self.descriptor: int | None = None
         self.blocking = True
+        self.scoped_request: dict[str, str] | None = None
         if not isinstance(output, io.BytesIO):
             try:
                 self.descriptor = output.fileno()
@@ -176,9 +179,20 @@ def launch_exchange(queue: ReviewQueue, client: GitHubClient | None, request: Ma
         return 2
     try:
         return _launch(queue, client, request, frames)
-    except Exception:
+    except Exception as error:
+        category = "state_busy" if isinstance(error, RuntimeLockBusyError) else "launch_unconfirmed"
+        if frames.scoped_request is not None:
+            try:
+                save_private_json(queue.directory,
+                    Path("supervisor-launch-failures") / f'{frames.scoped_request["request_id"]}.json',
+                    {"schema_version": 1, **frames.scoped_request, "category": category}, maximum_bytes=4096)
+            except Exception:
+                pass  # Best-effort diagnostics never replace the original refusal.
         try:
-            frames.emit("error", status="error", message="Investigation did not complete. Inspect its saved job and recovery state; it was not automatically retried.")
+            message = ("Saved state is busy. The investigation outcome is not confirmed; refresh saved state before continuing. Nothing was automatically retried."
+                if category == "state_busy" else
+                "Investigation did not complete. Inspect its saved job and recovery state; it was not automatically retried.")
+            frames.emit("error", status="error", message=message)
         except Exception:
             pass  # Disconnected/nonreading client: no blocking fallback writer.
         return 2
@@ -205,6 +219,9 @@ def _launch(queue: ReviewQueue, client: GitHubClient | None, request: Mapping[st
             or not isinstance(request.get("context_digest"), str)
             or re.fullmatch(r"[a-f0-9]{64}", request["context_digest"]) is None):
         raise ReviewQueueError("Investigation launch requires an exact scoped context request.")
+    if not any(item.name.casefold() == request["repository"].casefold() for item in queue.config.repositories):
+        raise ReviewQueueError("Investigation repository is outside the configured scope.")
+    frames.scoped_request = {key: request[key] for key in ("request_id", "repository", "context_digest")}
     if client is None:
         raise ReviewQueueError("Investigation is not connected to this backend.")
     if supervisor_context_digest(queue.supervision_context(request["repository"])) != request["context_digest"]:

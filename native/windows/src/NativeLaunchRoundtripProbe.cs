@@ -45,10 +45,30 @@ internal static class NativeLaunchRoundtripProbe
 
     internal static async Task RunAsync(string launchFile, string testCase)
     {
-        if (testCase is not ("allow_once" or "deny" or "cancel" or "disconnect" or "stale_feedback" or "resume_feedback" or "retry_interrupted" or "scheduled" or "scheduled_malformed"))
+        if (testCase is not ("allow_once" or "deny" or "cancel" or "disconnect" or "stale_feedback" or "resume_feedback" or "retry_interrupted" or "scheduled" or "scheduled_malformed" or "launch_busy" or "scheduled_terminal_busy"))
             throw new InvalidDataException("Unsupported controlled launch diagnostic.");
         var client = BackendClient.FromLaunchFile(launchFile);
         if (!client.DiagnosticTransport) throw new InvalidDataException("A synthetic transport marker is required.");
+        if (testCase == "launch_busy")
+        {
+            var window = new BackendQueueWindow(client);
+            await window.InitializeAsync();
+            var snapshot = await Snapshot(client);
+            var method = typeof(BackendQueueWindow).GetMethod("RunInvestigationAsync",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            var confirmed = await (Task<bool>)method.Invoke(window,
+                new object?[] { Repository, Digest(snapshot), null, null, null, false })!;
+            var progress = (System.Windows.Controls.TextBlock)typeof(BackendQueueWindow)
+                .GetField("_launchProgress", System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+            if (confirmed || !progress.Text.Contains("Saved state is busy")
+                || progress.Text.Contains("scheduled reconciliation"))
+                throw new InvalidDataException("Actual launch contention did not reach the window accurately.");
+            await client.StopAcceptingAndDrainAsync();
+            App.Record("native_launch_busy_passed", new { actual_window_consumer = true,
+                model_calls = 0, github_mutations = false });
+            return;
+        }
         if (testCase == "scheduled_malformed")
         {
             var window = new BackendQueueWindow(client);
@@ -70,7 +90,7 @@ internal static class NativeLaunchRoundtripProbe
                 actual_hidden_window_flow = true, model_calls = 0, github_mutations = false });
             return;
         }
-        if (testCase == "scheduled")
+        if (testCase is "scheduled" or "scheduled_terminal_busy")
         {
             // Exercise the actual hidden window flow after its cached context
             // becomes stale, not only the standalone receipt parser.

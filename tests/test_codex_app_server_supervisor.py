@@ -12,10 +12,11 @@ from typing import Any
 import pytest
 
 from dependabot_watcher.providers.codex_app_server_settings import CodexAppServerSettings
+from dependabot_watcher.providers.codex_app_server_transport import CodexAppServerTransport
 from dependabot_watcher.providers.codex_app_server_supervisor import CodexAppServerSupervisor, _available_decisions, _output_schema
 from dependabot_watcher.config import load_config
 from dependabot_watcher.review_queue import ReviewConfigurationChanged, ReviewQueue, ReviewQueueError
-from dependabot_watcher.runtime_state import load_private_json
+from dependabot_watcher.runtime_state import load_private_json, run_lock
 from dependabot_watcher.supervision import SupervisorJobs
 from dependabot_watcher.supervisor_permissions import SupervisorPermissions
 from dependabot_watcher.supervisor_runner import SupervisorRunner
@@ -28,8 +29,46 @@ from test_supervisor_runner import FixtureProvider, runner_case
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX/WSL agent runtime")
 
 
+@pytest.mark.parametrize('turns', [[{'id': 'turn'}] * 65,
+    [{'id': 'turn', 'items': [{'type': 'agentMessage', 'text': 'private transcript'}]}],
+    [{'id': 'turn', 'transcript': 'unexpected'}], [{'id': 0}]])
+def test_historical_turn_response_must_be_bounded_and_metadata_only(turns: Any) -> None:
+    with pytest.raises(ReviewQueueError, match='historical turns'):
+        CodexAppServerSupervisor._historical_turn_ids(turns)
+
+
+def test_historical_turn_metadata_projection_preserves_ids() -> None:
+    assert CodexAppServerSupervisor._historical_turn_ids(
+        [{'id': 'turn', 'items': [], 'itemsView': 'notLoaded'}]) == {'turn'}
+
+
+@pytest.mark.parametrize('turns', [[{'id': 'turn'}, {'id': 'turn'}],
+    [{'id': 'turn', 'itemsView': 'full'}], [{'id': 'turn', 'startedAt': True}],
+    [{'id': 'turn', 'rootTurnId': 'invalid id'}], [{'id': 'turn', 'status': {}}],
+    [{'id': 'turn', 'error': {'message': 'x' * 5000}}]])
+def test_historical_metadata_rejects_duplicates_loaded_views_and_invalid_values(turns: Any) -> None:
+    with pytest.raises(ReviewQueueError):
+        CodexAppServerSupervisor._historical_turn_ids(turns)
+
+
+def test_bounded_history_page_keeps_conversation_when_unloaded_history_exists() -> None:
+    response = {'thread': {'turns': []}, 'initialTurnsPage': {'data': [{'id': 'prior-turn'}],
+                'nextCursor': 'opaque_unloaded_history', 'backwardsCursor': None}}
+    assert CodexAppServerSupervisor._historical_response_ids(response) == {'prior-turn'}
+
+
+@pytest.mark.parametrize('page', [{'data': [], 'nextCursor': 1}, {'data': [], 'backwardsCursor': 'x' * 4097},
+    {'data': [], 'unknown': True}, {'data': [{'id': f'page{i}'} for i in range(33)]}])
+def test_history_page_envelope_and_combined_identity_count_are_bounded(page: dict[str, Any]) -> None:
+    response = {'thread': {'turns': [{'id': f'thread{i}'} for i in range(32)]}, 'initialTurnsPage': page}
+    with pytest.raises(ReviewQueueError):
+        CodexAppServerSupervisor._historical_response_ids(response)
+
+
 PROGRAM = r'''
 import json, sys
+from dependabot_watcher.validation_tools import validation_tool_specs
+validation_config=None
 def send(frame):
     print(json.dumps(frame),flush=True)
 def response(identifier,result):
@@ -43,11 +82,21 @@ for line in sys.stdin:
         response(frame['id'],{'account':{'type':'apiKey' if FAULT=='wrong_account' else 'chatgpt'}})
     elif method in ('thread/start','thread/resume'):
         params=frame['params']
+        validation_config=params['config'].get('mcp_servers.watcher_validation')
         response(frame['id'],{'thread':{'id':'thread1','turns':[{'id':'prior-turn'}]},'cwd':params['cwd'],
             'model':params['model'],'reasoningEffort':params['config']['model_reasoning_effort'],
             'modelProvider':'openai','approvalPolicy':'on-request','approvalsReviewer':'user',
             'sandbox':{'type':'workspaceWrite'},'instructionSources':INSTRUCTIONS,
             'activePermissionProfile':{'id':'watcher-fixture'}})
+    elif method=='mcpServerStatus/list':
+        if 'threadId' not in frame['params']:
+            response(frame['id'],{'data':[],'nextCursor':None})
+            continue
+        assert validation_config is not None
+        response(frame['id'],{'data':[{'name':'watcher_validation','runtimeStatus':'connected',
+            'serverInfo':{'name':'watcher_validation','version':'1'},'toolsError':None,
+            'tools':{s['name']:{k:v for k,v in s.items() if k!='type'} for s in validation_tool_specs()}}],
+            'nextCursor':None})
     elif method=='turn/start':
         data=json.loads(frame['params']['input'][0]['text'].rsplit('\n',1)[-1])
         schema=frame['params']['outputSchema']
@@ -80,10 +129,10 @@ for line in sys.stdin:
             if FAULT!='missing_resolution':
                 send({'method':'serverRequest/resolved','params':{'threadId':'thread1','requestId':7}})
             command_status='declined' if grant['result']['decision'] in ('decline','cancel') else 'completed'
-            if FAULT in ('denied_completed','network_denied_completed'):
+            if FAULT in ('denied_completed','network_denied_completed','mismatched_command'):
                 command_status='completed'
             send({'method':'item/completed','params':{'threadId':'thread1','turnId':'turn1',
-                  'item':{'id':'item1','type':'commandExecution','status':command_status,
+                  'item':{'id':'item2' if FAULT=='mismatched_command' else 'item1','type':'commandExecution','status':command_status,
                           'exitCode':None if command_status=='declined' else 0,
                           'command':'PRIVATE_TEST_ONLY','aggregatedOutput':'PRIVATE_TEST_ONLY'}}})
         proposals=data['context']['proposals']
@@ -122,9 +171,26 @@ for line in sys.stdin:
                 usage['last']['totalTokens']=14
             elif FAULT=='missing_total_tokens':
                 del usage['last']['totalTokens']
+            elif FAULT=='zero_first_request':
+                usage['last']=wire_counts({key:0 for key in counts})
             def token_event(snapshot):
                 send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread1','turnId':'turn1',
                       'tokenUsage':snapshot}})
+            if FAULT in ('initial_compaction_usage','initial_compaction_only','initial_unmarked_compaction'):
+                if FAULT!='initial_unmarked_compaction':
+                    send({'method':'item/started','params':{'threadId':'thread1','turnId':'turn1',
+                          'item':{'id':'compact0','type':'contextCompaction'}}})
+                compact_usage={'last':wire_counts({key:0 for key in counts}),
+                    'total':wire_counts({key:100 for key in counts})}
+                compact_usage['last']['totalTokens']=84427
+                token_event(compact_usage)
+                if FAULT!='initial_unmarked_compaction':
+                    send({'method':'item/completed','params':{'threadId':'thread1','turnId':'turn1',
+                          'item':{'id':'compact0','type':'contextCompaction'}}})
+                    token_event(compact_usage)
+                if FAULT=='initial_compaction_only':
+                    send({'method':'turn/completed','params':{'threadId':'thread1','turn':{'id':'turn1','status':'completed'}}})
+                    continue
             token_event(usage)
             if FAULT in ('compaction_usage','unmarked_compaction_usage','compaction_changed_total'):
                 if FAULT!='unmarked_compaction_usage':
@@ -378,10 +444,26 @@ def test_current_turn_counts_all_requests_once_not_prior_thread_totals(
     assert result["job"]["session_id"] == "thread1"
 
 
+def test_resumed_turn_initial_compaction_is_context_not_an_inference_request(
+    runner_case: tuple[SupervisorJobs, FixtureProvider, dict[str, Any]], tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs, _unused, job = runner_case
+    SupervisorRunner(jobs, provider(tmp_path, monkeypatch)).run(job["job_id"])
+    jobs.queue.handle(decision(jobs.queue, "feedback", message="Continue after automatic compaction."))
+    followup = jobs.prepare(job["repository"])
+    result = SupervisorRunner(jobs, provider(tmp_path, monkeypatch, session="thread1",
+        fault="initial_compaction_usage")).run(followup["job_id"])
+    assert result["job"]["session_id"] == "thread1"
+    assert result["observation"]["usage"] == {
+        "input_tokens": 10, "cached_input_tokens": 5, "output_tokens": 3, "reasoning_output_tokens": 1}
+
+
 @pytest.mark.parametrize("fault", ["missing_total", "bad_usage_shape", "boolean_usage", "negative_usage",
                                   "oversized_usage", "total_below_last", "regressed_usage", "missing_request_usage",
                                   "unknown_usage_counter", "cache_write_usage", "bad_total_tokens", "missing_total_tokens",
-                                  "contradictory_duplicate", "unmarked_compaction_usage", "compaction_changed_total"])
+                                  "contradictory_duplicate", "unmarked_compaction_usage", "compaction_changed_total",
+                                  "initial_unmarked_compaction", "zero_first_request"])
 def test_incomplete_or_contradictory_usage_does_not_claim_completed_accounting(
     runner_case: tuple[SupervisorJobs, FixtureProvider, dict[str, Any]], tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch, fault: str,
@@ -394,8 +476,19 @@ def test_incomplete_or_contradictory_usage_does_not_claim_completed_accounting(
     assert all(record["status"] == "closed" for record in SupervisorPermissions(jobs).snapshot(job["repository"])["connections"])
 
 
+def test_compaction_without_an_observed_request_cannot_complete_accounting(
+    runner_case: tuple[SupervisorJobs, FixtureProvider, dict[str, Any]], tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs, _unused, job = runner_case
+    with pytest.raises(ReviewQueueError, match="fully observed turn"):
+        SupervisorRunner(jobs, provider(tmp_path, monkeypatch, fault="initial_compaction_only")).run(job["job_id"])
+    assert jobs.read(job["job_id"])["status"] == "failed"
+    assert not (jobs.queue.directory / "supervisor-observations" / f'{job["job_id"]}.json').exists()
+
+
 @pytest.mark.parametrize("choice", ["allow_once", "deny", "cancel"])
-@pytest.mark.parametrize("fault", ["", "missing_resolution", "denied_completed", "network_denied_completed"])
+@pytest.mark.parametrize("fault", ["", "missing_resolution", "denied_completed", "network_denied_completed", "mismatched_command", "contended_poll", "contended_request", "contended_resolution"])
 def test_real_child_waits_for_exact_durable_decision_and_records_resolution(
     runner_case: tuple[SupervisorJobs, FixtureProvider, dict[str, Any]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     choice: str, fault: str,
@@ -408,6 +501,24 @@ def test_real_child_waits_for_exact_durable_decision_and_records_resolution(
         except Exception as exc:
             results.append(exc)
     provider_instance = provider(tmp_path, monkeypatch, permission=True, fault=fault)
+    contended_polls: list[bool] = []
+    responses: list[bool] = []
+    if fault.startswith("contended_"):
+        operation = {"contended_poll": "consume", "contended_request": "request", "contended_resolution": "resolve"}[fault]
+        original_operation = getattr(SupervisorPermissions, operation)
+        def contended_operation(self: SupervisorPermissions, *arguments: Any, **keywords: Any) -> Any:
+            if not contended_polls:
+                contended_polls.append(True)
+                with run_lock(self.queue.directory):
+                    return original_operation(self, *arguments, **keywords)
+            return original_operation(self, *arguments, **keywords)
+        monkeypatch.setattr(SupervisorPermissions, operation, contended_operation)
+        original_respond = CodexAppServerTransport.respond
+        def record_response(self: CodexAppServerTransport, request: dict[str, Any], result: dict[str, Any]) -> None:
+            if request.get("method") == "item/commandExecution/requestApproval":
+                responses.append(True)
+            original_respond(self, request, result)
+        monkeypatch.setattr(CodexAppServerTransport, "respond", record_response)
     if fault == "network_denied_completed":
         program = tmp_path / "runtime.py"
         program.write_text(program.read_text().replace("'startedAtMs':1,", "'startedAtMs':1, 'networkApprovalContext':{'host':'fixture.invalid','protocol':'https'},"))
@@ -433,14 +544,16 @@ def test_real_child_waits_for_exact_durable_decision_and_records_resolution(
     finally:
         worker.join(timeout=12)
     assert not worker.is_alive() and len(results) == 1
+    if fault.startswith("contended_"):
+        assert contended_polls == [True] and responses == [True]
     saved = journal.snapshot(job["repository"])["connections"][0]
     assert saved["status"] == "closed"
-    if fault == "missing_resolution" or fault == "denied_completed" and choice in {"deny", "cancel"}:
+    if fault in {"missing_resolution", "mismatched_command"} or fault == "denied_completed" and choice in {"deny", "cancel"}:
         assert isinstance(results[0], ReviewQueueError)
         assert jobs.read(job["job_id"])["status"] == "failed"
         # A delivered decision can be resolved before a contradictory command
         # completion arrives. Retain that real delivery; reject job completion.
-        assert saved["requests"][requested["permission_id"]]["status"] == ("resolved" if fault == "denied_completed" else "invalidated")
+        assert saved["requests"][requested["permission_id"]]["status"] == ("resolved" if fault in {"denied_completed", "mismatched_command"} else "invalidated")
         assert not (jobs.queue.directory / "supervisor-observations" / f'{job["job_id"]}.json').exists()
     else:
         assert not isinstance(results[0], Exception)
@@ -471,6 +584,28 @@ def test_failed_or_misattributed_runtime_does_not_complete_or_leave_live_consent
 def schema_job(proposals: list[dict[str, Any]], retired: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {"job_id": "job_" + "a" * 32, "context_digest": "b" * 64,
             "context": {"proposals": proposals, "retired_proposals": retired or []}}
+
+
+def test_post_merge_generation_requires_an_exact_action_verdict_without_changing_ordinary_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = schema_job([])
+    runtime = provider(tmp_path, monkeypatch)
+    assert "maintenance_assessment" not in runtime._prompt(job).split("Job context/evidence")[0]
+    ordinary = _output_schema(job)["properties"]["analysis"]
+    assert "maintenance_assessment" not in ordinary["properties"]
+    job["context"]["maintenance_completion"] = {"obligation": {"action_id": "action_" + "c" * 24}}
+    analysis = _output_schema(job)["properties"]["analysis"]
+    assert "maintenance_assessment" in analysis["required"]
+    verdict = analysis["properties"]["maintenance_assessment"]
+    assert verdict["properties"]["action_id"]["enum"] == ["action_" + "c" * 24]
+    assert set(verdict["properties"]["conclusion"]["enum"]) == {"ready_for_completion", "blocked", "needs_attention"}
+    assert verdict["additionalProperties"] is False
+    return_template = runtime._prompt(job).split("Return only JSON", 1)[1].split("Job context/evidence", 1)[0]
+    assert "maintenance_assessment: {action_id, conclusion, explanation}" in return_template
+    guidance = runtime._prompt(job).split("Job context/evidence", 1)[0]
+    assert "absent local integration receipts are expected at this stage" in guidance
+    assert "watcher_validation_prepare accepts the exact obligation.action_id" in guidance
 
 
 def test_generation_schema_binds_current_recommendations_and_exact_current_or_retired_message_pairs() -> None:

@@ -179,7 +179,7 @@ class SupervisorPermissions:
                 digest: str, description: str, choices: list[str]) -> dict[str, Any]:
         if any(choice not in {"allow_once", "deny", "cancel"} for choice in choices):
             raise ReviewQueueError("Session-wide permission grants are not supported by this client.")
-        with run_lock(self.queue.directory, wait_seconds=2):
+        with run_lock(self.queue.directory):
             state = self._load()
             connection = self._connection(state, connection_id)
             if connection["turn_id"] != turn_id:
@@ -222,7 +222,9 @@ class SupervisorPermissions:
 
     def consume(self, connection_id: str, permission_id: str, digest: str) -> str | None:
         """Single-use decision; a failed send is unknown, never auto-replayed."""
-        with run_lock(self.queue.directory, wait_seconds=2):
+        # This is a provider poll, not a user transaction. Never stall protocol
+        # event reads while another short journal operation owns the lock.
+        with run_lock(self.queue.directory):
             state = self._load()
             connection = self._connection(state, connection_id)
             request = self._request(connection, permission_id)
@@ -242,7 +244,7 @@ class SupervisorPermissions:
             return request["decision"]
 
     def resolve(self, connection_id: str, permission_id: str) -> None:
-        with run_lock(self.queue.directory, wait_seconds=2):
+        with run_lock(self.queue.directory):
             state = self._load()
             connection = self._connection(state, connection_id)
             request = self._request(connection, permission_id)

@@ -43,6 +43,39 @@ def test_storage_does_not_follow_links_and_counts_hardlinks_once(directories: tu
     assert allocated_bytes(snapshot) < before + 8192
 
 
+def test_storage_scan_remains_cancellable(directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    snapshot, _cache = directories
+    for index in range(10):
+        (snapshot / str(index)).write_bytes(b'x')
+    tick = 0.0
+    def clock() -> float:
+        nonlocal tick
+        tick += .1
+        return tick
+    checks = 0
+    def cancelled() -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            raise ValidationRuntimeError('Synthetic scan cancellation')
+    monkeypatch.setattr('dependabot_watcher.validation_runtime.time.monotonic', clock)
+    with pytest.raises(ValidationRuntimeError, match='scan cancellation'):
+        allocated_bytes(snapshot, ensure_current=cancelled)
+    assert checks == 2
+
+
+def test_command_budget_includes_other_owned_copies(directories: tuple[Path, Path]) -> None:
+    snapshot, cache = directories
+    other = snapshot.parent / 'other-copy'
+    other.mkdir(mode=0o700)
+    (other / 'data').write_bytes(b'x' * 65536)
+    with pytest.raises(ValidationRuntimeError, match='storage budget'):
+        run_validation_command(snapshot, cache, 'touch should-not-start',
+            ValidationLimits(maximum_bytes=32768, minimum_free_bytes=1), ensure_current=lambda: None,
+            storage_roots=(snapshot, cache, other))
+    assert not (snapshot / 'should-not-start').exists()
+
+
 def test_sandbox_refuses_linked_and_overlapping_directories(directories: tuple[Path, Path]) -> None:
     snapshot, cache = directories
     link = snapshot.parent / 'linked'
