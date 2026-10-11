@@ -117,10 +117,21 @@ class SupervisorPermissions:
         save_private_json(self.queue.directory, _PATH, state, maximum_bytes=_MAX_BYTES)
 
     def _connection(self, state: dict[str, Any], identifier: str, *, active: bool = True) -> dict[str, Any]:
+        return self._connection_from_jobs(state, identifier, self.jobs._load(), active=active)
+
+    def _connection_from_jobs(
+        self, state: dict[str, Any], identifier: str, jobs: Mapping[str, Any], *, active: bool = True,
+    ) -> dict[str, Any]:
+        """Validate against the already-validated job snapshot under the same lock.
+
+        Ordinary action callers still load fresh jobs through _connection.
+        Snapshot projection can reuse its one locked journal read instead of
+        revalidating all historical jobs once per historical connection.
+        """
         if not _identity(identifier) or identifier not in state["connections"]:
             raise ReviewQueueError("Supervisor permission connection is unavailable.")
         connection = state["connections"][identifier]
-        job = self.jobs._job(self.jobs._load(), connection["job_id"])
+        job = self.jobs._job(jobs, connection["job_id"])
         if (job["context_digest"] != connection["context_digest"] or job["session_id"] != connection["session_id"]
                 or active and (connection["status"] != "active" or job["status"] != "running")):
             raise ReviewQueueError("Supervisor permission connection is no longer active or bound to its job.")
@@ -275,7 +286,7 @@ class SupervisorPermissions:
                 job = self.jobs._job({"jobs": jobs}, connection["job_id"])
                 if job["repository"].casefold() != repository.casefold():
                     continue
-                self._connection(state, connection["connection_id"], active=False)
+                self._connection_from_jobs(state, connection["connection_id"], {"jobs": jobs}, active=False)
                 if connection["status"] == "active" and not self._lease_is_live(connection):
                     self._retire_orphan(connection)
                     recovered = True

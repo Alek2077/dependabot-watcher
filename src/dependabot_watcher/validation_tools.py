@@ -25,6 +25,7 @@ from .supervisor_workspace import _git
 from .review_queue import ReviewQueueError
 from .validation_runtime import ValidationLimits, ValidationRuntimeError, allocated_bytes, run_validation_command
 from .validation_snapshot import prepare_validation_snapshot
+from .validation_evidence import ValidationEvidence
 
 
 def validation_tool_specs() -> list[dict[str, Any]]:
@@ -60,6 +61,7 @@ class ValidationTools:
         scope = hashlib.sha256(job['repository'].casefold().encode()).hexdigest()
         self.cache = ensure_private_directory(state_directory / 'validation-cache' / scope)
         self._cache_lease = ensure_private_directory(state_directory / 'validation-cache-leases' / scope)
+        self._evidence = ValidationEvidence(state_directory / 'validation-evidence' / scope, policy)
         self._ensure_current = ensure_current
         self._reserve_paths = storage_reserve_paths + tuple(Path(path) for path in options.storage_reserve_paths)
         self._cancelled = threading.Event()
@@ -68,6 +70,7 @@ class ValidationTools:
         self._prepared: dict[str, tuple[Path, str, dict[str, str]]] = {}
         self._unadmitted: set[Path] = set()
         self._revision_caches: dict[str, Path] = {}
+        self._source_trees: dict[str, str] = {}
         self._fingerprints: dict[str, dict[str, str]] = {}
         self._source_metadata: dict[str, dict[str, tuple[int, int, int, int]]] = {}
         self._call_bindings: dict[str, dict[str, str]] = {}
@@ -79,6 +82,10 @@ class ValidationTools:
             raise ValidationRuntimeError('Validation consumer stopped; owned work was cancelled.')
         self._ensure_current()
 
+    def _storage_roots(self) -> tuple[Path, ...]:
+        # Different commits can name the same source tree/cache.
+        return tuple(dict.fromkeys((self.root, *self._revision_caches.values())))
+
     def ensure_current(self, *, ensure_operation: Callable[[], None] | None = None) -> None:
         self.ensure_authority()
         current = ensure_operation or self.ensure_authority
@@ -88,7 +95,7 @@ class ValidationTools:
             if shutil.disk_usage(path).free < self.limits.minimum_free_bytes:
                 raise ValidationRuntimeError('Validation host-volume reserve is insufficient.')
         if sum(allocated_bytes(path, ensure_current=current)
-               for path in (self.root, *self._revision_caches.values())) > self.limits.maximum_bytes:
+               for path in self._storage_roots()) > self.limits.maximum_bytes:
             raise ValidationRuntimeError('Validation job reached its aggregate storage budget.')
         current()
 
@@ -157,10 +164,11 @@ class ValidationTools:
                 try:
                     with run_lock(self._cache_lease):
                         if sum(allocated_bytes(root, ensure_current=cleanup_current)
-                               for root in (self.root, *self._revision_caches.values())) > self.limits.maximum_bytes:
+                               for root in self._storage_roots()) > self.limits.maximum_bytes:
                             cache = self._revision_caches[sha]
                             if (path.is_symlink() or path.parent != self.root
-                                    or cache.is_symlink() or cache.parent != self.cache or cache.name != sha):
+                                    or cache.is_symlink() or cache.parent != self.cache
+                                    or cache.name != 'tree_' + self._source_trees[sha]):
                                 raise ValidationRuntimeError('Over-budget storage identity changed; files were preserved.')
                             shutil.rmtree(path)
                             del self._prepared[identifier]
@@ -171,8 +179,10 @@ class ValidationTools:
                             # Reset the offending revision cache even if copy
                             # removal alone briefly brings usage under budget:
                             # a nearly-full cache can prevent a fresh copy.
-                            shutil.rmtree(cache)
-                            self._revision_caches[sha] = ensure_private_directory(cache)
+                            if not any(self._revision_caches[other_sha] == cache
+                                       for _other_path, other_sha, _other_selection in self._prepared.values()):
+                                shutil.rmtree(cache)
+                                self._revision_caches[sha] = ensure_private_directory(cache)
                 except (OSError, RuntimeStateError) as exc:
                     self._ensure_current()
                     raise ValidationRuntimeError('Over-budget cleanup could not complete; remaining owned files were preserved.') from exc
@@ -203,15 +213,22 @@ class ValidationTools:
 
             result = run_validation_command(path, self._revision_caches[sha], arguments['command'], self.limits,
                 ensure_current=current, storage_reserve_paths=self._reserve_paths,
-                storage_roots=(self.root, *self._revision_caches.values()))
+                storage_roots=self._storage_roots())
             receipt = {**asdict(result), 'job_id': self.job['job_id'],
                 'context_digest': self.job['context_digest'], 'validation_id': identifier,
-                **selection, 'head_sha': sha, 'network_enabled': self.limits.network_enabled}
+                **selection, 'head_sha': sha, 'source_tree_sha': self._source_trees[sha],
+                'network_enabled': self.limits.network_enabled}
             receipt['tracked_source_changed'] = self._source_changed(
                 path, self._fingerprints[identifier], self._source_metadata[identifier], ensure_current=current)
             transient_output = receipt.pop('output')
             receipt['operation_id'] = 'validation_' + uuid.uuid4().hex
             save_private_json(self.root, Path(receipt['operation_id'] + '.json'), receipt)
+            try:
+                self._evidence.record(receipt)
+            except (OSError, RuntimeStateError):
+                # The exact execution receipt above remains authoritative.
+                # Losing an optional reuse index must not erase real results.
+                pass
             self.ensure_current(ensure_operation=current)
             current()
             return {**receipt, 'output': transient_output}
@@ -261,17 +278,35 @@ class ValidationTools:
                 self.ensure_current(ensure_operation=current)
                 raise ValidationRuntimeError('Exact validation revision could not be acquired; no checks ran.') from exc
         self.ensure_current(ensure_operation=current)
-        # Untrusted validation writes never flow from one PR revision's cache
-        # into another. Repeated jobs for the same exact revision can reuse it.
-        self._revision_caches[sha] = ensure_private_directory(self.cache / sha)
+        # A squash merge can change commit identity without changing any source.
+        # Share only when Git confirms the entire raw tree, including modes and
+        # lockfiles, is identical. Different source trees never share writable
+        # caches. This is cache reuse, not permission to reuse test conclusions.
+        try:
+            tree = _git(self.workspace, 'rev-parse', '--verify', sha + '^{tree}',
+                        ensure_current=current, timeout_seconds=self.limits.timeout_seconds).strip()
+        except ReviewQueueError as exc:
+            raise ValidationRuntimeError('Validation source tree identity is unavailable.') from exc
+        if re.fullmatch(r'[a-f0-9]{40}|[a-f0-9]{64}', tree) is None:
+            raise ValidationRuntimeError('Validation source tree identity is unavailable.')
+        self._source_trees[sha] = tree
+        self._revision_caches[sha] = ensure_private_directory(self.cache / ('tree_' + tree))
         source_headroom = min(32 * 1024**2, self.limits.maximum_bytes // 2)
         occupied = sum(allocated_bytes(root, ensure_current=current)
-                       for root in (self.root, *self._revision_caches.values()))
+                       for root in self._storage_roots())
         if occupied > self.limits.maximum_bytes - source_headroom:
             # A retained cache is optional. Leave bounded room for source
             # preparation instead of admitting an inevitably unusable copy.
-            shutil.rmtree(self._revision_caches[sha])
-            self._revision_caches[sha] = ensure_private_directory(self.cache / sha)
+            cache = self._revision_caches[sha]
+            if any(self._revision_caches[prepared_sha] == cache
+                   for _path, prepared_sha, _selection in self._prepared.values()):
+                raise ValidationRuntimeError('Preparation needs storage headroom; an active validation cache was preserved.')
+            shutil.rmtree(cache)
+            self._revision_caches[sha] = ensure_private_directory(cache)
+            occupied = sum(allocated_bytes(root, ensure_current=current)
+                           for root in self._storage_roots())
+            if occupied > self.limits.maximum_bytes - source_headroom:
+                raise ValidationRuntimeError('Preparation needs storage headroom; existing validation storage was preserved.')
         self.ensure_current(ensure_operation=current)
         identifier = 'validation_' + uuid.uuid4().hex
         path = self.root / identifier
@@ -284,7 +319,7 @@ class ValidationTools:
             # Bind the private snapshot receipt before stripping fingerprints
             # from the model-visible result. Selection comes only from this job.
             save_private_json(self.root, Path(identifier + '.json'),
-                {**receipt, **selection, 'validation_id': identifier,
+                {**receipt, **selection, 'source_tree_sha': tree, 'validation_id': identifier,
                  'job_id': self.job['job_id'], 'context_digest': self.job['context_digest']})
             self.ensure_current(ensure_operation=current)
             fingerprints = cast(dict[str, str], receipt.pop('source_fingerprints'))
@@ -314,7 +349,9 @@ class ValidationTools:
         self._fingerprints[identifier] = fingerprints
         self._source_metadata[identifier] = source_metadata
         self._unadmitted.remove(path)
-        return {**receipt, 'validation_id': identifier, **selection,
+        return {**receipt, 'validation_id': identifier, **selection, 'source_tree_sha': tree,
+                'cache_scope': 'repository_and_identical_source_tree',
+                'historical_validation': self._evidence.historical(tree),
                 'job_id': self.job['job_id'], 'context_digest': self.job['context_digest'],
                 'network_enabled': self.limits.network_enabled,
                 'maximum_bytes': self.limits.maximum_bytes, 'minimum_free_bytes': self.limits.minimum_free_bytes,

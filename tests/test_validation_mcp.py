@@ -54,7 +54,8 @@ def test_saved_merge_job_admits_action_validation_and_rejects_context_drift(
     queue.record_workspace_evidence(proof)
     jobs = SupervisorJobs(queue)
     job = jobs.prepare('example-org/example-app')
-    assert job['context']['validation_capability_revision'] == 'merged_action_v1'
+    assert job['context']['validation_capability_revision'] == 'tree_cache_history_v2'
+    _validate_context({**job['context'], 'validation_capability_revision': 'merged_action_v1'})
     legacy = {key: value for key, value in job['context'].items()
               if key != 'validation_capability_revision'}
     _validate_context(legacy)  # Existing saved conversations/journals remain readable.
