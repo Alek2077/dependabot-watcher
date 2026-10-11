@@ -606,6 +606,9 @@ def test_post_merge_generation_requires_an_exact_action_verdict_without_changing
     guidance = runtime._prompt(job).split("Job context/evidence", 1)[0]
     assert "absent local integration receipts are expected at this stage" in guidance
     assert "watcher_validation_prepare accepts the exact obligation.action_id" in guidance
+    assert "Prioritize this action's required follow-up" in guidance
+    assert "A maintenance batch is a proposed sequence, not authority to merge several PRs" in guidance
+    assert "Refresh after each merge" in guidance
 
 
 def test_generation_schema_binds_current_recommendations_and_exact_current_or_retired_message_pairs() -> None:

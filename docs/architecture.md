@@ -62,6 +62,8 @@ saved JSON plan -> live replan -> exact material-evidence match -> approval toke
 
 ## Ownership boundaries
 
+Validation cache reuse is scoped to one repository and an identical raw Git source tree, including tracked modes and dependency locks; commits with identical trees may share a private cache, but different trees do not. Disposable copies and execution receipts retain their exact commit/action bindings. `validation_evidence.py` maintains bounded controller-owned successful execution provenance outside the sandbox mounts, without raw commands or output. Preparation can disclose matching source/policy history, explicitly not fresh execution or established environment equivalence. The agent must assess environmental, external-input and policy validity before reusing a conclusion; commands are never silently skipped. This development increment does not introduce batch execution authority.
+
 - `config.py` owns schema versioning, validation, platform config paths, collection bounds, repository identities, and user path-policy overrides.
 - `setup.py` owns validated setup choices and exclusive creation of one non-secret user profile. It does not overwrite existing configuration or invoke a model.
 - `diagnostics.py` owns bounded executable/auth/repository/configured-branch readiness checks and Dependabot ecosystem support reporting. Provider commands are adapter-owned rather than configuration-selected, repository YAML is safely bounded, and raw command output is not retained in reports.

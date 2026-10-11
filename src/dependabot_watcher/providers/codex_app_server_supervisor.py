@@ -316,6 +316,8 @@ class CodexAppServerSupervisor:
             "For any needed merged-revision validation, watcher_validation_prepare accepts the exact obligation.action_id; "
             "the backend binds it to the recorded merge commit. Decide what checks or equivalence evidence are relevant "
             "to this action; investigating other candidates is not itself proof about the merged action. "
+            "Prioritize this action's required follow-up and completion handoff before optional deep validation of "
+            "later candidates. Compare another candidate first only when needed to resolve the current action. "
             "This verdict does not attest local integration or deployment health and authorizes no mutation. "
             "Explain blockers or missing evidence honestly. "
         ) if completion is not None else ""
@@ -330,6 +332,12 @@ class CodexAppServerSupervisor:
                 'probe changes are permitted only inside these validation copies within the saved limits. '
                 'Keep investigation reads in the trusted maintenance workspace; do not run untrusted PR code, install '
                 'dependencies or change files there. Reuse prepared copies and caches when appropriate. '
+                'The returned source_tree_sha identifies source equivalence, not environment or service equivalence. '
+                'historical_validation contains controller-recorded successful command/output hashes and provenance, '
+                'not new executions. Match prior commands/results and verify relevant environment, external inputs '
+                'and policy before relying on them; require fresh execution when their validity is uncertain. '
+                'Retain attributable prior validation when still relevant; do not repeat whole installs/builds merely '
+                'because a squash merge changed the commit ID. Explain reused evidence and any changes requiring fresh checks. '
                 'Omitted files, unavailable tools, failed checks and resource limits are evidence gaps, not permission '
                 'to bypass isolation. Do not claim validation beyond the actual tested revision and execution results. ')
         prompt = (
@@ -344,6 +352,10 @@ class CodexAppServerSupervisor:
             "reuse substantive prior decisions when still applicable, and verify checks against the current base. "
             "Account for overlapping updates and repository-specific release policy; after any authorized action, refresh "
             "PR/alert evidence and workspace context before deciding dependent work. "
+            "Choose validation depth and batch checkpoints from the user's harness, changed surfaces, overlap and risk. "
+            "A maintenance batch is a proposed sequence, not authority to merge several PRs. Refresh after each merge; "
+            "reuse still-valid investigation and use deeper checks where uncertainty or policy requires them, rather "
+            "than imposing a full rebuild on every update or deferring required checks until after unvalidated merges. "
             "Adapt completion and synchronization recommendations to the user's trusted harness and selected workflow, "
             "not the maintainer's conventions. Remote merge, maintenance-copy refresh, developer-checkout integration "
             "and deployment health are separate outcomes. Configured local_sync targets and local_sync_observations "

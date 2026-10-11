@@ -464,10 +464,10 @@ class ReviewQueue:
         }
         if (self.config.supervisor.validation_authorized
                 and self.config.supervisor.validation.preparation_authorized):
-            # An assessment made before merged-action validation existed cannot
-            # cover the upgraded tool contract. This changes evidence freshness,
+            # An assessment made before this validation contract cannot
+            # cover the upgraded tools/guidance. This changes job freshness,
             # not conversation identity or any saved permission.
-            context["validation_capability_revision"] = "merged_action_v1"
+            context["validation_capability_revision"] = "tree_cache_history_v2"
         if configured.local_sync:
             # Queue/error validation is shared by local_sync; defer the import
             # to avoid the module initialization cycle. Caller holds state lock.

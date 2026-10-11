@@ -50,6 +50,51 @@ def ask(journal: SupervisorPermissions, connection: str, **changes: Any) -> dict
     return journal.request(connection, **{**params, **changes})
 
 
+@pytest.mark.parametrize("historical_connections", [0, 24])
+def test_permission_snapshot_reuses_validated_jobs_for_historical_bindings(
+    permissions_case: tuple[SupervisorJobs, SupervisorPermissions, str],
+    monkeypatch: pytest.MonkeyPatch, historical_connections: int,
+) -> None:
+    jobs, journal, connection = permissions_case
+    state = journal._load()
+    for index in range(historical_connections):
+        identifier = f"connection_history_{index}"
+        state["connections"][identifier] = {
+            **state["connections"][connection], "connection_id": identifier,
+            "status": "closed", "requests": {},
+        }
+    journal._save(state)
+    reads = 0
+    original = SupervisorJobs._load
+
+    def counted(self: SupervisorJobs) -> dict[str, Any]:
+        nonlocal reads
+        reads += 1
+        return original(self)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(SupervisorJobs, "_load", counted)
+        result = journal.snapshot("example-org/example-app")
+    assert len(result["connections"]) == historical_connections + 1
+    assert reads == 2, "History projection reloaded the complete job journal for each connection"
+    assert next(item for item in result["connections"] if item["connection_id"] == connection)["live_connection_confirmed"]
+
+
+def test_permission_snapshot_still_rejects_a_closed_connection_with_wrong_job_binding(
+    permissions_case: tuple[SupervisorJobs, SupervisorPermissions, str],
+) -> None:
+    _, journal, connection = permissions_case
+    state = journal._load()
+    identifier = "connection_history_wrong"
+    state["connections"][identifier] = {
+        **state["connections"][connection], "connection_id": identifier,
+        "status": "closed", "requests": {}, "context_digest": "0" * 64,
+    }
+    journal._save(state)
+    with pytest.raises(ReviewQueueError, match="bound to its job"):
+        journal.snapshot("example-org/example-app")
+
+
 def test_new_instruction_receipt_blocks_an_already_saved_permission_decision(
     file_bound_queue: tuple[ReviewQueue, Path],
 ) -> None:

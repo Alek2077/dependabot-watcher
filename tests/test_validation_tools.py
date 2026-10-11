@@ -392,7 +392,7 @@ def test_storage_limit_returns_blocked_and_allows_smaller_followup(tmp_path: Pat
         tools.close()
 
 
-def test_validation_caches_do_not_cross_revision_boundaries(tmp_path: Path) -> None:
+def test_validation_caches_do_not_cross_source_tree_boundaries(tmp_path: Path) -> None:
     tools, job, workspace = case(tmp_path)
     original = job['context']['proposals'][0]['proposal_id']
     (workspace / 'app.js').write_text('console.log("new revision")\n')
@@ -416,12 +416,120 @@ def test_validation_caches_do_not_cross_revision_boundaries(tmp_path: Path) -> N
         tools.close()
 
 
-@pytest.mark.parametrize('combined', [False, True])
-def test_nearly_full_retained_cache_leaves_room_for_preparation(tmp_path: Path, combined: bool) -> None:
+@pytest.mark.parametrize('separate_jobs', [False, True])
+def test_equivalent_commit_trees_reuse_cache_but_not_working_copies(
+    tmp_path: Path, separate_jobs: bool,
+) -> None:
+    tools, job, workspace = case(tmp_path)
+    original = job['context']['proposals'][0]['proposal_id']
+    git(workspace, 'commit', '--allow-empty', '-m', 'Same source, distinct commit')
+    sha = git(workspace, 'rev-parse', 'HEAD')
+    other = 'proposal_' + 'd' * 16
+    job['context']['proposals'].append({'proposal_id': other,
+        'step': {'kind': 'pull_request', 'identity': {'head_sha': sha}}})
+    try:
+        tools.submit('prepare1', 'watcher_validation_prepare', {'proposal_id': original})
+        first = wait(tools)
+        tools.submit('run1', 'watcher_validation_run', {'validation_id': first['validation_id'],
+            'command': 'printf cached > /cache/same_tree; printf disposable > local_probe'})
+        assert wait(tools)['exit_code'] == 0
+        if separate_jobs:
+            tools.close()
+            job = {**job, 'job_id': 'job_' + 'e' * 32}
+            tools = ValidationTools(job, tmp_path / 'state', lambda: None)
+        tools.submit('prepare2', 'watcher_validation_prepare', {'proposal_id': other})
+        second = wait(tools)
+        assert first['head_sha'] != second['head_sha']
+        assert first['source_tree_sha'] == second['source_tree_sha']
+        assert first['validation_id'] != second['validation_id']
+        assert second['cache_scope'] == 'repository_and_identical_source_tree'
+        assert second['historical_validation']['fresh_execution'] is False
+        assert second['historical_validation']['environment_equivalence'] == 'not_established'
+        assert len(second['historical_validation']['results']) == 1
+        assert second['historical_validation']['results'][0]['head_sha'] == first['head_sha']
+        assert len(tools._storage_roots()) == 2
+        tools.submit('run2', 'watcher_validation_run', {'validation_id': second['validation_id'],
+            'command': 'test "$(cat /cache/same_tree)" = cached && test ! -e local_probe'})
+        result = wait(tools)
+        assert result['exit_code'] == 0
+        assert result['source_tree_sha'] == first['source_tree_sha']
+        assert result['head_sha'] == sha  # Cache reuse does not rewrite execution identity.
+    finally:
+        tools.close()
+
+
+def test_invalid_git_tree_identity_refuses_cache_adoption(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tools, job, _workspace = case(tmp_path)
+    actual = workspace_git
+    def identity(workspace: Path, *arguments: str, **kwargs: Any) -> str:
+        return '../untrusted' if arguments[0] == 'rev-parse' else actual(workspace, *arguments, **kwargs)
+    monkeypatch.setattr('dependabot_watcher.validation_tools._git', identity)
+    try:
+        tools.submit('prepare1', 'watcher_validation_prepare',
+                     {'proposal_id': job['context']['proposals'][0]['proposal_id']})
+        assert wait(tools)['status'] == 'blocked'
+        assert not list(tools.cache.iterdir())
+    finally:
+        tools.close()
+
+
+@pytest.mark.parametrize('equivalent', [False, True])
+def test_equivalent_preparation_preserves_active_cache_when_headroom_is_low(tmp_path: Path, equivalent: bool) -> None:
+    tools, job, workspace = case(tmp_path)
+    tools.limits = ValidationLimits(maximum_bytes=1024 * 1024)
+    original = job['context']['proposals'][0]['proposal_id']
+    if not equivalent:
+        (workspace / 'different.txt').write_text('different source')
+        git(workspace, 'add', 'different.txt')
+    git(workspace, 'commit', '--allow-empty', '-m', 'Additional source revision')
+    other = 'proposal_' + 'd' * 16
+    job['context']['proposals'].append({'proposal_id': other,
+        'step': {'kind': 'pull_request', 'identity': {'head_sha': git(workspace, 'rev-parse', 'HEAD')}}})
+    try:
+        tools.submit('prepare1', 'watcher_validation_prepare', {'proposal_id': original})
+        prepared = wait(tools)
+        tools.submit('run1', 'watcher_validation_run', {'validation_id': prepared['validation_id'],
+            'command': 'dd if=/dev/zero of=/cache/keep bs=1024 count=600 2>/dev/null'})
+        assert wait(tools)['exit_code'] == 0
+        tools.submit('prepare2', 'watcher_validation_prepare', {'proposal_id': other})
+        refused = wait(tools)
+        assert refused['status'] == 'blocked' and 'preserved' in refused['reason']
+        assert len(tools._prepared) == 1
+        assert tools._revision_caches[prepared['head_sha']].name == 'tree_' + prepared['source_tree_sha']
+        tools.submit('run2', 'watcher_validation_run', {'validation_id': prepared['validation_id'],
+            'command': 'test -f /cache/keep'})
+        assert wait(tools)['exit_code'] == 0
+    finally:
+        tools.close()
+
+
+def test_over_budget_copy_cleanup_preserves_shared_active_cache(tmp_path: Path) -> None:
     tools, job, _workspace = case(tmp_path)
     tools.limits = ValidationLimits(maximum_bytes=1024 * 1024)
+    proposal = job['context']['proposals'][0]['proposal_id']
+    try:
+        tools.submit('prepare1', 'watcher_validation_prepare', {'proposal_id': proposal})
+        first = wait(tools)
+        tools.submit('prepare2', 'watcher_validation_prepare', {'proposal_id': proposal})
+        second = wait(tools)
+        tools.submit('run1', 'watcher_validation_run', {'validation_id': first['validation_id'],
+            'command': 'printf keep > /cache/keep; dd if=/dev/zero of=oversized bs=1048576 count=2 2>/dev/null'})
+        assert wait(tools)['status'] == 'blocked'
+        assert first['validation_id'] not in tools._prepared
+        assert second['validation_id'] in tools._prepared
+        tools.submit('run2', 'watcher_validation_run', {'validation_id': second['validation_id'],
+            'command': 'test "$(cat /cache/keep)" = keep'})
+        assert wait(tools)['exit_code'] == 0
+    finally:
+        tools.close()
+
+
+@pytest.mark.parametrize('combined', [False, True])
+def test_nearly_full_retained_cache_leaves_room_for_preparation(tmp_path: Path, combined: bool) -> None:
+    tools, job, workspace = case(tmp_path)
+    tools.limits = ValidationLimits(maximum_bytes=1024 * 1024)
     sha = job['context']['proposals'][0]['step']['identity']['head_sha']
-    cache = tools.cache / sha
+    cache = tools.cache / ('tree_' + git(workspace, 'rev-parse', sha + '^{tree}'))
     cache.mkdir(mode=0o700)
     (cache / 'near_limit').write_bytes(b'0' * ((200 if combined else 1000) * 1024))
     if combined:
@@ -430,8 +538,14 @@ def test_nearly_full_retained_cache_leaves_room_for_preparation(tmp_path: Path, 
         tools.submit('prepare1', 'watcher_validation_prepare',
                      {'proposal_id': job['context']['proposals'][0]['proposal_id']})
         result = wait(tools)
-        assert 'validation_id' in result
+        if combined:
+            assert result['status'] == 'blocked' and 'headroom' in result['reason']
+            assert (tools.root / 'prior_owned_evidence').exists()
+            assert not tools._prepared and not tools._unadmitted
+        else:
+            assert 'validation_id' in result
         assert not (cache / 'near_limit').exists()
+        assert tools._revision_caches[sha] == cache and cache.is_dir()
     finally:
         tools.close()
 

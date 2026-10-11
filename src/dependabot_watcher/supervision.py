@@ -107,7 +107,7 @@ def _validate_context(context: Mapping[str, Any]) -> None:
             or not isinstance(context["retired_proposals"], list) or len(context["retired_proposals"]) > 100):
         raise ReviewQueueError("Supervisor context has an invalid bounded schema.")
     if ("validation_capability_revision" in context
-            and context["validation_capability_revision"] != "merged_action_v1"):
+            and context["validation_capability_revision"] not in ("merged_action_v1", "tree_cache_history_v2")):
         raise ReviewQueueError("Supervisor validation capability revision is invalid.")
     completion = context.get("maintenance_completion")
     if completion is not None:

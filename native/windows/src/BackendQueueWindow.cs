@@ -854,7 +854,7 @@ internal sealed partial class BackendQueueWindow : Window
             _agentRecommendation.Foreground = SystemColors.WindowTextBrush;
             _nextStep.Text = view.ActionGuidance(item, _executionEnabled);
             var followUp = item.Kind == "PR" && item.Step["action"]?.GetValue<string>() == "validate_then_merge"
-                ? "After an approved merge: Watcher records the outcome and refreshes PR/alert evidence.\nNot included: updating your local checkout, publishing repairs or promoting to production."
+                ? "After an approved merge: Watcher records the outcome and refreshes PR/alert evidence. Configured supervision reassesses the updated state. Selected local updates, when configured, need their own exact confirmation.\nNot included: publishing repairs, promoting to production or verifying production health."
                 : "Investigation may identify tests, repairs or a related PR. It does not itself resolve this item or authorize changes.";
             var actionDetail = item.Kind == "PR" && item.Step["action"]?.GetValue<string>() == "validate_then_merge"
                 ? $"Merge review: PR #{item.Identity["number"]} into {NativeDisplayText.Escape(item.Identity["expected_base"]?.GetValue<string>() ?? "the configured branch")}. The next screen checks the exact head and merge method. A separate confirmation performs the merge."
