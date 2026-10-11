@@ -18,7 +18,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 from .config import SupervisorWorkspaceConfig, WatcherConfig, normalize_repository_name
@@ -32,7 +32,7 @@ _SHA = re.compile(r"[a-fA-F0-9]{40}|[a-fA-F0-9]{64}")
 
 
 def _git(workspace: Path, *arguments: str, overrides: tuple[str, ...] = (), empty_ok: bool = False,
-         timeout_seconds: int = 15) -> str:
+         timeout_seconds: int = 15, ensure_current: Callable[[], None] | None = None) -> str:
     """Bound both pipes and lifetime; discard diagnostics and remote URLs."""
     executable = shutil.which("git")
     if executable is None:
@@ -56,7 +56,9 @@ def _git(workspace: Path, *arguments: str, overrides: tuple[str, ...] = (), empt
             for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
                 os.set_blocking(stream.fileno(), False)
                 selector.register(stream, selectors.EVENT_READ, name)
-            while selector.get_map():
+            while selector.get_map() or process.poll() is None:
+                if ensure_current is not None:
+                    ensure_current()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise ReviewQueueError("Supervisor workspace Git verification timed out.")

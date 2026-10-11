@@ -4,14 +4,14 @@ import copy
 import hashlib
 import json
 import re
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .advisory import advisory_action_policy
-from .config import ConfigError, SupervisorValidationConfig, WatcherConfig, load_config, normalize_repository_name
-from .planning import PlanningError, validate_plan_identities
+from .advisory import advisory_action_policy, advise_from_inspection
+from .config import AdvisoryConfig, ConfigError, SupervisorValidationConfig, WatcherConfig, load_config, normalize_repository_name
+from .planning import PlanningError, plan_from_advisory, validate_plan_identities
 from .runtime_state import (
     RuntimeStateError,
     load_private_json,
@@ -233,6 +233,9 @@ class ReviewQueue:
         self, config: WatcherConfig, state_directory: Path,
         *, clock: Callable[[], datetime] = _utc_now, config_path: Path | None = None,
     ) -> None:
+        # Local import avoids the local-sync/review-queue error-type cycle.
+        from .local_sync import validate_control_locations
+        validate_control_locations(config, config_path, state_directory)
         self.config = config
         self.directory = state_directory.expanduser().absolute()
         self.clock = clock
@@ -298,6 +301,8 @@ class ReviewQueue:
         """Load only the reconciler-owned current plan, never a caller's path."""
         latest = load_run_state(self.directory)["latest_plan"]
         if not latest or latest.get("plan_id") is None:
+            if latest and latest.get("revoked_reason") == "no_work":
+                return self._empty_collection_plan(latest)
             return None
         plan_id = latest.get("plan_id")
         if not isinstance(plan_id, str) or not _PLAN_ID.fullmatch(plan_id):
@@ -317,6 +322,49 @@ class ReviewQueue:
         names = [item["repository"].casefold() for item in plan["repositories"]]
         if len(names) != len(set(names)):
             raise ReviewQueueError("Latest plan repeats a repository identity.")
+        return plan
+
+    def _empty_collection_plan(self, latest: Mapping[str, Any]) -> dict[str, Any]:
+        """Expose fresh empty evidence without restoring an executable plan.
+
+        The reconciler still revokes execution authority through latest_plan's
+        null plan_id. An empty queue nevertheless needs its exact base and alert
+        evidence for post-merge reasoning and selected local completion.
+        """
+        from .reconciliation import evidence_revision
+        state = load_run_state(self.directory)
+        attempt = state.get("last_attempt") or {}
+        report = load_private_json(self.directory, Path("latest-run.json"), maximum_bytes=10_000_000)
+        inspection = report.get("inspection")
+        if (attempt.get("outcome") not in {"no_work", "unchanged"}
+                or report.get("outcome") != attempt.get("outcome")
+                or report.get("status") != "complete" or report.get("run_id") != attempt.get("run_id")
+                or report.get("evidence_revision") != latest.get("evidence_revision")
+                or not isinstance(inspection, dict) or inspection.get("status") != "complete"
+                or evidence_revision(inspection) != latest.get("evidence_revision")):
+            raise ReviewQueueError("Empty-queue evidence does not match the latest complete collection; refresh before continuing.")
+        # Pure model-off transformation: neither optional advice nor a provider
+        # is invoked while reading status, regardless of configured advice mode.
+        # Keep the material context stable across unchanged polls, just as a
+        # retained nonempty plan does. Freshness is checked independently from
+        # last_attempt.completed_at, not these original observation labels.
+        observed_at = latest.get("recorded_at")
+        if not isinstance(observed_at, str) or not observed_at:
+            raise ReviewQueueError("Empty-queue evidence has no original observation time; collect again.")
+        stable_inspection = copy.deepcopy(inspection)
+        stable_inspection["generated_at"] = observed_at
+        try:
+            for repository in stable_inspection["repositories"]:
+                repository["evidence_snapshot"]["observed_at"] = observed_at
+            plan = plan_from_advisory(advise_from_inspection(replace(self.config, advisory=AdvisoryConfig()), stable_inspection))
+        except (PlanningError, ValueError, TypeError, KeyError) as exc:
+            raise ReviewQueueError("Empty-queue evidence is invalid; collect again before continuing.") from exc
+        configured = {item.name.casefold(): item.default_branch for item in self.config.repositories}
+        repositories = plan["repositories"]
+        if (plan["status"] != "complete" or {item["repository"].casefold() for item in repositories} != set(configured)
+                or any(item["status"] != "complete" or item["recommended_order"]
+                       or item["expected_base"] != configured[item["repository"].casefold()] for item in repositories)):
+            raise ReviewQueueError("Empty-queue evidence differs from the configured repository scope; collect again.")
         return plan
 
     def supervision_context(self, repository: str) -> dict[str, Any]:
@@ -395,9 +443,14 @@ class ReviewQueue:
         workspace = state["workspace_evidence"].get(key)
         if workspace is not None and not _workspace_matches_context(workspace, supervisor, repository_plan, repository):
             workspace = None
+        repository_config = asdict(configured)
+        if configured.completion_policy == "remote_only":
+            repository_config.pop("completion_policy")
+        if not configured.local_sync:
+            repository_config.pop("local_sync")
         context = {
             "schema_version": 1, "repository": repository,
-            "repository_config": asdict(configured),
+            "repository_config": repository_config,
             "path_policy": asdict(self.config.path_policy),
             "operation": asdict(self.config.operation),
             "advisory": asdict(self.config.advisory),
@@ -409,6 +462,17 @@ class ReviewQueue:
             "proposals": proposals, "retired_proposals": retired,
             "mutation_authorized": False,
         }
+        if (self.config.supervisor.validation_authorized
+                and self.config.supervisor.validation.preparation_authorized):
+            # An assessment made before merged-action validation existed cannot
+            # cover the upgraded tool contract. This changes evidence freshness,
+            # not conversation identity or any saved permission.
+            context["validation_capability_revision"] = "merged_action_v1"
+        if configured.local_sync:
+            # Queue/error validation is shared by local_sync; defer the import
+            # to avoid the module initialization cycle. Caller holds state lock.
+            from .local_sync import synchronization_observations
+            context["local_sync_observations"] = synchronization_observations(self.config, self.directory, repository)
         # The refreshed collector's bounded execution observations explain why
         # an earlier PR disappeared. Absence from the queue alone is not proof
         # of a successful merge, nor is an old action new execution authority.
@@ -435,6 +499,12 @@ class ReviewQueue:
             prior = previous_assessment(self, context)
             if prior is not None:
                 context["previous_assessment"] = prior
+        # Action journal validation depends on queue types. Runtime routing
+        # avoids an initialization cycle; this projection never runs work.
+        from .review_actions import completion_purpose
+        purpose = completion_purpose(self.directory, repository, self.clock())
+        if purpose is not None:
+            context["maintenance_completion"] = purpose
         return context
 
     def current_selection(self, proposal_id: str, version: int) -> tuple[dict[str, Any], dict[str, Any]]:

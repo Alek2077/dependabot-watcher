@@ -71,6 +71,10 @@ class CodexAppServerSettings:
             if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", session_id):
                 raise ReviewQueueError("Resume must identify one backend-owned Codex session.")
             params["threadId"] = session_id
+            # Do not transport an ever-growing transcript back to the client.
+            # Codex still restores the conversation for inference on resume.
+            params["excludeTurns"] = True
+            params["initialTurnsPage"] = {"limit": 64, "sortDirection": "desc", "itemsView": "notLoaded"}
         if self.access == "restricted":
             params.update(permissions=self.permission_profile, approvalPolicy="on-request", approvalsReviewer="user")
         elif self.access == "full":
@@ -86,6 +90,12 @@ class CodexAppServerSettings:
         thread = response.get("thread")
         sandbox = response.get("sandbox")
         approval = response.get("approvalPolicy")
+        approval_fields = {"sandbox_approval", "rules", "mcp_elicitations", "request_permissions", "skill_approval"}
+        raw_granular = approval.get("granular") if isinstance(approval, dict) else None
+        granular: dict[str, Any] = raw_granular if isinstance(raw_granular, dict) else {}
+        granular_valid = (isinstance(approval, dict) and isinstance(raw_granular, dict) and set(approval) == {"granular"}
+                          and {"sandbox_approval", "rules", "mcp_elicitations"} <= set(granular)
+                          and all(type(granular[key]) is bool for key in approval_fields & set(granular)))
         instructions = response.get("instructionSources")
         if (not isinstance(thread, dict) or not isinstance(thread.get("id"), str)
                 or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", thread["id"])
@@ -99,7 +109,7 @@ class CodexAppServerSettings:
                 or sandbox.get("type") not in {"readOnly", "workspaceWrite", "dangerFullAccess", "externalSandbox"}
                 or not isinstance(instructions, list) or any(not isinstance(p, str) for p in instructions)
                 or not (approval in ("never", "on-request", "untrusted") if isinstance(approval, str)
-                        else isinstance(approval, dict) and isinstance(approval.get("granular"), dict))):
+                        else granular_valid)):
             raise ReviewQueueError("Codex returned incomplete or different effective supervisor settings.")
         active = response.get("activePermissionProfile")
         environments = thread.get("environments")
@@ -120,7 +130,8 @@ class CodexAppServerSettings:
             raise ReviewQueueError("Codex did not load the expected trusted instruction sources.")
         if self.access == "restricted":
             if (not isinstance(active, dict) or active.get("id") != self.permission_profile
-                    or approval != "on-request" or sandbox["type"] in {"dangerFullAccess", "externalSandbox"}):
+                    or not (approval == "on-request" or granular_valid and set(granular) <= approval_fields)
+                    or sandbox["type"] in {"dangerFullAccess", "externalSandbox"}):
                 raise ReviewQueueError("Codex did not select the requested restricted permission mode.")
         elif self.access == "full" and (sandbox["type"] != "dangerFullAccess" or approval != "never"):
             raise ReviewQueueError("Codex did not allow the deliberately selected full-access mode.")
@@ -128,7 +139,7 @@ class CodexAppServerSettings:
         # provider extension must not smuggle raw config/credentials into the
         # private job journal through an otherwise valid settings response.
         approval_receipt = approval if isinstance(approval, str) else {
-            "granular": {key: value for key, value in approval["granular"].items()
+            "granular": {key: value for key, value in granular.items()
                          if key in {"sandbox_approval", "rules", "skill_approval", "request_permissions", "mcp_elicitations"}
                          and type(value) is bool}}
         sandbox_receipt: dict[str, Any] = {"type": sandbox["type"]}

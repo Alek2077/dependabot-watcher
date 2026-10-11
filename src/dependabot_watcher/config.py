@@ -77,11 +77,21 @@ class RepositoryWorkflowConfig:
 
 
 @dataclass(frozen=True)
+class LocalSyncCheckout:
+    """Selected local completion capability, never standing action consent."""
+
+    directory: str
+    branch: str
+
+
+@dataclass(frozen=True)
 class RepositoryConfig:
     name: str
     default_branch: str = "main"
     path_policy: PathPolicyOverrides = field(default_factory=PathPolicyOverrides)
     workflow: RepositoryWorkflowConfig = field(default_factory=RepositoryWorkflowConfig)
+    local_sync: tuple[LocalSyncCheckout, ...] = ()
+    completion_policy: str = "remote_only"
 
 
 @dataclass(frozen=True)
@@ -607,7 +617,7 @@ def _advisory(value: object) -> AdvisoryConfig:
 def _repository(value: object, index: int) -> RepositoryConfig:
     location = f"repositories[{index}]"
     data = _require_mapping(value, location)
-    _reject_unknown(data, {"name", "default_branch", "path_policy", "workflow"}, location)
+    _reject_unknown(data, {"name", "default_branch", "path_policy", "workflow", "local_sync", "completion_policy"}, location)
     name = normalize_repository_name(data.get("name"), f"{location}.name")
     branch = normalize_branch_name(
         data.get("default_branch", "main"),
@@ -642,10 +652,20 @@ def _repository(value: object, index: int) -> RepositoryConfig:
         raise ConfigError(
             f"{location}.workflow.promotion_branch must not contain whitespace."
         )
+    local_sync = _local_sync(data.get("local_sync", []), location)
+    completion_policy = data.get("completion_policy", "remote_only")
+    if not isinstance(completion_policy, str) or completion_policy not in {"remote_only", "selected_local_sync"}:
+        raise ConfigError(f"{location}.completion_policy must be remote_only or selected_local_sync.")
+    if completion_policy == "selected_local_sync" and not local_sync:
+        raise ConfigError(f"{location}.completion_policy requires selected local_sync checkouts.")
+    if completion_policy == "selected_local_sync" and any(target.branch != branch for target in local_sync):
+        raise ConfigError(f"{location}.completion_policy currently supports only checkouts of the configured default_branch.")
     return RepositoryConfig(
         name=name,
         default_branch=branch,
         path_policy=_path_policy(data.get("path_policy", {}), f"{location}.path_policy"),
+        local_sync=local_sync,
+        completion_policy=completion_policy,
         workflow=RepositoryWorkflowConfig(
             merge_method=merge_method,
             promotion_branch=promotion_branch,
@@ -664,6 +684,23 @@ def _repository(value: object, index: int) -> RepositoryConfig:
             ),
         ),
     )
+
+
+def _local_sync(value: object, location: str) -> tuple[LocalSyncCheckout, ...]:
+    if not isinstance(value, list) or len(value) > 10:
+        raise ConfigError(f"{location}.local_sync must contain at most ten selected checkouts.")
+    selected = []
+    for item in value:
+        entry = _require_mapping(item, f"{location}.local_sync")
+        _reject_unknown(entry, {"directory", "branch"}, f"{location}.local_sync")
+        directory = _supervisor_path(entry.get("directory"), f"{location}.local_sync.directory")
+        branch = normalize_branch_name(entry.get("branch"), f"{location}.local_sync.branch")
+        if branch.startswith("-"):
+            raise ConfigError("Local synchronization branch cannot begin with '-'.")
+        selected.append(LocalSyncCheckout(directory, branch))
+    if len({item.directory for item in selected}) != len(selected):
+        raise ConfigError("Local synchronization checkout paths must be unique.")
+    return tuple(selected)
 
 
 def _supervisor(value: object, repositories: tuple[RepositoryConfig, ...]) -> SupervisorConfig:
@@ -797,6 +834,9 @@ def parse_config(data: Mapping[str, Any]) -> WatcherConfig:
     names = [repository.name.casefold() for repository in repositories]
     if len(names) != len(set(names)):
         raise ConfigError("repositories contains duplicate repository names.")
+    checkout_paths = [target.directory for repository in repositories for target in repository.local_sync]
+    if len(checkout_paths) != len(set(checkout_paths)):
+        raise ConfigError("A local checkout cannot be registered to multiple repositories.")
     advisory = _advisory(data.get("advisory", {}))
     operation = _operation(data.get("operation", {}))
     if operation.require_advice_before_execution and advisory.mode == "off":

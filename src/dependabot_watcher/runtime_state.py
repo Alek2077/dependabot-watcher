@@ -566,7 +566,7 @@ def run_lock(state_directory: Path, *, wait_seconds: float = 0) -> Iterator[Path
                     if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                         raise RuntimeStateError("Runtime lock could not be acquired.") from exc
                     if time.monotonic() >= deadline:
-                        raise RuntimeLockBusyError("Another scheduled reconciliation is already active.") from exc
+                        raise RuntimeLockBusyError("Saved state is busy; another operation holds its lock.") from exc
                     time.sleep(min(.01, max(0, deadline - time.monotonic())))
         else:
             import fcntl
@@ -579,7 +579,7 @@ def run_lock(state_directory: Path, *, wait_seconds: float = 0) -> Iterator[Path
                     if exc.errno not in (errno.EACCES, errno.EAGAIN):
                         raise RuntimeStateError("Runtime lock could not be acquired.") from exc
                     if time.monotonic() >= deadline:
-                        raise RuntimeLockBusyError("Another scheduled reconciliation is already active.") from exc
+                        raise RuntimeLockBusyError("Saved state is busy; another operation holds its lock.") from exc
                     time.sleep(min(.01, max(0, deadline - time.monotonic())))
         metadata = json.dumps(
             {"pid": os.getpid(), "host": socket.gethostname()},

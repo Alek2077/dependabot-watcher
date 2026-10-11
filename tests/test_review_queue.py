@@ -481,7 +481,7 @@ def test_local_version_prevents_concurrent_lost_decisions(queue_case: tuple[Revi
     second = {**first, "request_id": f'decision_{snapshot(queue)["next_request_sequence"]}_another', "operation": "resume"}
     with pytest.raises(ReviewQueueError, match="handling changed"):
         queue.handle(second)
-    with run_lock(queue.directory), pytest.raises(RuntimeStateError, match="already active"):
+    with run_lock(queue.directory), pytest.raises(RuntimeStateError, match="Saved state is busy"):
         snapshot(queue)
 
 

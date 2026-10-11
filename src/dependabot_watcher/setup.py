@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 
 from .config import (
     ConfigError,
+    LocalSyncCheckout,
     SupervisorConfig,
     SupervisorWorkspaceConfig,
     default_config_path,
@@ -25,6 +26,7 @@ from .diagnostics import (
     _run_command,
     _tool_status,
 )
+from .local_sync import LocalSyncError, validate_checkout_control_locations
 from .runtime_state import (
     RuntimeStateError,
     default_state_directory,
@@ -75,6 +77,9 @@ class SetupRequest:
     supervisor_provision_refresh: tuple[str, ...] = ()
     supervisor_workspace_root: Path | None = None
     supervisor_workspace_max_bytes: int = DEFAULT_WORKSPACE_MAX_BYTES
+    local_sync: Mapping[str, tuple[LocalSyncCheckout, ...]] = field(default_factory=dict)
+    acknowledge_local_sync: bool = False
+    require_local_completion: tuple[str, ...] = ()
 
 
 def _utc_now() -> datetime:
@@ -127,6 +132,7 @@ def _config_data(
         and request.report_verbosity == "concise"
         and request.autonomy == "read_only"
         and request.supervisor.mode == "off"
+        and not request.local_sync
         else "setup_advanced"
     )
     data: dict[str, Any] = {
@@ -151,6 +157,13 @@ def _config_data(
                 "default_branch": request.branches.get(repository)
                 or observed_branches.get(repository)
                 or "main",
+                **({"completion_policy": "selected_local_sync"}
+                   if repository in request.require_local_completion else {}),
+                **({"local_sync": [{"directory": target.directory,
+                                    "branch": target.branch or request.branches.get(repository)
+                                    or observed_branches.get(repository) or "main"}
+                                   for target in request.local_sync[repository]]}
+                   if request.local_sync.get(repository) else {}),
                 **(
                     {
                         "workflow": {
@@ -241,6 +254,8 @@ def _render_config(data: Mapping[str, Any]) -> str:
                 f"default_branch = {_toml_string(repository['default_branch'])}",
             ]
         )
+        if "completion_policy" in repository:
+            lines.append(f"completion_policy = {_toml_string(repository['completion_policy'])}")
         workflow = repository.get("workflow")
         if workflow:
             lines.extend(
@@ -253,6 +268,10 @@ def _render_config(data: Mapping[str, Any]) -> str:
                     + "]",
                 ]
             )
+        for checkout in repository.get("local_sync", []):
+            lines.extend(["", "[[repositories.local_sync]]",
+                          f"directory = {_toml_string(checkout['directory'])}",
+                          f"branch = {_toml_string(checkout['branch'])}"])
     supervisor = data["supervisor"]
     lines.extend(["", "[supervisor]", f"mode = {_toml_string(supervisor['mode'])}"])
     if supervisor["mode"] != "off":
@@ -349,9 +368,15 @@ def _paths_overlap(first: Path, second: Path) -> bool:
 def _validate_output_separation(output_path: Path, request: SetupRequest) -> None:
     """Keep the eventual configuration write outside every provisioning input/output tree."""
 
+    output = _resolved_setup_path(output_path)
+    for targets in request.local_sync.values():
+        for target in targets:
+            try:
+                validate_checkout_control_locations(Path(target.directory), output, None)
+            except LocalSyncError as exc:
+                raise SetupError(str(exc)) from exc
     if not request.supervisor_provision_sources:
         return
-    output = _resolved_setup_path(output_path)
     protected: list[tuple[Path, str]] = []
     root = _resolved_setup_path(_provision_root(request))
     protected.append((root, "private workspace root"))
@@ -459,6 +484,19 @@ def _validation_supervisor(request: SetupRequest) -> SupervisorConfig:
 def _validate_request(request: SetupRequest) -> None:
     if not request.repositories:
         raise SetupError("Setup requires at least one --repo owner/repository value.")
+    if (len(set(request.require_local_completion)) != len(request.require_local_completion)
+            or any(repository not in request.repositories or not request.local_sync.get(repository)
+                   for repository in request.require_local_completion)):
+        raise SetupError("Required local completion must name each configured repository with selected checkouts at most once.")
+    if request.local_sync and not request.acknowledge_local_sync:
+        raise SetupError("Selected local synchronization requires --acknowledge-local-sync; each update still needs exact approval.")
+    if request.acknowledge_local_sync and not request.local_sync:
+        raise SetupError("--acknowledge-local-sync requires selected checkouts.")
+    if set(request.local_sync) - set(request.repositories):
+        raise SetupError("Local synchronization must reference configured repositories only.")
+    if request.offline and any(not target.branch and not request.branches.get(repository)
+                               for repository, targets in request.local_sync.items() for target in targets):
+        raise SetupError("Offline local synchronization setup requires an explicit selected branch.")
     if len({name.casefold() for name in request.repositories}) != len(request.repositories):
         raise SetupError("Setup repositories must be unique.")
     try:
@@ -655,6 +693,12 @@ def setup(
                     "configured_branch_head_sha": branch_sha,
                 }
             )
+            sync_branches = {target.branch or selected_branch for target in request.local_sync.get(repository, ())}
+            for sync_branch in sync_branches - {selected_branch}:
+                sync_sha, sync_error = _repository_branch_head(repository, sync_branch, runner=runner,
+                                                              timeout_seconds=timeout_seconds)
+                if sync_error is not None or sync_sha is None:
+                    raise SetupError(f"Selected synchronization branch verification failed for {repository}:{sync_branch}.")
         if request.advisory_mode != "off" or request.supervisor.mode != "off":
             codex = _tool_status(
                 "codex",
@@ -814,6 +858,13 @@ def setup(
             ],
         },
         "verification": verification,
+        **({"local_sync": {"selected_checkouts": [
+            {"repository": repository.name, **asdict(target)}
+            for repository in parsed_config.repositories for target in repository.local_sync],
+            "checkout_readiness_verified": False, "integration_performed": False,
+            "required_completion_repositories": list(request.require_local_completion),
+            "policy": "separate_exact_confirmation_clean_fast_forward_only"}}
+           if request.local_sync else {}),
         "capabilities": {
             "model_calls": False,
             "github_mutations": False,
@@ -826,6 +877,8 @@ def setup(
             f"dependabot-watcher run{config_argument} --notify off",
         ],
         "next_decisions": [
+            *(["Selected developer checkouts are registered, not updated. Review each exact clean fast-forward separately; no stash, branch switch or push is authorized."]
+              if request.local_sync else []),
             "Run one read-only reconciliation before scheduling recurring operation.",
             "Choose a schedule cadence and notification mode before installing a native schedule.",
             (

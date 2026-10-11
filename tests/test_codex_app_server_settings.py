@@ -51,6 +51,28 @@ def test_restricted_mode_selects_explicit_profile_not_legacy_default(tmp_path: P
         settings.verify_thread({**original, "activePermissionProfile": {"id": "other"}})
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_restricted_granular_policy_keeps_explicit_prompt_or_denial_categories(tmp_path: Path, enabled: bool) -> None:
+    original = response(tmp_path)
+    policy = {"sandbox_approval": enabled, "rules": enabled, "mcp_elicitations": enabled}
+    original["approvalPolicy"] = {"granular": policy}
+    verified = make_settings(tmp_path, access="restricted", permission_profile="watcher-job").verify_thread(original)
+    assert verified["approval_policy"] == {"granular": policy}
+
+
+@pytest.mark.parametrize("policy", [
+    {}, {"sandbox_approval": True, "rules": True},
+    {"sandbox_approval": 1, "rules": True, "mcp_elicitations": True},
+    {"sandbox_approval": True, "rules": True, "mcp_elicitations": True, "request_permissions": "yes"},
+    {"sandbox_approval": True, "rules": True, "mcp_elicitations": True, "unknown": True},
+])
+def test_restricted_granular_policy_rejects_unverified_fields(tmp_path: Path, policy: dict[str, Any]) -> None:
+    original = response(tmp_path)
+    original["approvalPolicy"] = {"granular": policy}
+    with pytest.raises(ReviewQueueError):
+        make_settings(tmp_path, access="restricted", permission_profile="watcher-job").verify_thread(original)
+
+
 def test_full_mode_requires_acknowledgement_and_observed_full_access(tmp_path: Path) -> None:
     with pytest.raises(ReviewQueueError, match="acknowledgement"):
         make_settings(tmp_path, access="full")

@@ -83,12 +83,14 @@ internal sealed class BackendClient
         using var operationOwner = OwnOperation();
         var operation = request["operation"]?.GetValue<string>();
         if (operation is not ("snapshot" or "reject" or "defer" or "resume" or "feedback"
-            or "prepare_action" or "confirm_action" or "check_action" or "action_history" or "collect_queue" or "supervisor_status"
+            or "prepare_action" or "confirm_action" or "check_action" or "check_completion" or "action_history" or "collect_queue" or "supervisor_status"
             or "supervisor_permissions" or "supervisor_permission_decide" or "notification_attention"
+            or "local_sync_targets" or "prepare_local_sync" or "confirm_local_sync" or "recover_local_sync"
             or "scheduled_supervisor_claim"))
             throw new InvalidOperationException("Unsupported backend operation.");
-        var mutating = operation == "confirm_action";
-        var liveOperation = operation is "prepare_action" or "confirm_action" or "check_action" or "collect_queue";
+        var mutating = operation is "confirm_action" or "confirm_local_sync";
+        var liveOperation = operation is "prepare_action" or "confirm_action" or "check_action" or "check_completion" or "collect_queue"
+            or "prepare_local_sync" or "confirm_local_sync" or "recover_local_sync";
         var requestId = request["request_id"]?.GetValue<string>()
             ?? throw new InvalidDataException("Request ID is required.");
         var payload = JsonSerializer.SerializeToUtf8Bytes(request);
@@ -168,7 +170,9 @@ internal sealed class BackendClient
             await process.WaitForExitAsync(cancellation).WaitAsync(TimeSpan.FromSeconds(5));
             await error;
             if (terminal.Event != "finished" || process.ExitCode != 0)
-                throw new InvalidDataException("Investigation did not complete successfully. Check the saved job; it was not retried.");
+                throw new InvalidDataException(terminal.Event == "error"
+                    ? terminal.Value["message"]!.GetValue<string>()
+                    : "Investigation did not complete successfully. Check the saved job; it was not retried.");
             return terminal.Value;
         }
         catch

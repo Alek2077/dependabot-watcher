@@ -151,6 +151,42 @@ def test_pull_request_state_lookup_is_read_only_and_identity_bound() -> None:
     assert state["state"] == "OPEN"
     assert captured[:4] == ["gh", "pr", "view", "42"]
     assert "--repo" in captured
+    assert "mergeCommit" in captured[captured.index("--json") + 1].split(",")
+
+
+@pytest.mark.parametrize("status,behind,merge_base,expected", [
+    ("ahead", 0, "a" * 40, True), ("identical", 0, "a" * 40, True),
+    ("behind", 1, "b" * 40, False), ("diverged", 2, "c" * 40, False),
+    ("ahead", 0, "c" * 40, False),
+])
+def test_exact_commit_lineage_is_read_only_and_does_not_follow_branch_names(
+    status: str, behind: int, merge_base: str, expected: bool,
+) -> None:
+    commands: list[Sequence[str]] = []
+
+    def runner(command: Sequence[str], timeout: int) -> str:
+        commands.append(command)
+        return json.dumps({"status": status, "behind_by": behind,
+                           "base_sha": "a" * 40, "merge_base_sha": merge_base})
+
+    assert GhCliClient(runner=runner).commit_is_ancestor("org/repo", "a" * 40, "b" * 40) is expected
+    assert commands[0][0:2] == ["gh", "api"]
+    assert commands[0][2] == "/repos/org/repo/compare/" + "a" * 40 + "..." + "b" * 40 + "?per_page=1"
+
+
+@pytest.mark.parametrize("changes", [{"status": []}, {"behind_by": True}, {"base_sha": "c" * 40},
+                                       {"merge_base_sha": "invalid"}, {"status": "unknown"}])
+def test_invalid_commit_lineage_is_not_treated_as_success(changes: dict[str, Any]) -> None:
+    value = {"status": "ahead", "behind_by": 0, "base_sha": "a" * 40, "merge_base_sha": "a" * 40, **changes}
+    with pytest.raises(GitHubError, match="lineage"):
+        GhCliClient(runner=lambda *args: json.dumps(value)).commit_is_ancestor("org/repo", "a" * 40, "b" * 40)
+
+
+def test_commit_lineage_rejects_symbolic_or_short_revisions_before_network() -> None:
+    def runner(*args: Any) -> str:
+        raise AssertionError("Invalid revision must not cause a request")
+    with pytest.raises(GitHubError, match="full revision"):
+        GhCliClient(runner=runner).commit_is_ancestor("org/repo", "main", "b" * 40)
 
 
 def test_merge_uses_exact_repository_pr_head_and_method() -> None:

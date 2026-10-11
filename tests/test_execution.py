@@ -1436,7 +1436,7 @@ def test_active_reconciliation_lock_blocks_execution(
     preflight = preflight_execution(execution_config(), client, report, step_id)
 
     with run_lock(tmp_path):
-        with pytest.raises(ExecutionError, match="already active"):
+        with pytest.raises(ExecutionError, match="Saved state is busy"):
             execute_approved(
                 execution_config(),
                 client,

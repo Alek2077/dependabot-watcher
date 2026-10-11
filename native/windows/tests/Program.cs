@@ -19,6 +19,10 @@ AssemblyLoadContext.Default.Resolving += (_, name) => resolver.ResolveAssemblyTo
 var assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(assemblyFile);
 ConversationContracts.Run(assembly);
 ScheduledContracts.Run(assembly);
+LocalSyncContracts.Run(assembly);
+CompletionContracts.Run(assembly);
+ScopeRefreshContracts.Run(assembly);
+InvestigationCoordinationContracts.Run(assembly);
 try {
     var rejectedLaunches = assembly.GetType("WatcherNativeProof.NativeReviewLaunchProbe", true)!
         .GetMethod("Run", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null);

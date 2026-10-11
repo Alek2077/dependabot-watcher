@@ -336,6 +336,25 @@ class GhCliClient:
             f"branch-head SHA for {repository}:{branch}",
         )
 
+    def commit_is_ancestor(self, repository: str, ancestor: str, descendant: str) -> bool:
+        """Read exact commit lineage without fetching objects into user clones."""
+        if any(not isinstance(sha, str) or not re.fullmatch(r"[a-fA-F0-9]{40}|[a-fA-F0-9]{64}", sha)
+               for sha in (ancestor, descendant)):
+            raise GitHubError("Commit lineage requires exact full revision identities.")
+        value = self._json(["api", f"/repos/{repository}/compare/{ancestor}...{descendant}?per_page=1",
+                            "--jq", "{status, behind_by, base_sha: .base_commit.sha, merge_base_sha: .merge_base_commit.sha}"])
+        if (not isinstance(value, dict) or set(value) != {"status", "behind_by", "base_sha", "merge_base_sha"}
+                or not isinstance(value.get("status"), str)
+                or value["status"] not in {"ahead", "behind", "identical", "diverged"}
+                or type(value.get("behind_by")) is not int or value["behind_by"] < 0
+                or not isinstance(value.get("base_sha"), str)
+                or value["base_sha"].lower() != ancestor.lower()
+                or not isinstance(value.get("merge_base_sha"), str)
+                or not re.fullmatch(r"[a-fA-F0-9]{40}|[a-fA-F0-9]{64}", value["merge_base_sha"])):
+            raise GitHubError("GitHub returned invalid exact commit-lineage evidence.")
+        return (value["status"] in {"ahead", "identical"} and value["behind_by"] == 0
+                and value["merge_base_sha"].lower() == ancestor.lower())
+
     def fetch_text_file(
         self,
         repository: str,
@@ -585,7 +604,7 @@ class GhCliClient:
                 "--repo",
                 repository,
                 "--json",
-                "number,state,mergedAt,headRefOid,baseRefName,url",
+                "number,state,mergedAt,mergeCommit,headRefOid,baseRefName,url",
             ]
         )
         if not isinstance(item, dict):

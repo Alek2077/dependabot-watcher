@@ -47,6 +47,8 @@ Restore and build `src/WatcherNativeProof.csproj` using a compatible Windows
 private test/launch state must not be committed. Development tool caches are
 not application runtime requirements.
 
+After self-contained publishing, run `complete-publish.ps1 -PublishedDirectory PUBLISH_DIRECTORY -AssetsFile src/obj/project.assets.json` before testing or packaging. Windows App SDK 2.5.1 can omit its Insights resource DLL. The helper takes that one resource from the exact runtime MSIX resolved by the build, or verifies an existing matching file; it never substitutes a system DLL or another application's copy. Use `-PackageCache PATH` when the build's restored NuGet cache is mounted elsewhere. The release workflow runs this step and its controlled contracts; the packager independently refuses a missing resource.
+
 ### Package a verified build
 
 Maintainers can create the separate Windows x64 ZIP without copying SDKs or caches into it:

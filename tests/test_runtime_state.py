@@ -50,7 +50,7 @@ def test_opt_in_lock_wait_acquires_after_short_transaction_and_default_still_ref
     owner.start()
     assert ready.wait(2)
     try:
-        with pytest.raises(runtime_state.RuntimeStateError, match="already active"):
+        with pytest.raises(runtime_state.RuntimeStateError, match="Saved state is busy"):
             with runtime_state.run_lock(tmp_path / "state"):
                 pytest.fail("Default locking must remain fail-fast")
         timer = threading.Timer(.05, release.set)
@@ -67,7 +67,7 @@ def test_opt_in_lock_wait_acquires_after_short_transaction_and_default_still_ref
 def test_opt_in_lock_wait_times_out_without_taking_other_owner_lock(tmp_path: Path) -> None:
     with runtime_state.run_lock(tmp_path / "state"):
         started = time.monotonic()
-        with pytest.raises(runtime_state.RuntimeStateError, match="already active"):
+        with pytest.raises(runtime_state.RuntimeStateError, match="Saved state is busy"):
             with runtime_state.run_lock(tmp_path / "state", wait_seconds=.05):
                 pytest.fail("A held lock cannot be taken")
         assert time.monotonic() - started < 1
@@ -249,5 +249,5 @@ def test_native_windows_run_lock_rejects_a_second_process(tmp_path: Path) -> Non
     )
 
     assert blocked.returncode != 0
-    assert "Another scheduled reconciliation is already active" in blocked.stderr
+    assert "Saved state is busy" in blocked.stderr
     assert released.returncode == 0, released.stderr

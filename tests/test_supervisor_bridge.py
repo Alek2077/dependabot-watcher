@@ -14,7 +14,7 @@ from dependabot_watcher.github import ExecutionGitHubClient, GitHubClient
 from dependabot_watcher.review_actions import ActionReviews
 from dependabot_watcher.review_bridge import exchange
 from dependabot_watcher.review_queue import ReviewQueueError, supervisor_context_digest
-from dependabot_watcher.runtime_state import load_run_state, save_run_state
+from dependabot_watcher.runtime_state import RuntimeLockBusyError, load_run_state, run_lock, save_run_state
 from dependabot_watcher.supervision import SupervisorJobs
 from dependabot_watcher.supervisor_bridge import _Frames, _preview, launch_exchange
 from dependabot_watcher.supervisor_permissions import SupervisorPermissions
@@ -46,6 +46,63 @@ def test_start_and_exact_feedback_use_configured_job_through_existing_bridge(lau
         assert frames[-1]["reused"] is expected_reuse
         assert SupervisorJobs(case["queue"]).read(frames[-1]["job_id"])["status"] == "completed"
     assert len(case["launches"]) == 1
+
+
+@pytest.mark.parametrize("storage_failure", [False, True])
+def test_prelaunch_contention_has_scoped_sanitized_diagnostic_without_replay(
+    launch_case: dict[str, Any], monkeypatch: pytest.MonkeyPatch, storage_failure: bool,
+) -> None:
+    case = launch_case
+    incoming = request(case)
+    def busy(_repository: str) -> dict[str, Any]:
+        raise RuntimeLockBusyError("PRIVATE_EXCEPTION_TEXT /secret/path")
+    monkeypatch.setattr(case["queue"], "supervision_context", busy)
+    if storage_failure:
+        def unavailable(*args: Any, **kwargs: Any) -> None:
+            raise OSError("PRIVATE_STORAGE_TEXT")
+        monkeypatch.setattr("dependabot_watcher.supervisor_bridge.save_private_json", unavailable)
+    output = io.BytesIO()
+    assert launch_exchange(case["queue"], cast(GitHubClient, object()), incoming, output) == 2
+    frames = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert len(frames) == 1 and frames[0]["event"] == "error"
+    assert "Saved state is busy" in frames[0]["message"]
+    assert "PRIVATE" not in output.getvalue().decode()
+    assert case["launches"] == []
+    diagnostic = case["queue"].directory / "supervisor-launch-failures" / "launch_fixture.json"
+    if storage_failure:
+        assert not diagnostic.exists()
+    else:
+        assert json.loads(diagnostic.read_text()) == {
+            "schema_version": 1, "request_id": incoming["request_id"],
+            "repository": incoming["repository"], "context_digest": incoming["context_digest"],
+            "category": "state_busy",
+        }
+        assert diagnostic.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("change", [{"request_id": "launch_../../escape"},
+    {"repository": "outside/repository"}, {"context_digest": "not-a-digest"}])
+def test_invalid_launch_cannot_create_diagnostic_paths(
+    launch_case: dict[str, Any], change: dict[str, str],
+) -> None:
+    case = launch_case
+    assert launch_exchange(case["queue"], cast(GitHubClient, object()),
+        {**request(case), **change}, io.BytesIO()) == 2
+    assert not (case["queue"].directory / "supervisor-launch-failures").exists()
+    assert case["launches"] == []
+
+
+def test_actual_held_queue_lock_reports_contention_before_provider_start(launch_case: dict[str, Any]) -> None:
+    case = launch_case
+    incoming = request(case)
+    output = io.BytesIO()
+    with run_lock(case["queue"].directory):
+        assert launch_exchange(case["queue"], cast(GitHubClient, object()), incoming, output) == 2
+    assert case["launches"] == []
+    assert "Saved state is busy" in json.loads(output.getvalue())["message"]
+    diagnostic = case["queue"].directory / "supervisor-launch-failures" / "launch_fixture.json"
+    assert json.loads(diagnostic.read_text())["category"] == "state_busy"
+    assert SupervisorJobs(case["queue"])._load()["jobs"] == {}
 
 
 def test_failed_launch_is_exposed_and_explicit_retry_crosses_the_actual_bridge(launch_case: dict[str, Any]) -> None:

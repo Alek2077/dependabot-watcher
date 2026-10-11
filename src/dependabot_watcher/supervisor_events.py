@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from .review_queue import ReviewQueueError
-from .runtime_state import save_private_json
+from .runtime_state import RuntimeLockBusyError, save_private_json
 from .supervision import SupervisorJobs
 from .supervisor_permissions import SupervisorPermissions
 from .supervisor_workspace import SupervisorInstructionGuard, verify_supervisor_runtime_binding
@@ -58,7 +58,13 @@ class SupervisorEvents:
                                         description=description, choices=choices)
 
     def permission_decision(self, permission_id: str, digest: str) -> str | None:
-        return self.permissions.consume(self._connection(), permission_id, digest)
+        try:
+            return self.permissions.consume(self._connection(), permission_id, digest)
+        except RuntimeLockBusyError:
+            # Acquisition failed before any decision was consumed. Keep the
+            # request pending; the provider's next poll rechecks live authority.
+            # Storage, stale-scope and already-consumed failures still propagate.
+            return None
 
     def permission_resolved(self, permission_id: str) -> None:
         self.permissions.resolve(self._connection(), permission_id)

@@ -69,8 +69,9 @@ def invoke(case: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         permission_presentation=lambda params: ("Synthetic permission", ["allow_once", "deny", "cancel"]), **kwargs)
 
 
-def test_configured_supervisor_executes_exact_snapshot_through_dynamic_tools_and_records_results(
-    launch_case: dict[str, Any],
+@pytest.mark.parametrize('blocked', [False, True])
+def test_configured_supervisor_executes_exact_snapshot_through_mcp_and_records_results(
+    launch_case: dict[str, Any], blocked: bool,
 ) -> None:
     case = launch_case
     if not Path('/proc').is_dir() or shutil.which('bwrap') is None:
@@ -78,7 +79,8 @@ def test_configured_supervisor_executes_exact_snapshot_through_dynamic_tools_and
     path = case['path']
     path.write_text(path.read_text().replace('model_use_acknowledged = true',
         'model_use_acknowledged = true\nvalidation_authorized = true')
-        + '\n[supervisor.validation]\npreparation_authorized = true\nnetwork_authorized = false\n')
+        + '\n[supervisor.validation]\npreparation_authorized = true\nnetwork_authorized = false\n'
+        + ('maximum_bytes = 1048576\n' if blocked else ''))
     case['queue'].config = load_config(path)
     step = case['report']['repositories'][0]['recommended_order'][0]
     step['identity']['head_sha'] = case['head']
@@ -87,28 +89,63 @@ def test_configured_supervisor_executes_exact_snapshot_through_dynamic_tools_and
     program = case['program']
     dynamic = r'''
         assert 'watcher_validation_prepare' in frame['params']['input'][0]['text']
+        import socket, uuid
+        from dependabot_watcher.validation_mcp import _relay_call
+        args=validation_config['args']
+        offset=args.index('dependabot_watcher.validation_mcp')+1
+        endpoint,nonce,job_id,digest,timeout=args[offset:]
+        assert job_id==data['job_id'] and digest==data['context_digest']
+        send({'id':69,'method':'item/tool/call','params':{'threadId':'thread1','turnId':'turn1',
+              'callId':'legacy1','tool':'watcher_validation_prepare','arguments':{'proposal_id':'not-executed'}}})
+        legacy=json.loads(sys.stdin.readline())
+        assert legacy['id']==69 and legacy['result']['success'] is False
         proposal = data['context']['proposals'][0]['proposal_id']
-        send({'id':70,'method':'item/tool/call','params':{'threadId':'thread1','turnId':'turn1',
-              'callId':'prepare1','tool':'watcher_validation_prepare','arguments':{'proposal_id':proposal}}})
-        prepared=json.loads(sys.stdin.readline())
-        assert prepared['id']==70 and prepared['result']['success'] is True
-        snapshot=json.loads(prepared['result']['contentItems'][0]['text'])
+        snapshot=_relay_call(endpoint,nonce,job_id,digest,int(timeout),
+                            'watcher_validation_prepare',{'proposal_id':proposal})
         assert snapshot['git_metadata_present'] is False and snapshot['tracked_files']>0
-        send({'id':71,'method':'item/tool/call','params':{'threadId':'thread1','turnId':'turn1',
-              'callId':'run1','tool':'watcher_validation_run','arguments':{
-                'validation_id':snapshot['validation_id'],
-                'command':'test ! -e .git && printf verified-sandbox'}}})
-        completed=json.loads(sys.stdin.readline())
-        assert completed['id']==71 and completed['result']['success'] is True
-        execution=json.loads(completed['result']['contentItems'][0]['text'])
-        assert execution['output']=='verified-sandbox' and execution['exit_code']==0
-        assert execution['head_sha']==snapshot['head_sha'] and execution['tracked_source_changed'] is False
+        send({'method':'item/completed','params':{'threadId':'thread1','turnId':'turn1',
+              'item':{'id':'mcp1','type':'mcpToolCall','server':'watcher_validation',
+                      'tool':'watcher_validation_prepare','status':'completed',
+                      'result':{'content':[{'type':'text','text':json.dumps(snapshot)}]}}}})
+        repeated=_relay_call(endpoint,nonce,job_id,digest,int(timeout),
+                            'watcher_validation_prepare',{'proposal_id':proposal})
+        assert repeated['validation_id'] != snapshot['validation_id']
+        assert repeated['head_sha'] == snapshot['head_sha'] and repeated['proposal_id'] == proposal
+        send({'method':'item/completed','params':{'threadId':'thread1','turnId':'turn1',
+              'item':{'id':'mcp_repeat','type':'mcpToolCall','server':'watcher_validation',
+                      'tool':'watcher_validation_prepare','status':'completed',
+                      'result':{'content':[{'type':'text','text':json.dumps(repeated)}]}}}})
+        execution=_relay_call(endpoint,nonce,job_id,digest,int(timeout),
+            'watcher_validation_run',{'validation_id':snapshot['validation_id'],
+                                    'command':('dd if=/dev/zero of=over bs=1048576 count=2 2>/dev/null'
+                                        if BLOCKED else 'test ! -e .git && printf verified-sandbox')})
+        send({'method':'item/completed','params':{'threadId':'thread1','turnId':'turn1',
+              'item':{'id':'mcp2','type':'mcpToolCall','server':'watcher_validation',
+                      'tool':'watcher_validation_run','status':'completed',
+                      'result':{'content':[{'type':'text','text':json.dumps(execution)}]}}}})
+        if BLOCKED:
+            assert execution['status']=='blocked' and execution['job_id']==data['job_id']
+        else:
+            assert execution['output']=='verified-sandbox' and execution['exit_code']==0
+            assert execution['head_sha']==snapshot['head_sha'] and execution['tracked_source_changed'] is False
 '''
-    program.write_text(program.read_text().replace("        proposals=data['context']['proposals']", dynamic + "\n        proposals=data['context']['proposals']"))
+    program.write_text('BLOCKED=' + repr(blocked) + '\n' + program.read_text().replace("        proposals=data['context']['proposals']", dynamic + "\n        proposals=data['context']['proposals']"))
     result = invoke(case)
     assert result['job']['status'] == 'completed'
-    receipts = list((case['queue'].directory / 'supervisor-validation' / result['job']['job_id']).glob('*.json'))
-    assert len(receipts) == 2
+    receipts = list((case['queue'].directory / 'supervisor-validation' / result['job']['job_id']).glob('validation_*.json'))
+    assert len(receipts) == (2 if blocked else 3)
+    root = case['queue'].directory / 'supervisor-validation' / result['job']['job_id']
+    prepared = [json.loads(receipt.read_text()) for receipt in root.glob('transport_*.json')
+                if json.loads(receipt.read_text()).get('tool') == 'watcher_validation_prepare']
+    assert len(prepared) == 2 and len({receipt['validation_id'] for receipt in prepared}) == 2
+    for receipt in prepared:
+        assert receipt['job_id'] == result['job']['job_id']
+        assert receipt['context_digest'] == result['job']['context_digest']
+        assert receipt['session_id'] == 'thread1' and receipt['turn_id'] == 'turn1'
+        assert receipt['head_sha'] == case['head'] and receipt['status'] == 'completed'
+        assert receipt['proposal_id'] in {p['proposal_id'] for p in result['job']['context']['proposals']}
+        private = json.loads((root / (receipt['validation_id'] + '.json')).read_text())
+        assert private['head_sha'] == receipt['head_sha'] and private['tracked_files'] > 0
     assert not list((case['queue'].directory / 'supervisor-validation' / result['job']['job_id']).glob('validation_*/'))
     assert not (case['worktree'] / '.tmp').exists()
     assert not (case['queue'].directory / 'execution-audit.jsonl').exists()
@@ -166,14 +203,71 @@ def test_compatible_settings_changes_reuse_conversation_with_new_checked_job(lau
     assert second["observation"]["reasoning_effort"] == case["queue"].config.supervisor.reasoning_effort
 
 
-def test_session_policy_keeps_access_account_and_tool_capabilities_separate_from_resource_limits() -> None:
+def test_session_policy_keeps_access_account_separate_from_per_job_validation_authority() -> None:
     policy: dict[str, Any] = {"provider": "codex_app_server", "access": "inherit", "expected_account_type": "chatgpt",
               "validation": {"preparation_authorized": True, "network_authorized": False, "maximum_bytes": 100}}
     identity = _session_policy_identity(policy)
     assert _session_policy_identity({**policy, "validation": {**policy["validation"], "maximum_bytes": 200}}) == identity
     for field, value in (("provider", "another"), ("access", "full"), ("expected_account_type", "apiKey")):
         assert _session_policy_identity({**policy, field: value}) != identity
-    assert _session_policy_identity({**policy, "validation": {**policy["validation"], "network_authorized": True}}) != identity
+    assert _session_policy_identity({**policy, "validation": {**policy["validation"], "network_authorized": True}}) == identity
+    assert _session_policy_identity({**policy, "validation_authorized": True, "validation": {}}) == identity
+
+
+def test_enabling_and_revoking_isolated_validation_keep_owned_conversation(launch_case: dict[str, Any]) -> None:
+    case = launch_case
+    first = invoke(case)
+    original = case['path'].read_text()
+    case['path'].write_text(original.replace('model_use_acknowledged = true',
+        'model_use_acknowledged = true\nvalidation_authorized = true')
+        + '\n[supervisor.validation]\npreparation_authorized = true\n')
+    case['queue'].config = load_config(case['path'])
+    case['program'].write_text(case['program'].read_text().replace(
+        "        params=frame['params']", "        assert method=='thread/resume'\n        params=frame['params']"))
+    enabled = invoke(case)
+    assert enabled['job']['session_id'] == first['job']['session_id']
+    assert enabled['job']['context']['supervisor']['validation']['preparation_authorized'] is True
+    case['path'].write_text(original)
+    case['queue'].config = load_config(case['path'])
+    case['program'].write_text(case['program'].read_text().replace(
+        "        validation_config=params['config'].get('mcp_servers.watcher_validation')",
+        "        validation_config=params['config'].get('mcp_servers.watcher_validation')\n"
+        "        assert validation_config is None"))
+    revoked = invoke(case)
+    assert revoked['job']['session_id'] == first['job']['session_id']
+    assert revoked['job']['context']['supervisor']['validation_authorized'] is False
+
+
+def test_foreign_validation_server_name_is_not_overridden(launch_case: dict[str, Any]) -> None:
+    case = launch_case
+    case['path'].write_text(case['path'].read_text().replace('model_use_acknowledged = true',
+        'model_use_acknowledged = true\nvalidation_authorized = true')
+        + '\n[supervisor.validation]\npreparation_authorized = true\n')
+    case['queue'].config = load_config(case['path'])
+    case['program'].write_text(case['program'].read_text().replace(
+        "response(frame['id'],{'data':[],'nextCursor':None})",
+        "response(frame['id'],{'data':[{'name':'watcher_validation','serverInfo':{'name':'foreign'}}],'nextCursor':None})"))
+    before = case['path'].read_bytes()
+    with pytest.raises(ReviewQueueError, match='no settings were overridden'):
+        invoke(case)
+    assert case['path'].read_bytes() == before
+    jobs = list(SupervisorJobs(case['queue'])._load()['jobs'].values())
+    assert len(jobs) == 1 and jobs[0]['status'] == 'failed' and jobs[0]['session_id'] is None
+
+
+def test_unattached_foreign_same_name_mcp_keeps_user_harness_behavior(launch_case: dict[str, Any]) -> None:
+    case = launch_case
+    foreign = """
+        assert validation_config is None
+        send({'method':'item/completed','params':{'threadId':'thread1','turnId':'turn1',
+              'item':{'id':'foreign1','type':'mcpToolCall','server':'watcher_validation',
+                      'tool':'user_owned_inspection','status':'completed','result':{'content':[]}}}})
+"""
+    case['program'].write_text(case['program'].read_text().replace(
+        "        proposals=data['context']['proposals']", foreign + "\n        proposals=data['context']['proposals']"))
+    result = invoke(case)
+    assert result['job']['status'] == 'completed'
+    assert result['job']['context']['supervisor']['validation_authorized'] is False
 
 
 def test_refresh_enabled_case_aliases_reuse_exact_job_and_owned_session(launch_case: dict[str, Any]) -> None:

@@ -21,6 +21,7 @@ from .supervisor_permissions import SupervisorPermissions
 from .supervisor_bridge import launch_exchange
 from .scheduled_supervisor import scheduled_supervisor_plan
 from .scheduled_triggers import claim_trigger
+from .local_sync import BranchHeadClient, LocalSyncError, handle_sync_request, validate_control_locations
 
 
 _MAX_REQUEST_BYTES = 65_536
@@ -64,7 +65,8 @@ def notification_attention(queue: ReviewQueue, request: dict[str, Any]) -> dict[
                 "capabilities": {"github_mutations": False, "model_calls": False}}
 
 
-def exchange(queue: ReviewQueue, incoming: BinaryIO, outgoing: BinaryIO, *, actions: ActionReviews | None = None) -> int:
+def exchange(queue: ReviewQueue | None, incoming: BinaryIO, outgoing: BinaryIO, *, actions: ActionReviews | None = None,
+             recovery_directory: Path | None = None) -> int:
     """One bounded UTF-8 JSON request; EOF closes the input frame.
 
     The native caller supplies trusted launch configuration through argv, closes
@@ -87,10 +89,30 @@ def exchange(queue: ReviewQueue, incoming: BinaryIO, outgoing: BinaryIO, *, acti
             request_id = candidate
         if not isinstance(request.get("operation"), str):
             raise ReviewQueueError("Review operation must be a string.")
+        if queue is None:
+            if recovery_directory is None or request["operation"] not in {"local_sync_targets", "recover_local_sync"}:
+                raise ReviewQueueError("Review configuration is unavailable; only saved local-update observation is supported.")
+            response = handle_sync_request(None, Path("."), recovery_directory, None, request)
+            encoded = (json.dumps(response, ensure_ascii=True) + "\n").encode("utf-8")
+            if len(encoded) > _MAX_RESPONSE_BYTES:
+                raise ReviewQueueError("Saved local-update response exceeds its size limit.")
+            outgoing.write(encoded)
+            outgoing.flush()
+            return 0
         if request.get("operation") == "supervisor_start":
             return launch_exchange(queue, cast(GitHubClient, actions.client) if actions is not None else None, request, outgoing)
         if request.get("operation") == "notification_attention":
             response = notification_attention(queue, request)
+        elif request.get("operation") in {"local_sync_targets", "prepare_local_sync", "confirm_local_sync", "recover_local_sync"}:
+            observing = request["operation"] in {"local_sync_targets", "recover_local_sync"}
+            if actions is None and not observing:
+                raise ReviewQueueError("Local synchronization is not connected to this backend.")
+            client = actions.client if actions is not None else None
+            if not observing and not callable(getattr(client, "fetch_branch_head", None)):
+                raise ReviewQueueError("Local synchronization requires a branch-aware GitHub transport.")
+            config_path = actions.config_path if actions is not None else queue.config_path or Path(".")
+            response = handle_sync_request(queue.config, config_path, queue.directory,
+                                           cast(BranchHeadClient, client) if client is not None else None, request)
         elif request.get("operation") in {"scheduled_supervisor_plan", "scheduled_supervisor_claim"}:
             if (set(request) != {"schema_version", "request_id", "operation", "run_id"}
                     or type(request.get("schema_version")) is not int or request["schema_version"] != 1
@@ -104,7 +126,7 @@ def exchange(queue: ReviewQueue, incoming: BinaryIO, outgoing: BinaryIO, *, acti
             response = SupervisorPermissions(SupervisorJobs(queue)).handle(request)
         elif request.get("operation") == "supervisor_status":
             response = supervision_status(queue, request)
-        elif request.get("operation") in ("prepare_action", "confirm_action", "check_action", "action_history", "collect_queue"):
+        elif request.get("operation") in ("prepare_action", "confirm_action", "check_action", "check_completion", "action_history", "collect_queue"):
             if actions is None:
                 raise ReviewQueueError("Action review is not connected to this backend.")
             response = actions.handle(request)
@@ -123,7 +145,7 @@ def exchange(queue: ReviewQueue, incoming: BinaryIO, outgoing: BinaryIO, *, acti
         response = {"schema_version": 1, "request_id": request_id, "status": "error",
                     "message": public_github_error_message("action review")}
         exit_code = 2
-    except (ReviewQueueError, RuntimeStateError, ExecutionError, ReconciliationError) as exc:
+    except (ReviewQueueError, RuntimeStateError, ExecutionError, ReconciliationError, ConfigError) as exc:
         response = {"schema_version": 1, "request_id": request_id, "status": "error",
                     "message": str(exc)}
         exit_code = 2
@@ -145,11 +167,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-dir", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        queue = ReviewQueue(load_config(args.config), args.state_dir, config_path=args.config)
-    except ConfigError:
-        sys.stdout.buffer.write(b'{"schema_version":1,"request_id":null,"status":"error",'
-                                b'"message":"Review configuration is unavailable or invalid."}\n')
-        return 2
+        config = load_config(args.config)
+        validate_control_locations(config, args.config, args.state_dir)
+    except (ConfigError, LocalSyncError):
+        return exchange(None, sys.stdin.buffer, sys.stdout.buffer, recovery_directory=args.state_dir)
+    queue = ReviewQueue(config, args.state_dir, config_path=args.config)
     actions = ActionReviews(
         queue, GhCliClient(timeout_seconds=queue.config.collection.command_timeout_seconds),
         config_path=args.config,

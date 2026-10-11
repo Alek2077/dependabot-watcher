@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import threading
 from collections.abc import Sequence
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +15,7 @@ from typing import Any
 import pytest
 
 from dependabot_watcher.config import load_config
-from dependabot_watcher.execution import ExecutionError
+from dependabot_watcher.execution import ExecutionError, approval_token, execute_approved
 from dependabot_watcher import review_actions, review_bridge
 from dependabot_watcher.github import GhCliClient
 from dependabot_watcher.review_actions import ActionReviews, prepare_review_action
@@ -237,6 +239,8 @@ def test_confirmation_is_durable_separate_and_single_use(reviews_case: dict[str,
     review = saved_review(reviews_case)
     assert review["status"] == "awaiting_confirmation"
     assert review["consented_at"] is None
+    assert review["completion_stage"] == "merge_outcome"
+    assert review["completion"]["policy"] == "remote_only"
     assert reviews_case["client"].merges == []
     assert "approval_token" not in (reviews_case["queue"].directory / "review-actions.json").read_text()
     restarted = ActionReviews(reviews_case["queue"], reviews_case["client"], config_path=reviews_case["config_path"])
@@ -245,12 +249,136 @@ def test_confirmation_is_durable_separate_and_single_use(reviews_case: dict[str,
     assert result["status"] == "completed"
     assert result["result"]["status"] == "merged"
     assert result["result"]["mutation_performed"] is True
+    assert result["completion"]["merge_commit_sha"] == result["result"]["result"]["merge_commit_sha"]
+    assert result["completion_stage"] == "refresh"
     assert result["result"]["post_action_state"]["status"] == "complete"
     assert result["consented_at"] is not None
     assert result["outcome_recorded"] is True
     assert restarted.confirm(review["review_id"]) == result
     assert len(reviews_case["client"].merges) == 1
     assert restarted.snapshot()[0] == result
+
+
+def test_post_merge_purpose_is_action_bound_and_excludes_its_own_progress(reviews_case: dict[str, Any]) -> None:
+    queue = reviews_case["queue"]
+    assert "maintenance_completion" not in queue.supervision_context("example-org/example-app")
+    review = saved_review(reviews_case)
+    assert "maintenance_completion" not in queue.supervision_context("example-org/example-app")
+    result = reviews_case["reviews"].confirm(review["review_id"])
+    purpose = queue.supervision_context("example-org/example-app")["maintenance_completion"]
+    assert purpose["review_id"] == review["review_id"]
+    assert purpose["obligation"]["action_id"] == result["preparation"]["action_id"]
+    assert purpose["obligation"]["merge_commit_sha"] == result["completion"]["merge_commit_sha"]
+    state = load_private_json(queue.directory, Path("review-actions.json"))
+    state["reviews"][review["review_id"]]["completion"]["evidence"] = {
+        "context_digest": "a" * 64, "base_sha": result["completion"]["merge_commit_sha"]}
+    save_private_json(queue.directory, Path("review-actions.json"), state)
+    assert queue.supervision_context("example-org/example-app")["maintenance_completion"] == purpose
+
+
+def test_legacy_action_history_remains_readable_without_invented_completion(reviews_case: dict[str, Any]) -> None:
+    review = saved_review(reviews_case)
+    queue = reviews_case["queue"]
+    state = load_private_json(queue.directory, Path("review-actions.json"))
+    del state["reviews"][review["review_id"]]["completion"]
+    legacy = asdict(queue.config)
+    for repository in legacy["repositories"]:
+        repository.pop("completion_policy")
+    state["reviews"][review["review_id"]]["config_digest"] = hashlib.sha256(
+        json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    preparation = state["reviews"][review["review_id"]]["preparation"]
+    preparation["decision"].pop("completion_scope")
+    state["reviews"][review["review_id"]]["preparation_digest"] = hashlib.sha256(
+        json.dumps(preparation, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    save_private_json(queue.directory, Path("review-actions.json"), state)
+    result = reviews_case["reviews"].confirm(review["review_id"])
+    assert result["status"] == "completed"
+    assert "completion" not in result
+    assert "maintenance_completion" not in queue.supervision_context("example-org/example-app")
+
+
+def test_missing_merge_revision_remains_observable_without_a_second_merge(
+    reviews_case: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review = saved_review(reviews_case)
+    original = reviews_case["client"].merge_pull_request
+
+    def missing_sha(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        result = original(*args, **kwargs)
+        result.pop("merge_commit_sha", None)
+        return result
+
+    monkeypatch.setattr(reviews_case["client"], "merge_pull_request", missing_sha)
+    result = reviews_case["reviews"].confirm(review["review_id"])
+    assert result["status"] == "completed"  # Remote success is not erased.
+    assert result["completion_stage"] == "merge_outcome"
+    assert "maintenance_completion" not in reviews_case["queue"].supervision_context("example-org/example-app")
+    fetch = reviews_case["client"].fetch_pull_request_state
+    monkeypatch.setattr(reviews_case["client"], "fetch_pull_request_state",
+                        lambda *args: {**fetch(*args), "mergeCommit": {"oid": "c" * 40}})
+    observed = reviews_case["reviews"].check_outcome(review["review_id"])
+    assert observed["result"] == result["result"]
+    assert observed["completion_stage"] == "refresh"
+    assert len(reviews_case["client"].merges) == 1
+
+
+@pytest.mark.parametrize("finalized", [False, True])
+def test_bounded_history_preserves_pending_obligations_and_retires_only_verified_ones(
+    reviews_case: dict[str, Any], finalized: bool,
+) -> None:
+    review = saved_review(reviews_case)
+    reviews_case["reviews"].confirm(review["review_id"])
+    queue = reviews_case["queue"]
+    state = load_private_json(queue.directory, Path("review-actions.json"))
+    template = state["reviews"][review["review_id"]]
+    state["reviews"] = {}
+    for index in range(101):
+        key = f"review_{index:032x}"
+        record = copy.deepcopy(template)
+        record["review_id"] = key
+        if finalized:
+            obligation = record["completion"]
+            obligation["evidence"] = {"context_digest": "a" * 64, "base_sha": obligation["merge_commit_sha"]}
+            obligation["finalization"] = {**obligation["evidence"], "verified_at": queue.clock().isoformat()}
+        state["reviews"][key] = record
+    keep = f"review_{100:032x}"
+    if not finalized:
+        with pytest.raises(ReviewQueueError, match="history is full"):
+            review_actions._save_reviews(queue.directory, state, keep=keep)
+        assert len(reviews_case["reviews"].snapshot()) == 1
+    else:
+        review_actions._save_reviews(queue.directory, state, keep=keep)
+        records = reviews_case["reviews"].snapshot()
+        assert len(records) == 100 and any(item["review_id"] == keep for item in records)
+        assert all(item["completion_stage"] == "completed" for item in records)
+
+
+def test_unconsumed_review_cannot_claim_finalized_maintenance(reviews_case: dict[str, Any]) -> None:
+    review = saved_review(reviews_case)
+    queue = reviews_case["queue"]
+    state = load_private_json(queue.directory, Path("review-actions.json"))
+    obligation = state["reviews"][review["review_id"]]["completion"]
+    obligation["merge_commit_sha"] = "c" * 40
+    obligation["evidence"] = {"context_digest": "a" * 64, "base_sha": "c" * 40}
+    obligation["finalization"] = {**obligation["evidence"], "verified_at": queue.clock().isoformat()}
+    save_private_json(queue.directory, Path("review-actions.json"), state)
+    with pytest.raises(ReviewQueueError, match="Uncompleted action"):
+        reviews_case["reviews"].snapshot()
+    assert reviews_case["client"].merges == []
+
+
+def test_pending_completion_blocks_preparation_and_direct_execution_in_the_backend(reviews_case: dict[str, Any]) -> None:
+    review = saved_review(reviews_case)
+    reviews_case["reviews"].confirm(review["review_id"])
+    # Simulate another open action rather than an already-merged no-op.
+    reviews_case["client"].state = "OPEN"
+    with pytest.raises(ReviewQueueError, match="selected completion"):
+        saved_review(reviews_case)
+    with pytest.raises(ReviewQueueError, match="selected completion"):
+        execute_approved(reviews_case["queue"].config, reviews_case["client"], reviews_case["report"],
+            review["preparation"]["binding"]["step_id"], approval_token(review["preparation"]["binding"]),
+            state_directory=reviews_case["queue"].directory, config_path=reviews_case["config_path"])
+    assert len(reviews_case["client"].merges) == 1
 
 
 def test_consumption_precedes_live_reads_and_blocks_local_choices_atomically(
@@ -264,7 +392,7 @@ def test_consumption_precedes_live_reads_and_blocks_local_choices_atomically(
         data = load_private_json(reviews_case["queue"].directory, Path("review-actions.json"))
         assert data["reviews"][review["review_id"]]["status"] == "executing"
         assert data["reviews"][review["review_id"]]["consented_at"] is not None
-        with pytest.raises(RuntimeStateError, match="already active"):
+        with pytest.raises(RuntimeStateError, match="Saved state is busy"):
             snapshot(reviews_case["queue"])
         # Durable result reads do not take the execution lock or auto-retry.
         assert reviews_case["reviews"].snapshot()[0]["status"] == "recovery_required"
@@ -379,9 +507,10 @@ def test_lost_remote_reply_is_unknown_and_never_automatically_retried(
     assert result["result"]["mutation_performed"] is None
     assert reviews_case["reviews"].confirm(review["review_id"]) == result
     assert len(client.merges) == 1
-    # Another read-only preflight may independently observe the exact head as
-    # merged; it does not replay this consent or create another executable review.
+    # Exact already-merged observation is a no-op, not a new executable review.
     assert saved_review(reviews_case)["status"] == "already_applied"
+    recovered = reviews_case["reviews"].check_outcome(review["review_id"])
+    assert recovered["status"] == "completed"
     assert len(client.merges) == 1
 
 
@@ -533,6 +662,27 @@ def test_read_only_outcome_check_resolves_lost_reply_without_retry(
     assert outcome["result"]["mutation_performed"] is False
     assert reviews_case["reviews"].snapshot()[0] == outcome
     assert reviews_case["reviews"].confirm(review["review_id"]) == outcome
+    assert len(reviews_case["client"].merges) == 1
+
+
+def test_recovered_merge_retains_exact_completion_revision_without_replaying(
+    reviews_case: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review = saved_review(reviews_case)
+    original = reviews_case["client"].merge_pull_request
+
+    def lose_reply(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        original(*args, **kwargs)
+        raise RuntimeError("lost reply")
+
+    monkeypatch.setattr(reviews_case["client"], "merge_pull_request", lose_reply)
+    assert reviews_case["reviews"].confirm(review["review_id"])["status"] == "recovery_required"
+    fetch = reviews_case["client"].fetch_pull_request_state
+    monkeypatch.setattr(reviews_case["client"], "fetch_pull_request_state",
+                        lambda *args: {**fetch(*args), "mergeCommit": {"oid": "c" * 40}})
+    outcome = reviews_case["reviews"].check_outcome(review["review_id"])
+    assert outcome["completion"]["merge_commit_sha"] == "c" * 40
+    assert outcome["completion_stage"] == "refresh"
     assert len(reviews_case["client"].merges) == 1
 
 

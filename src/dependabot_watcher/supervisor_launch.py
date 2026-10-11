@@ -30,19 +30,18 @@ def _session_policy_identity(policy: object) -> str:
 
     Model/effort are explicitly reapplied and checked on thread/resume. Host
     orchestration and validation resource limits also bind the new job, not the
-    conversation. Access/account/provider/tool capability changes remain gated.
+    conversation. Access/account/provider changes remain gated. Validation
+    authority is checked per job and its tools attach on resume through MCP.
     """
     if not isinstance(policy, dict):
         return supervisor_context_digest(policy)
-    harmless = {"model", "reasoning_effort", "timeout_seconds", "max_jobs_per_run"}
+    harmless = {"model", "reasoning_effort", "timeout_seconds", "max_jobs_per_run",
+                "validation_authorized", "validation"}
     identity = {key: value for key, value in policy.items() if key not in harmless}
     if (isinstance(identity.get("workspaces"), (list, tuple))
             and all(isinstance(registration, dict) for registration in identity["workspaces"])):
         identity["workspaces"] = [{key: value for key, value in registration.items() if key != "refresh_authorized"}
                                   for registration in identity["workspaces"]]
-    if isinstance(identity.get("validation"), dict):
-        limits = {"maximum_bytes", "minimum_free_bytes", "command_timeout_seconds", "storage_reserve_paths"}
-        identity["validation"] = {key: value for key, value in identity["validation"].items() if key not in limits}
     return supervisor_context_digest(identity)
 
 

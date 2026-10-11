@@ -37,6 +37,7 @@ from .runtime_state import (
     validate_private_file,
 )
 from .review_queue import ReviewQueueError
+from .local_sync import validate_control_locations
 from .supervisor_action import require_supervisor_recommendation
 
 
@@ -562,11 +563,21 @@ def preflight_execution(
     step_id: str,
     *,
     state_directory: Path | None = None,
+    config_path: Path | None = None,
+    completion_controller: bool = False,
 ) -> dict[str, Any]:
+    validate_control_locations(config, config_path, state_directory or default_state_directory())
     if config.operation.autonomy != "approval_required" or not config.operation.mutation_enabled:
         raise ExecutionError(
             "Execution is disabled; configure autonomy='approval_required' and mutation_enabled=true."
         )
+    _validate_plan_integrity(saved_plan)
+    saved_repository, _ = _find_step(saved_plan, step_id)
+    repository = str(saved_repository["repository"])
+    if _repository_config(config, repository).completion_policy == "selected_local_sync" and not completion_controller:
+        raise ExecutionError("Selected local completion requires the durable action-review workflow, not direct execute.")
+    # Runtime routing breaks the action-controller/executor import cycle.
+    from .review_actions import require_prior_completion
     if state_directory is not None and os.path.lexists(state_directory.expanduser()):
         _require_current_reconciled_plan(state_directory.expanduser(), saved_plan)
     try:
@@ -574,6 +585,9 @@ def preflight_execution(
     except GitHubError as exc:
         raise GitHubError(public_github_error_message("execution preflight")) from exc
     already_applied = bool(fresh_step.get("already_applied"))
+    if not already_applied:
+        require_prior_completion((state_directory or default_state_directory()).expanduser(), repository,
+                                 datetime.now(timezone.utc))
     supervisor = None
     if not already_applied and config.supervisor.mode != "off":
         supervisor = _require_supervised_action(config, (state_directory or default_state_directory()).expanduser(), saved_plan, step_id)
@@ -1149,6 +1163,8 @@ def execute_approved(
         saved_identity.get("repository"), "repository identity"
     )
     repository_config = _repository_config(config, repository_name)
+    if repository_config.completion_policy == "selected_local_sync" and before_execution is None:
+        raise ExecutionError("Selected local completion requires the durable action-review workflow, not direct execute.")
     saved_binding = _binding(saved_repository, saved_step, repository_config)
     if not hmac.compare_digest(
         supplied_approval_token, approval_token(saved_binding)
@@ -1157,21 +1173,33 @@ def execute_approved(
             "Approval confirmation token does not authorize the current exact action."
         )
 
+    validate_control_locations(config, config_path, state_directory or default_state_directory())
     state_path = _prepare_state_directory(state_directory or default_state_directory())
     with _operation_locks(state_path):
         _require_unchanged_configuration(config, config_path)
         _require_current_reconciled_plan(state_path, saved_plan)
         validate_audit_history(state_path)
-        # A trusted local controller may consume its exact confirmation here.
-        # Queue choices/reconciliation share this lock; do not invoke a guard
-        # outside it or allow the guard to recursively acquire run_lock.
-        if before_execution is not None:
-            before_execution()
+        from .review_actions import PendingMaintenanceError, require_prior_completion
+        completion_blocker: PendingMaintenanceError | None = None
+        try:
+            require_prior_completion(state_path, repository_name, datetime.now(timezone.utc))
+        except PendingMaintenanceError as exc:
+            completion_blocker = exc
+        # Preserve consume-before-live-read semantics for executable actions.
+        # A blocked action may only perform an exact already-applied observation.
+        if completion_blocker is None:
+            if before_execution is not None:
+                before_execution()
+            if repository_config.completion_policy == "selected_local_sync":
+                from .review_actions import require_completion_intent
+                require_completion_intent(config, state_path, _action_id(saved_binding))
         try:
             binding, _, current = _fresh_preflight(config, client, saved_plan, step_id)
         except GitHubError as exc:
             raise GitHubError(public_github_error_message("execution preflight")) from exc
         if current.get("already_applied"):
+            if completion_blocker is not None and before_execution is not None:
+                before_execution()
             prior_success = _audit_has_success(state_path, _action_id(binding))
             audit_path = _append_audit(
                 state_path,
@@ -1202,6 +1230,8 @@ def execute_approved(
                 "audit_path": str(audit_path),
                 "next": "No action is needed; GitHub reports this exact head as already merged.",
             }
+        if completion_blocker is not None:
+            raise completion_blocker
         expected_token = approval_token(binding)
         if not hmac.compare_digest(supplied_approval_token, expected_token):
             raise ExecutionError("Action changed during the final recheck; approval is invalid.")

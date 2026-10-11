@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
@@ -28,7 +29,7 @@ from dependabot_watcher.runtime_state import (
     save_run_state,
 )
 from dependabot_watcher.reconciliation_output import render_reconciliation
-from dependabot_watcher.review_queue import ReviewQueue
+from dependabot_watcher.review_queue import ReviewQueue, ReviewQueueError
 from dependabot_watcher.supervision import SupervisorJobs
 from dependabot_watcher.supervisor_permissions import SupervisorPermissions
 from dependabot_watcher.supervisor_status import supervision_status
@@ -501,6 +502,70 @@ def test_reconcile_no_work_skips_provider_and_revokes_previous_plan(
     assert result["notification"]["needed"] is False
     assert provider.requests == []
     assert load_run_state(tmp_path / "state")["latest_plan"]["revoked_reason"] == "no_work"
+    # Empty is fresh evidence, not unavailable evidence; execution authority
+    # remains revoked even while the supervisor can assess the exact base.
+    queue = ReviewQueue(_config("economy"), tmp_path / "state")
+    context = queue.supervision_context("example-org/example-app")
+    assert context["evidence_status"] == "complete"
+    assert context["repository_plan"]["recommended_order"] == []
+    assert context["repository_plan"]["evidence_snapshot"]["base_sha"] == "b" * 40
+    assert provider.requests == []
+    assert load_run_state(queue.directory)["latest_plan"]["plan_id"] is None
+
+
+def test_repeated_empty_collection_keeps_fresh_context_without_restoring_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inspections = []
+    for hour in (10, 11, 12):
+        inspection = _no_work_inspection()
+        timestamp = f"2026-09-27T{hour}:00:00Z"
+        inspection["generated_at"] = timestamp
+        inspection["repositories"][0]["evidence_snapshot"]["observed_at"] = timestamp
+        inspections.append(inspection)
+    monkeypatch.setattr("dependabot_watcher.reconciliation.inspect", lambda *args, **kwargs: inspections.pop(0))
+    config = _config()
+    directory = tmp_path / "state"
+    queue = ReviewQueue(config, directory)
+    first_context = None
+    for expected in ("no_work", "unchanged", "unchanged"):
+        result = reconcile(config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml",
+                           state_directory=directory)
+        assert result["outcome"] == expected and result["plan"] is None
+        context = queue.supervision_context(config.repositories[0].name)
+        if first_context is None:
+            first_context = context
+        assert context == first_context
+        assert context["evidence_status"] == "complete" and context["proposals"] == []
+        assert context["repository_plan"]["evidence_snapshot"]["base_sha"] == "b" * 40
+        assert load_run_state(directory)["latest_plan"]["plan_id"] is None
+
+
+@pytest.mark.parametrize("changed", ["run_id", "revision", "base", "branch", "scope"])
+def test_empty_collection_context_rejects_mismatched_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str,
+) -> None:
+    monkeypatch.setattr("dependabot_watcher.reconciliation.inspect", lambda *args, **kwargs: _no_work_inspection())
+    config = _config()
+    directory = tmp_path / "state"
+    reconcile(config, cast(GitHubClient, object()), config_path=tmp_path / "config.toml", state_directory=directory)
+    report = load_private_json(directory, Path("latest-run.json"))
+    if changed == "run_id":
+        report["run_id"] = "run_" + "0" * 20
+    elif changed == "revision":
+        report["evidence_revision"] = "evidence_" + "0" * 24
+    elif changed == "base":
+        report["inspection"]["repositories"][0]["evidence_snapshot"]["base_sha"] = "c" * 40
+    else:
+        repository = config.repositories[0]
+        repository = replace(repository, **({"default_branch": "other"} if changed == "branch"
+                                             else {"name": "example-org/other-app"}))
+        config = replace(config, repositories=(repository,))
+    save_private_json(directory, Path("latest-run.json"), report)
+    queue = ReviewQueue(config, directory)
+    with pytest.raises(ReviewQueueError, match="Empty-queue evidence"):
+        queue.supervision_context(config.repositories[0].name)
+    assert load_run_state(directory)["latest_plan"]["plan_id"] is None
 
 
 def test_reconcile_defers_unchanged_provider_failure_until_retry_window(
@@ -1102,7 +1167,7 @@ def test_failed_execution_routes_one_deduplicated_recovery_notification(
 def test_runtime_state_rejects_malformed_state_and_overlapping_lock(tmp_path: Path) -> None:
     state_directory = tmp_path / "state"
     with run_lock(state_directory):
-        with pytest.raises(RuntimeStateError, match="already active"):
+        with pytest.raises(RuntimeStateError, match="Saved state is busy"):
             with run_lock(state_directory):
                 pass
 

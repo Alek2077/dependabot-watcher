@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import subprocess
 import sys
@@ -119,6 +120,31 @@ def test_provider_failure_is_recorded_without_fake_completion(
         SupervisorRunner(jobs, provider).run(job["job_id"])
     stored = jobs.read(job["job_id"])
     assert stored["status"] == "failed" and stored["result"] is None and stored["session_id"] is None
+    diagnostic = load_private_json(jobs.queue.directory, Path("supervisor-failures") / f'{job["job_id"]}.json')
+    assert diagnostic["job_id"] == job["job_id"] and diagnostic["context_digest"] == job["context_digest"]
+    assert diagnostic["locations"]
+    assert all(set(item) == {"file", "function", "line"} and not Path(item["file"]).is_absolute()
+               for item in diagnostic["locations"])
+    assert "Fixture provider failed" not in json.dumps(diagnostic)
+    assert str(jobs.queue.directory) not in json.dumps(diagnostic)
+
+
+def test_failure_location_storage_failure_does_not_mask_the_original_failure(
+    runner_case: tuple[SupervisorJobs, FixtureProvider, dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs, provider, job = runner_case
+    provider.fail = True
+    save = supervisor_runner.save_private_json
+
+    def unavailable(directory, path, *args, **kwargs):
+        if path.parts[0] == "supervisor-failures":
+            raise RuntimeStateError("Diagnostic storage unavailable")
+        return save(directory, path, *args, **kwargs)
+
+    monkeypatch.setattr(supervisor_runner, "save_private_json", unavailable)
+    with pytest.raises(ReviewQueueError, match="Fixture provider failed"):
+        SupervisorRunner(jobs, provider).run(job["job_id"])
+    assert jobs.read(job["job_id"])["status"] == "failed"
 
 
 def test_file_policy_change_before_start_makes_no_provider_call(

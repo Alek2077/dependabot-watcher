@@ -156,7 +156,8 @@ def prepare_validation_snapshot(
     if shutil.disk_usage(parent).free < limits.minimum_free_bytes + limits.maximum_bytes:
         raise ValidationRuntimeError('Validation preparation lacks its requested storage reserve.')
     try:
-        verified = _git(workspace, 'rev-parse', '--verify', sha + '^{commit}')
+        verified = _git(workspace, 'rev-parse', '--verify', sha + '^{commit}', ensure_current=ensure_current,
+                        timeout_seconds=limits.timeout_seconds)
     except ReviewQueueError as exc:
         ensure_current()
         raise ValidationRuntimeError('Validation revision is unavailable; no checks ran.') from exc
@@ -199,7 +200,7 @@ def prepare_validation_snapshot(
         ensure_current()
         receipt: dict[str, object] = {'schema_version': 1, 'head_sha': sha,
             'tracked_files': files, 'omitted_entries': omitted, 'source_bytes': total,
-            'allocated_bytes': allocated_bytes(destination), 'git_metadata_present': False,
+            'allocated_bytes': allocated_bytes(destination, ensure_current=ensure_current), 'git_metadata_present': False,
             'omissions': omissions, 'snapshot_complete': omitted == 0,
             'source_fingerprints': fingerprints}
         save_private_json(parent, Path(destination.name + '.json'), receipt)
