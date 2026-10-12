@@ -77,7 +77,7 @@ Planning displays all workflow fields as evidence and never executes strings. Th
 
 ### Selected local updates (development)
 
-The optional `repositories.local_sync` array registers up to ten absolute checkout paths and their selected attached branches per repository. Omitted/empty arrays retain remote-only behavior. Each path can belong to only one configured repository; registration is scope, not standing approval. These entries do not change `operation.mutation_enabled`, which governs the separate GitHub merge capability.
+The optional `repositories.local_sync` array registers up to ten absolute checkout paths and their selected attached branches per repository. Omitted/empty arrays retain remote-only behavior. Each path can belong to only one configured repository; registration is scope, not standing approval. These entries do not change `operation.mutation_enabled`, which governs the separate GitHub merge capability. Fresh local-update reviews include the matching configured `origin` upstream tracking reference, when present, so the approved Git transaction updates both branch and tracking metadata. No unrelated references or upstream settings are changed; absent/different upstreams keep their existing workflow. Tracking-only corrections require their own exact review, not a silent fetch.
 
 ```toml
 [[repositories.local_sync]]

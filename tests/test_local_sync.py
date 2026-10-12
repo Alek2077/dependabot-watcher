@@ -85,6 +85,175 @@ def test_fast_forward_is_preflighted_and_explicitly_confirmed(sync_case):
     assert prepare(case)["status"] == "up_to_date"
 
 
+def configure_tracking(case: dict[str, Any], *, missing: bool = False) -> None:
+    git(case["path"], "config", "branch.integration.remote", "origin")
+    git(case["path"], "config", "branch.integration.merge", "refs/heads/integration")
+    if not missing:
+        git(case["path"], "update-ref", "refs/remotes/origin/integration", case["old"])
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_approved_sync_refreshes_only_matching_tracking_reference(sync_case, missing):
+    case = sync_case
+    configure_tracking(case, missing=missing)
+    git(case["path"], "update-ref", "refs/remotes/origin/unrelated", case["old"])
+    prepared = prepare(case)
+    assert prepared["binding"]["tracking_refresh"]["old_sha"] == (None if missing else case["old"])
+    assert confirm(case, prepared)["status"] == "synchronized"
+    assert git(case["path"], "rev-parse", "refs/remotes/origin/integration") == case["new"]
+    assert git(case["path"], "rev-parse", "refs/remotes/origin/unrelated") == case["old"]
+    assert not (case["path"] / ".git" / "FETCH_HEAD").exists()
+
+
+def test_current_branch_stale_tracking_requires_exact_confirmation(sync_case):
+    case = sync_case
+    configure_tracking(case)
+    git(case["path"], "reset", "--hard", case["new"])
+    prepared = prepare(case)
+    assert prepared["status"] == "ready" and prepared["binding"]["commits"] == 0
+    assert git(case["path"], "rev-parse", "refs/remotes/origin/integration") == case["old"]
+    assert confirm(case, prepared)["status"] == "synchronized"
+    assert git(case["path"], "rev-parse", "refs/remotes/origin/integration") == case["new"]
+    assert prepare(case)["status"] == "up_to_date"
+
+
+@pytest.mark.parametrize("change", ["ref", "config", "symbolic"])
+def test_tracking_change_after_review_preserves_checkout(sync_case, change):
+    case = sync_case
+    configure_tracking(case)
+    prepared = prepare(case)
+    if change == "config":
+        git(case["path"], "config", "branch.integration.merge", "refs/heads/other")
+    elif change == "symbolic":
+        git(case["path"], "symbolic-ref", "refs/remotes/origin/integration", "refs/heads/remote-update")
+    else:
+        git(case["path"], "update-ref", "refs/remotes/origin/integration", case["new"])
+    with pytest.raises(LocalSyncError):
+        confirm(case, prepared)
+    assert git(case["path"], "rev-parse", "HEAD") == case["old"]
+    assert (case["path"] / "app.txt").read_text() == "before\n"
+
+
+def test_legacy_saved_approval_does_not_gain_tracking_authority(sync_case):
+    from dependabot_watcher import local_sync
+    case = sync_case
+    configure_tracking(case)
+    prepared = prepare(case)
+    journal = load_private_json(case["state"], Path("local-sync.json"))
+    binding = journal["records"][prepared["review_id"]]["binding"]
+    del binding["tracking_refresh"]
+    save_private_json(case["state"], Path("local-sync.json"), journal)
+    prepared["approval_token"] = local_sync._token(prepared["review_id"], binding)
+    assert confirm(case, prepared)["status"] == "synchronized"
+    assert git(case["path"], "rev-parse", "refs/remotes/origin/integration") == case["old"]
+
+
+def test_other_upstream_is_not_reconfigured_or_refreshed(sync_case):
+    case = sync_case
+    configure_tracking(case)
+    git(case["path"], "config", "branch.integration.merge", "refs/heads/other")
+    prepared = prepare(case)
+    assert prepared["binding"]["tracking_refresh"] is None
+    assert confirm(case, prepared)["status"] == "synchronized"
+    assert git(case["path"], "rev-parse", "refs/remotes/origin/integration") == case["old"]
+    assert git(case["path"], "config", "branch.integration.merge") == "refs/heads/other"
+
+
+def test_tracking_lock_refusal_is_atomic_and_observed_without_replay(sync_case):
+    case = sync_case
+    configure_tracking(case)
+    prepared = prepare(case)
+    lock = case["path"] / ".git/refs/remotes/origin/integration.lock"
+    lock.write_text("another owner")
+    with pytest.raises(LocalSyncError, match="outcome needs"):
+        confirm(case, prepared)
+    assert lock.read_text() == "another owner"
+    assert git(case["path"], "rev-parse", "HEAD") == case["old"]
+    assert git(case["path"], "rev-parse", "refs/remotes/origin/integration") == case["old"]
+    assert recover_sync(None, case["config_path"], case["state"], prepared["review_id"])["result"]["status"] == "observed_not_applied"
+
+
+def test_symbolic_tracking_race_cannot_redirect_transaction(sync_case):
+    case = sync_case
+    configure_tracking(case)
+    prepared = prepare(case)
+    class RacingClient(BranchClient):
+        def fetch_branch_head(self, repository, branch):
+            result = super().fetch_branch_head(repository, branch)
+            if len(self.reads) == 2:
+                git(case["path"], "symbolic-ref", "refs/remotes/origin/integration", "refs/heads/remote-update")
+            return result
+    case["client"] = RacingClient(case["new"])
+    with pytest.raises(LocalSyncError, match="outcome needs"):
+        confirm(case, prepared)
+    assert git(case["path"], "rev-parse", "HEAD") == case["old"]
+    assert git(case["path"], "rev-parse", "refs/heads/remote-update") == case["new"]
+    assert (case["path"] / "app.txt").read_text() == "before\n"
+
+
+@pytest.mark.parametrize("applied", [False, True])
+def test_tracking_only_recovery_observes_saved_intent(sync_case, applied):
+    case = sync_case
+    configure_tracking(case)
+    git(case["path"], "reset", "--hard", case["new"])
+    prepared = prepare(case)
+    journal = load_private_json(case["state"], Path("local-sync.json"))
+    journal["records"][prepared["review_id"]]["status"] = "executing"
+    save_private_json(case["state"], Path("local-sync.json"), journal)
+    if applied:
+        git(case["path"], "update-ref", "refs/remotes/origin/integration", case["new"])
+    before = git(case["path"], "show-ref")
+    result = recover_sync(None, case["config_path"], case["state"], prepared["review_id"])
+    assert result["result"]["status"] == ("observed_applied" if applied else "observed_not_applied")
+    assert git(case["path"], "show-ref") == before
+
+
+def test_recovery_preserves_inconsistent_branch_tracking_outcome(sync_case):
+    case = sync_case
+    configure_tracking(case)
+    prepared = prepare(case)
+    journal = load_private_json(case["state"], Path("local-sync.json"))
+    journal["records"][prepared["review_id"]]["status"] = "executing"
+    save_private_json(case["state"], Path("local-sync.json"), journal)
+    git(case["path"], "reset", "--hard", case["new"])
+    result = recover_sync(None, case["config_path"], case["state"], prepared["review_id"])
+    assert result["result"]["status"] == "manual_repair_required"
+    assert git(case["path"], "rev-parse", "refs/remotes/origin/integration") == case["old"]
+
+
+@pytest.mark.parametrize("capable", [False, True])
+def test_native_preview_requires_tracking_disclosure_capability(sync_case, capable):
+    case = sync_case
+    configure_tracking(case)
+    request = {"schema_version": 1, "request_id": "sync_preview", "operation": "prepare_local_sync",
+               "target_id": case["target_id"]}
+    if capable:
+        request["tracking_refresh_supported"] = True
+    result = handle_sync_request(case["config"], case["config_path"], case["state"], case["client"], request)
+    binding = result["review"]["binding"]
+    assert ("tracking_refresh" in binding) is capable
+    assert confirm(case, result["review"])["status"] == "synchronized"
+    assert git(case["path"], "rev-parse", "refs/remotes/origin/integration") == (case["new"] if capable else case["old"])
+
+
+@pytest.mark.parametrize("tracking_only", [False, True])
+def test_cli_preview_discloses_exact_tracking_mutation(sync_case, monkeypatch, capsys, tracking_only):
+    from dependabot_watcher import cli
+    case = sync_case
+    configure_tracking(case)
+    if tracking_only:
+        git(case["path"], "reset", "--hard", case["new"])
+    monkeypatch.setattr(cli, "GhCliClient", lambda **kwargs: case["client"])
+    assert cli.main(["sync", "--repo", "example-org/example-app", "--config", str(case["config_path"]),
+                     "--state-dir", str(case["state"])]) == 0
+    output = capsys.readouterr().out
+    assert "refs/remotes/origin/integration" in output
+    assert case["old"] in output and case["new"] in output
+    assert "No other remote-tracking references" in output
+    assert "(0 commits)" in output if tracking_only else "(1 commits)" in output
+    assert git(case["path"], "rev-parse", "origin/integration") == case["old"]
+
+
 @pytest.mark.parametrize("change", ["tracked", "staged", "untracked", "branch", "divergent", "origin", "skip", "filter", "sparse"])
 def test_unsupported_checkout_is_preserved(sync_case, change):
     case, path = sync_case, sync_case["path"]

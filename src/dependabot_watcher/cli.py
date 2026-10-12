@@ -815,7 +815,7 @@ def _run_local_sync(args: argparse.Namespace, presentation: TerminalPresentation
                  f"Status: {report['status']}"]
         if report["status"] == "ready":
             lines.extend([f"Fast-forward: {binding['head_sha']} -> {binding['target_sha']} ({binding['commits']} commits)",
-                "Confirmation updates only this local branch, index and tracked files. No push, stash, reset or branch switch.",
+                "Confirmation updates this local branch, index and tracked files. No push, stash, reset or branch switch.",
                 "Preflight may download missing Git objects; it has not integrated the branch.",
                 f"Review ID: {report['review_id']}", f"Approval token: {report['approval_token']}",
                 "After separate approval, rerun sync with --review-id and --approval-token using these exact values."])
@@ -827,6 +827,12 @@ def _run_local_sync(args: argparse.Namespace, presentation: TerminalPresentation
             lines.append("Local changes make the outcome uncertain. Repair is required through your normal workflow; nothing was rolled back or retried.")
         else:
             lines.append("Saved outcome observed. No integration was retried.")
+        if report["status"] in {"ready", "synchronized"}:
+            tracking = binding.get("tracking_refresh")
+            if tracking is not None:
+                lines.append(f"Remote-tracking reference: {tracking['ref']} · {tracking['old_sha'] or 'absent'} -> {binding['target_sha']}. No other remote-tracking references are updated.")
+            else:
+                lines.append("No remote-tracking reference update is included.")
         rendered = "\n".join(lines)
     _write_report(rendered, presentation)
     return ExitCode.EXECUTION_ERROR if (report.get("result") or {}).get("status") == "manual_repair_required" else ExitCode.SUCCESS

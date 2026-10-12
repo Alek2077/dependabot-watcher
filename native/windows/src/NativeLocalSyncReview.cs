@@ -22,6 +22,17 @@ internal static class NativeLocalSyncReview
         return binding;
     }
 
+    internal static string TrackingDescription(JsonObject binding) {
+        if (binding["tracking_refresh"] is null) return "No remote-tracking reference update is included.";
+        var tracking = binding["tracking_refresh"] as JsonObject
+            ?? throw new InvalidDataException("Tracking-reference review is invalid.");
+        var reference = Text(tracking, "ref", "\\Arefs/remotes/origin/[^\\x00-\\x20]{1,8192}\\z");
+        if (reference != "refs/remotes/origin/" + binding["branch"]?.GetValue<string>())
+            throw new InvalidDataException("Tracking-reference review does not match the selected branch.");
+        var old = tracking["old_sha"] is null ? "absent" : Text(tracking, "old_sha", "\\A(?:[a-f0-9]{40}|[a-f0-9]{64})\\z");
+        return $"Also refreshes {reference}: {old} → {binding["target_sha"]}. No other remote-tracking references are updated.";
+    }
+
     internal static JsonObject Preparation(JsonNode? node, JsonObject target) {
         var review = node as JsonObject ?? throw new InvalidDataException("No local update review was returned.");
         if (review["schema_version"]?.GetValue<int>() != 1 || review["mutation_performed"]?.GetValue<bool>() != false)
@@ -37,8 +48,12 @@ internal static class NativeLocalSyncReview
         Text(review, "review_id", "\\Async_[a-f0-9]{32}\\z");
         Text(review, "approval_token", "\\Async-[a-f0-9]{64}\\z");
         Text(binding, "target_sha", "\\A(?:[a-f0-9]{40}|[a-f0-9]{64})\\z");
-        if (binding["commits"]?.GetValue<int>() is not > 0)
+        var commits = binding["commits"]?.GetValue<int>();
+        if (commits is null or < 0 || commits == 0 && (binding["tracking_refresh"] is not JsonObject tracking
+            || !JsonNode.DeepEquals(binding["head_sha"], binding["target_sha"])
+            || JsonNode.DeepEquals(tracking["old_sha"], binding["target_sha"])))
             throw new InvalidDataException("Local update commit count is invalid.");
+        TrackingDescription(binding);
         return review;
     }
 

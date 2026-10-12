@@ -81,6 +81,7 @@ internal sealed partial class BackendQueueWindow
         try
         {
             var request = LocalSyncRequest("prepare_local_sync"); request["target_id"] = target["target_id"]!.GetValue<string>();
+            request["tracking_refresh_supported"] = true;
             var response = await _client.SendAsync(request);
             var review = NativeLocalSyncReview.Preparation(response["review"], target);
             if (_shutdownRequested) return;
@@ -91,7 +92,7 @@ internal sealed partial class BackendQueueWindow
             }
             if (review["status"]?.GetValue<string>() != "ready" || review["binding"] is not JsonObject binding)
                 throw new InvalidDataException("Local update is not ready for confirmation.");
-            var description = NativeDisplayText.Escape($"{binding["repository"]} · {binding["branch"]}\n{binding["directory"]}\n\n{binding["head_sha"]} → {binding["target_sha"]}\n{binding["commits"]} commits\n\nUpdates only this clean local branch, its index and tracked files. No tests, push, remote merge, stash, reset, branch switch, dependency installation or deployment.\n\nUpdate this checkout now?");
+            var description = NativeDisplayText.Escape($"{binding["repository"]} · {binding["branch"]}\n{binding["directory"]}\n\n{binding["head_sha"]} → {binding["target_sha"]}\n{binding["commits"]} commits\n\nUpdates this clean local branch, its index and tracked files. {NativeLocalSyncReview.TrackingDescription(binding)} No tests, push, remote merge, stash, reset, branch switch, dependency installation or deployment.\n\nUpdate this checkout now?");
             if (MessageBox.Show(this, description, "Confirm selected local update", MessageBoxButton.YesNo,
                                 MessageBoxImage.Question, MessageBoxResult.No) != MessageBoxResult.Yes)
             {
