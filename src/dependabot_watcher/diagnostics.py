@@ -18,6 +18,9 @@ import yaml
 
 from .config import ConfigError, WatcherConfig, load_config
 from .execution import ExecutionError, default_state_directory, validate_audit_history
+from .native_review import NativeReviewError, verify_native_component, verify_native_host
+from .runtime_state import RuntimeStateError
+from .windows_helpers import WindowsHelperError
 
 
 DIAGNOSTIC_SCHEMA_VERSION = 1
@@ -410,10 +413,15 @@ def doctor(
     runner: CommandRunner = _run_command,
     clock: Clock = _utc_now,
     timeout_seconds: int = 30,
+    state_directory: Path | None = None,
 ) -> dict[str, Any]:
     """Return a bounded, non-secret readiness report without changing local or remote state."""
 
     config, configuration, findings = _configuration_report(config_path)
+    python_supported = sys.version_info >= (3, 11) and sys.version_info.releaselevel == "final"
+    if not python_supported:
+        findings.append(_finding("error", "python_runtime_unsupported",
+            "Use a stable Python 3.11 or newer; prerelease interpreters are not supported."))
     gh = _tool_status(
         "gh",
         version_args=("--version",),
@@ -430,7 +438,7 @@ def doctor(
         and config.operation.autonomy == "approval_required"
         and config.operation.mutation_enabled
     )
-    state_path = default_state_directory() if execution_enabled else None
+    state_path = (state_directory or default_state_directory()) if execution_enabled else None
     state_directory_valid = False
     if state_path is not None:
         try:
@@ -491,6 +499,23 @@ def doctor(
     if supervisor_enabled:
         codex["adapter_capabilities"].append("supervisor_app_server")
         codex["supervisor_runtime_verified"] = False
+        try:
+            verify_native_host()
+        except NativeReviewError:
+            codex["windows_component"] = "unsupported_host"
+            findings.append(_finding("error", "supervisor_host_unavailable",
+                "The current run-triggered supervisor requires Windows with a valid WSL distribution and user.",
+                "Use the supported WSL route, or operate the CLI with your own agent; no SDK installation enables this route on another host."))
+        else:
+            try:
+                verify_native_component(state_directory or default_state_directory())
+            except (NativeReviewError, RuntimeStateError, WindowsHelperError, OSError):
+                codex["windows_component"] = "unavailable_or_changed"
+                findings.append(_finding("error", "supervisor_windows_component_unavailable",
+                    "WSL supervision requires a selected, unchanged Windows component.",
+                    "Obtain the packaged component and select it with review --native-component PATH using the same --config and --state-dir; do not install build tools."))
+            else:
+                codex["windows_component"] = "verified"
 
     if gh["availability"] != "available":
         findings.append(
@@ -695,7 +720,7 @@ def doctor(
             "platform": platform.system().lower(),
             "platform_release": platform.release(),
             "python": platform.python_version(),
-            "python_supported": sys.version_info >= (3, 10),
+            "python_supported": python_supported,
         },
         "configuration": configuration,
         "state": {

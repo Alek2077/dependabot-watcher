@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections import namedtuple
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -29,6 +30,23 @@ def _config(path: Path, *, advisory_mode: str = "off") -> None:
         + 'default_branch = "main"\n',
         encoding="utf-8",
     )
+
+
+@pytest.mark.parametrize("version,supported", [
+    ((3, 10, 12, "final", 0), False),
+    ((3, 11, 0, "candidate", 1), False),
+    ((3, 11, 0, "final", 0), True),
+    ((3, 14, 7, "final", 0), True),
+])
+def test_doctor_requires_stable_supported_python(tmp_path, monkeypatch, version, supported):
+    config_path = tmp_path / "config.toml"
+    _config(config_path)
+    version_type = namedtuple("Version", "major minor micro releaselevel serial")
+    monkeypatch.setattr(diagnostics.sys, "version_info", version_type(*version))
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda unused: None)
+    report = doctor(config_path, offline=True)
+    assert report["runtime"]["python_supported"] is supported
+    assert ("python_runtime_unsupported" in {finding["code"] for finding in report["findings"]}) is not supported
 
 
 def test_doctor_reports_redacted_read_only_readiness_and_support_depth(

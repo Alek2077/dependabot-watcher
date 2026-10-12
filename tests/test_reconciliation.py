@@ -15,6 +15,7 @@ from dependabot_watcher.config import parse_config
 from dependabot_watcher.github import GitHubClient, GitHubError
 from dependabot_watcher.reconciliation import (
     ReconciliationError,
+    _notification,
     _suppressed_notification,
     evidence_revision,
     reconcile,
@@ -72,6 +73,32 @@ def _config(
             ],
         }
     )
+
+
+@pytest.mark.parametrize("output", ["text", "markdown"])
+@pytest.mark.parametrize("interval,overdue,expected", [
+    (None, False, "no cadence supplied"),
+    (60, False, "current"),
+    (60, True, "overdue catch-up"),
+])
+def test_run_cadence_output_does_not_claim_schedule_installation(output, interval, overdue, expected):
+    rendered = render_reconciliation({"schedule_observation": {
+        "expected_interval_minutes": interval, "overdue_catch_up": overdue}}, output)
+    assert expected in rendered
+    assert "schedule installation not checked" in rendered
+    assert "scheduled run" not in rendered
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_candidate_notification_distinguishes_preflight_from_approval(tmp_path, enabled):
+    candidate_plan = {"repositories": [{"recommended_order": [{"kind": "pull_request",
+        "action": "validate_then_merge", "blockers": [], "step_id": "step_fixture"}]}]}
+    notice = _notification(outcome="action_required", plan=candidate_plan,
+        plan_path=tmp_path / "plan.json", config_path=tmp_path / "config.toml",
+        state_directory=tmp_path / "state", execution={}, execution_enabled=enabled)
+    assert notice["reason"] == ("execution_preflight_required" if enabled else "candidate_available_execution_disabled")
+    assert notice["next"]["argv"][1] == ("execute" if enabled else "plan")
+    assert "approval_ready" not in notice["reason"]
 
 
 def _inspection(*, generated_at: str = "2026-09-27T10:00:00Z") -> dict[str, Any]:
@@ -294,11 +321,9 @@ def test_reconcile_persists_plan_and_suppresses_unchanged_model_work(
     assert provider.requests[0].queue_synopsis is not None
     assert provider.requests[0].queue_synopsis["item_count"] == 1
     assert Path(first["plan_lineage"]["plan_path"]).is_file()
-    assert first["notification"]["reason"] == "approval_ready"
-    assert first["notification"]["next"]["argv"][-6:-4] == [
-        "--state-dir",
-        str(tmp_path / "state"),
-    ]
+    assert first["notification"]["reason"] == "candidate_available_execution_disabled"
+    assert first["notification"]["next"]["argv"][1] == "plan"
+    assert "execute" not in first["notification"]["next"]["argv"]
     assert second["outcome"] == "unchanged"
     assert second["notification"]["needed"] is False
     assert second["plan"]["plan_id"] == first["plan"]["plan_id"]
@@ -974,6 +999,23 @@ def test_undelivered_notice_survives_unrelated_execution_revision_change() -> No
 
     assert result["needed"] is True
     assert result["reason"] == "approval_ready"
+
+
+@pytest.mark.parametrize("old_reason,new_reason", [
+    ("approval_ready", "candidate_available_execution_disabled"),
+    ("execution_preflight_required", "candidate_available_execution_disabled"),
+    ("candidate_available_execution_disabled", "execution_preflight_required"),
+])
+def test_pending_candidate_notice_uses_current_execution_semantics(old_reason, new_reason):
+    previous = {"notification": {"needed": True, "reason": old_reason, "message": "old"},
+        "notification_delivery": {"mode": "desktop", "status": "failed"}}
+    current = {"needed": True, "reason": new_reason, "message": "current",
+        "next": {"argv": ["current-command"]}}
+    result = _suppressed_notification(previous,
+        default={"needed": False, "reason": "unchanged"}, current_candidate=current,
+        notification_mode="desktop", execution_revision="current")
+    assert result == current
+    assert previous["notification_delivery"]["status"] == "failed"
 
 
 def test_notification_delivery_validates_latest_report_before_updating_state(

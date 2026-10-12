@@ -53,6 +53,32 @@ def _component(path: Path) -> tuple[Path, str, str]:
     return candidate, fingerprint, assembly_fingerprint
 
 
+def verify_native_host() -> None:
+    """Check the same host/user identity required by native launch, without writes."""
+    _wsl_identity()
+
+
+def verify_native_component(state_directory: Path) -> tuple[Path, str, str]:
+    """Read and verify an existing selection without creating state or launching it."""
+    state = state_directory.expanduser().absolute()
+    private = state / "native-review"
+    if not os.path.lexists(private / "component.json"):
+        raise NativeReviewError("Select the Windows component required for WSL supervision with review --native-component PATH first.")
+    registration = load_private_json(state, Path("native-review/component.json"), maximum_bytes=8192, read_only=True)
+    if (not isinstance(registration, dict) or set(registration) != {"schema_version", "path", "sha256", "assembly_sha256"}
+            or type(registration["schema_version"]) is not int or registration["schema_version"] != 2
+            or not isinstance(registration["path"], str)
+            or not isinstance(registration["sha256"], str)
+            or not re.fullmatch(r"[a-f0-9]{64}", registration["sha256"])
+            or not isinstance(registration["assembly_sha256"], str)
+            or not re.fullmatch(r"[a-f0-9]{64}", registration["assembly_sha256"])):
+        raise NativeReviewError("Reselect the complete Windows component with review --native-component PATH.")
+    candidate, fingerprint, assembly_fingerprint = _component(Path(registration["path"]))
+    if fingerprint != registration["sha256"] or assembly_fingerprint != registration["assembly_sha256"]:
+        raise NativeReviewError("The registered Windows executable changed; deliberately select the updated component again.")
+    return candidate, fingerprint, assembly_fingerprint
+
+
 def _prepare_native_review(
     config_path: Path, state_directory: Path, *, component: Path | None = None,
     existing_only: bool = False,
@@ -67,20 +93,7 @@ def _prepare_native_review(
     state = ensure_private_directory(Path(os.path.abspath(state_directory.expanduser())))
     private = ensure_private_directory(state / "native-review")
     if component is None:
-        if not os.path.lexists(private / "component.json"):
-            raise NativeReviewError("Select the optional Windows component with review --native-component PATH first.")
-        registration = load_private_json(private, Path("component.json"), maximum_bytes=8192)
-        if (not isinstance(registration, dict) or set(registration) != {"schema_version", "path", "sha256", "assembly_sha256"}
-                or type(registration["schema_version"]) is not int or registration["schema_version"] != 2
-                or not isinstance(registration["path"], str)
-                or not isinstance(registration["sha256"], str)
-                or not re.fullmatch(r"[a-f0-9]{64}", registration["sha256"])
-                or not isinstance(registration["assembly_sha256"], str)
-                or not re.fullmatch(r"[a-f0-9]{64}", registration["assembly_sha256"])):
-            raise NativeReviewError("Select the optional Windows component with review --native-component PATH first.")
-        candidate, fingerprint, assembly_fingerprint = _component(Path(registration["path"]))
-        if fingerprint != registration["sha256"] or assembly_fingerprint != registration["assembly_sha256"]:
-            raise NativeReviewError("The registered Windows executable changed; deliberately select the updated component again.")
+        candidate, fingerprint, assembly_fingerprint = verify_native_component(state)
     else:
         if existing_only:
             raise NativeReviewError("Notification status/removal cannot select a new component.")

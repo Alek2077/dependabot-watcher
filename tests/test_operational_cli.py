@@ -832,7 +832,7 @@ def test_cli_doctor_uses_partial_exit_for_attention_report(
     monkeypatch.setattr(
         cli,
         "doctor",
-        lambda config_path, offline: {
+        lambda config_path, offline, state_directory: {
             "schema_version": 1,
             "mode": "doctor",
             "generated_at": "2026-09-22T12:00:00Z",

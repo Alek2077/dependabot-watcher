@@ -13,6 +13,7 @@ from dependabot_watcher import cli, native_review
 from dependabot_watcher.native_review import NativeReviewError, native_notification, open_native_review, submit_scheduled_supervisor
 from dependabot_watcher.runtime_state import RuntimeStateError, load_private_json, load_run_state, save_run_state
 from dependabot_watcher.windows_helpers import WindowsHelperError
+from dependabot_watcher.diagnostics import doctor
 
 
 @pytest.fixture
@@ -70,6 +71,71 @@ def test_saved_component_and_identical_profile_reopen_without_overwrite(native_c
     invoke(native_case, select=False)
     assert profile.stat().st_mtime_ns == before
     assert len(native_case["calls"]) == 2
+
+
+def test_component_readiness_is_read_only_and_detects_changed_assembly(native_case: dict[str, Any], monkeypatch) -> None:
+    case = native_case
+    with pytest.raises(NativeReviewError):
+        native_review.verify_native_component(case["state"])
+    assert not case["state"].exists()
+    invoke(case)
+    case["calls"].clear()
+    def unexpected_chmod(*args, **kwargs):
+        raise AssertionError("Readiness must not change directory permissions")
+    monkeypatch.setattr(native_review.os, "chmod", unexpected_chmod)
+    before = {str(path): path.read_bytes() for path in case["state"].rglob("*") if path.is_file()}
+    assert native_review.verify_native_component(case["state"])[0] == case["component"]
+    assert not case["calls"]
+    assert before == {str(path): path.read_bytes() for path in case["state"].rglob("*") if path.is_file()}
+    case["component"].with_suffix(".dll").write_bytes(b"changed")
+    with pytest.raises(NativeReviewError, match="changed"):
+        native_review.verify_native_component(case["state"])
+
+
+def test_doctor_checks_supervisor_component_in_selected_state(native_case: dict[str, Any], monkeypatch) -> None:
+    case = native_case
+    configure_scheduled(case)
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Fixture-Ubuntu")
+    monkeypatch.setattr("dependabot_watcher.diagnostics.shutil.which", lambda unused: None)
+    missing = case["config"].parent / "missing-state"
+    report = doctor(case["config"], offline=True, state_directory=missing)
+    assert "supervisor_windows_component_unavailable" in {item["code"] for item in report["findings"]}
+    assert not missing.exists()
+    report = doctor(case["config"], offline=True, state_directory=case["state"])
+    assert report["tools"]["codex_cli"]["windows_component"] == "verified"
+    case["component"].with_suffix(".dll").write_bytes(b"changed")
+    report = doctor(case["config"], offline=True, state_directory=case["state"])
+    assert report["tools"]["codex_cli"]["windows_component"] == "unavailable_or_changed"
+
+
+@pytest.mark.parametrize("unsafe", ["readable_state", "symlink_state", "readable_child"])
+def test_component_readiness_rejects_unsafe_original_state(native_case, unsafe):
+    case = native_case
+    invoke(case)
+    state = case["state"]
+    if unsafe == "readable_state":
+        state.chmod(0o755)
+    elif unsafe == "readable_child":
+        (state / "native-review").chmod(0o755)
+    else:
+        state = state.parent / "linked-state"
+        state.symlink_to(case["state"], target_is_directory=True)
+    with pytest.raises(RuntimeStateError):
+        native_review.verify_native_component(state)
+    if unsafe == "readable_state":
+        assert state.stat().st_mode & 0o777 == 0o755
+
+
+def test_doctor_blocks_supervision_on_unsupported_host(native_case, monkeypatch):
+    case = native_case
+    configure_scheduled(case)
+    def unavailable():
+        raise NativeReviewError("Unsupported host")
+    monkeypatch.setattr(native_review, "_wsl_identity", unavailable)
+    monkeypatch.setattr("dependabot_watcher.diagnostics.shutil.which", lambda unused: None)
+    report = doctor(case["config"], offline=True, state_directory=case["state"])
+    assert report["tools"]["codex_cli"]["windows_component"] == "unsupported_host"
+    assert "supervisor_host_unavailable" in {item["code"] for item in report["findings"]}
 
 
 def configure_scheduled(case: dict[str, Any]) -> str:
