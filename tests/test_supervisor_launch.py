@@ -307,10 +307,11 @@ def test_deliberate_retry_keeps_failure_and_does_not_replay_a_retry_request(laun
         invoke(case)
     jobs = SupervisorJobs(case["queue"])
     failed = next(iter(jobs._load()["jobs"].values()))
-    case["program"].write_text(case["program"].read_text().replace("FAULT='failed_turn'", "FAULT=''").replace("'thread1'", "'thread2'"))
+    case["program"].write_text(case["program"].read_text().replace("FAULT='failed_turn'", "FAULT=''"))
     fresh = invoke(case, retry_job_id=failed["job_id"])
     assert fresh["job"]["status"] == "completed" and fresh["job"]["retry_of"] == failed["job_id"]
     assert fresh["job"]["job_id"] != failed["job_id"]
+    assert fresh["job"]["session_id"] == failed["session_id"]
     assert jobs.read(failed["job_id"]) == failed
     with pytest.raises(ReviewQueueError, match="Retry"):
         invoke(case, retry_job_id=failed["job_id"])
@@ -325,7 +326,7 @@ def test_retry_failure_requires_a_new_exact_choice(launch_case: dict[str, Any]) 
         invoke(case)
     jobs = SupervisorJobs(case["queue"])
     first = next(iter(jobs._load()["jobs"]))
-    case["program"].write_text(case["program"].read_text().replace("'thread1'", "'thread2'"))
+    # Retrying preserves the backend-owned conversation, not its permissions.
     with pytest.raises(ReviewQueueError):
         invoke(case, retry_job_id=first)
     history = jobs._load()["jobs"]

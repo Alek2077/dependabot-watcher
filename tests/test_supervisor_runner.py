@@ -59,6 +59,31 @@ class ReceiptProvider(FixtureProvider):
                 "reasoning_effort": policy["reasoning_effort"], "workspace": proof["directory"]}
 
 
+@pytest.mark.parametrize("conflicting", [False, True])
+def test_duplicate_recommendations_fail_closed_with_specific_recoverable_category(
+    runner_case: tuple[SupervisorJobs, FixtureProvider, dict[str, Any]], conflicting: bool,
+) -> None:
+    jobs, provider, job = runner_case
+
+    class DuplicateProvider(FixtureProvider):
+        def analyze(self, job: Mapping[str, Any]) -> dict[str, Any]:
+            observation = super().analyze(job)
+            first = observation["analysis"]["recommendations"][0]
+            duplicate = copy.deepcopy(first)
+            if conflicting:
+                duplicate["conclusion"] = "hold"
+            observation["analysis"]["recommendations"].append(duplicate)
+            return observation
+
+    with pytest.raises(ReviewQueueError, match="saved context"):
+        SupervisorRunner(jobs, DuplicateProvider(provider.queue)).run(job["job_id"])
+    failed = jobs.read(job["job_id"])
+    assert failed["status"] == "failed"
+    assert failed["failure"] == "output_contract_invalid"
+    assert failed["result"] is None
+    assert not (jobs.queue.directory / "supervisor-observations" / f'{job["job_id"]}.json').exists()
+
+
 @pytest.fixture
 def runner_case(tmp_path: Path) -> tuple[SupervisorJobs, FixtureProvider, dict[str, Any]]:
     config = parse_config({"schema_version": 1, "repositories": [{"name": "example-org/example-app"}]})

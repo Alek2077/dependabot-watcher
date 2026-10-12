@@ -31,6 +31,13 @@ internal static class ConversationContracts
                     ["identity"] = new JsonObject { ["repository"] = repository, ["number"] = number, ["head_sha"] = new string('e', 40) } }
             }.ToJsonString()), "plan_" + new string('a', 16))!;
         var item = Proposal(CurrentId);
+        var list = (System.Collections.IList)Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(proposalType))!;
+        list.Add(item);
+        if (Call(proposalType, null, "RestoreSelection", list, OriginalId,
+            new JsonObject { ["repository"] = Repository, ["kind"] = "alert", ["number"] = 99 }) is not null)
+            throw new InvalidDataException("Retired selection silently retargeted the conversation to another item.");
+        if (Call(proposalType, null, "RestoreSelection", list, null, null) != item)
+            throw new InvalidDataException("Initial queue selection was not restored.");
         var investigationRequest = (string)proposalType.GetProperty("InvestigationRequest", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(item)!;
         if (!investigationRequest.Contains("PR #42") || !investigationRequest.Contains(Repository)
             || !investigationRequest.Contains("does not authorize merging"))

@@ -496,6 +496,19 @@ def test_retry_resumes_a_previous_completed_owner_with_separate_attempt(jobs_cas
     jobs.fail(retry["job_id"])
 
 
+def test_prepared_retry_cannot_be_admitted_by_automatic_launch(jobs_case: tuple[SupervisorJobs, dict[str, Any]]) -> None:
+    jobs, _ = jobs_case
+    first = jobs.prepare("example-org/example-app")
+    jobs.start(first["job_id"])
+    jobs.fail(first["job_id"])
+    retry = jobs.prepare(first["repository"], retry_job_id=first["job_id"])
+    with pytest.raises(ReviewQueueError, match="deliberate recovery"):
+        jobs.prepare(first["repository"])
+    assert jobs.read(retry["job_id"])["status"] == "prepared"
+    assert jobs.retry_candidate(jobs._load(), first["repository"], first["context_digest"]) == first["job_id"]
+    assert jobs.prepare(first["repository"], retry_job_id=first["job_id"])["job_id"] == retry["job_id"]
+
+
 def test_save_failure_is_not_acknowledged_as_started(jobs_case: tuple[SupervisorJobs, dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
     jobs, _ = jobs_case
     job = jobs.prepare("example-org/example-app")

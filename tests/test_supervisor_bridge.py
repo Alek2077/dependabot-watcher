@@ -116,7 +116,7 @@ def test_failed_launch_is_exposed_and_explicit_retry_crosses_the_actual_bridge(l
     failed = json.loads(output.getvalue())["jobs"][0]
     assert failed["status"] == "failed" and failed["failure"] == "provider_failed" and failed["retry_available"] is True
     incoming = {**request(case), "retry_job_id": failed["job_id"]}
-    case["program"].write_text(case["program"].read_text().replace("FAULT='failed_turn'", "FAULT=''").replace("'thread1'", "'thread2'"))
+    case["program"].write_text(case["program"].read_text().replace("FAULT='failed_turn'", "FAULT=''"))
     output = io.BytesIO()
     assert launch_exchange(case["queue"], cast(GitHubClient, object()), incoming, output) == 0
     terminal = json.loads(output.getvalue().splitlines()[-1])

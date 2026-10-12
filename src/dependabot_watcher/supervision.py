@@ -36,7 +36,18 @@ def _time(value: object) -> datetime:
     return parsed
 
 
+class SupervisorResultError(ReviewQueueError):
+    """A completed answer failed its bounded, context-bound output contract."""
+
+
 def _validate_result(result: object, context: Mapping[str, Any]) -> None:
+    try:
+        _validate_result_contract(result, context)
+    except ReviewQueueError as exc:
+        raise SupervisorResultError(str(exc)) from exc
+
+
+def _validate_result_contract(result: object, context: Mapping[str, Any]) -> None:
     """Agent statements remain advice; they cannot supply executable commands."""
     fields = {"summary", "recommendations", "replies"}
     completion = context.get("maintenance_completion")
@@ -362,7 +373,7 @@ class SupervisorJobs:
                     or (job["session_id"] is not None and (not isinstance(job["session_id"], str)
                         or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", job["session_id"])) )
                     or (job["failure"] is not None and (not isinstance(job["failure"], str) or job["failure"] not in
-                        {"provider_failed", "interrupted", "context_changed"}))):
+                        {"provider_failed", "output_contract_invalid", "interrupted", "context_changed"}))):
                 raise ReviewQueueError("Supervisor journal contains a malformed job.")
             _validate_context(job["context"])
             created = _time(job["created_at"])
@@ -429,7 +440,15 @@ class SupervisorJobs:
         """Only an uncovered failed attempt in this exact current context."""
         current = [job for job in state["jobs"].values()
                    if job["repository"].casefold() == repository.casefold() and job["context_digest"] == digest]
-        if any(job["status"] in {"prepared", "running", "completed"} for job in current):
+        if any(job["status"] in {"running", "completed"}
+               or job["status"] == "prepared" and job.get("retry_of") is None for job in current):
+            return None
+        prepared = [job for job in current if job["status"] == "prepared" and job.get("retry_of") is not None]
+        if len(prepared) == 1:
+            parent = state["jobs"].get(prepared[0]["retry_of"])
+            if parent in current and parent["status"] in {"failed", "interrupted"}:
+                return parent["job_id"]
+        if prepared:
             return None
         parents = {job.get("retry_of") for job in current}
         failed = [job for job in current if job["status"] in {"failed", "interrupted"} and job["job_id"] not in parents]
@@ -446,8 +465,12 @@ class SupervisorJobs:
             self._recover_under_lock(state, repository)
             digest = _digest(context)
             retry = self.retry_candidate(state, repository, digest)
+            prepared_retry = next((item for item in state["jobs"].values()
+                                   if item["repository"].casefold() == repository.casefold()
+                                   and item["context_digest"] == digest and item["status"] == "prepared"
+                                   and item.get("retry_of") == retry_job_id), None) if retry_job_id is not None else None
             if retry_job_id is not None:
-                if retry_job_id != retry:
+                if retry_job_id != retry and prepared_retry is None:
                     raise ReviewQueueError("Retry no longer matches the current failed investigation; inspect saved status.")
             elif retry is not None:
                 raise ReviewQueueError("This investigation needs deliberate recovery before retrying its failed attempt.")
@@ -455,6 +478,9 @@ class SupervisorJobs:
                              if job["repository"].casefold() == repository.casefold() and job["context_digest"] == digest
                              and job["status"] in {"prepared", "running", "completed"}), None)
             if existing is not None:
+                if (existing["status"] == "prepared" and existing.get("retry_of") is not None
+                        and retry_job_id != existing["retry_of"]):
+                    raise ReviewQueueError("Prepared retry admission needs deliberate recovery; it cannot launch automatically.")
                 return copy.deepcopy(existing)
             if len(state["jobs"]) >= _MAX_JOBS:
                 raise ReviewQueueError("Supervisor history is full; archive reviewed jobs before continuing.")
@@ -487,8 +513,11 @@ class SupervisorJobs:
                     raise ReviewQueueError("Supervisor resume identity is invalid.")
                 owners = [other for other in state["jobs"].values() if other["session_id"] == resume_session_id]
                 if (not owners or any(other["repository"].casefold() != job["repository"].casefold() for other in owners)
-                        or not any(other["status"] in {"completed", "superseded"} for other in owners)):
-                    raise ReviewQueueError("Supervisor resume lacks a completed owner in this repository.")
+                        or not any(other["status"] in {"completed", "superseded"}
+                                   or other["job_id"] == job.get("retry_of")
+                                   and other["status"] in {"failed", "interrupted"}
+                                   and other["context_digest"] == job["context_digest"] for other in owners)):
+                    raise ReviewQueueError("Supervisor resume lacks a completed owner or exact retry owner in this repository.")
             # Acquire before publishing running, including the handshake and
             # legacy provider path. A crash cannot strand an unowned startup.
             directory = self._owner_directory(job_id)
@@ -538,18 +567,18 @@ class SupervisorJobs:
             self.release_owner(job_id)
             return copy.deepcopy(job)
 
-    def fail(self, job_id: str, *, interrupted: bool = False) -> dict[str, Any]:
+    def fail(self, job_id: str, *, interrupted: bool = False, invalid_result: bool = False) -> dict[str, Any]:
         with run_lock(self.queue.directory, wait_seconds=2):
-            return self._fail_under_lock(job_id, interrupted=interrupted)
+            return self._fail_under_lock(job_id, interrupted=interrupted, invalid_result=invalid_result)
 
-    def _fail_under_lock(self, job_id: str, *, interrupted: bool = False) -> dict[str, Any]:
+    def _fail_under_lock(self, job_id: str, *, interrupted: bool = False, invalid_result: bool = False) -> dict[str, Any]:
         """Shared journal transaction for owner-loss recovery; no nested lock."""
         state = self._load()
         job = self._job(state, job_id)
         if job["status"] != "running":
             raise ReviewQueueError("Only a running supervisor attempt can fail.")
         job.update(status="interrupted" if interrupted else "failed", finished_at=self._now(),
-                   failure="interrupted" if interrupted else "provider_failed")
+                   failure="interrupted" if interrupted else "output_contract_invalid" if invalid_result else "provider_failed")
         self._save(state)
         self.release_owner(job_id)
         return copy.deepcopy(job)
