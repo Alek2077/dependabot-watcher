@@ -886,7 +886,7 @@ def setup(
                 if provisioned_workspaces else
                 "Supervisor choices are saved, not launched. Verify the isolated workspaces, instructions and runtime before investigation; scheduled initiation is a separate check."
                 if request.supervisor.mode != "off" else
-                "AI advice is off; decide whether deterministic operation is sufficient before enabling model use."
+                "AI is off until consent. For AI-led maintenance, choose your investigating agent or Watcher's tool-capable supervisor; bounded advice only interprets collected facts."
                 if request.advisory_mode == "off"
                 else "Review the configured models, reasoning levels, and call limits before recurring operation."
             ),

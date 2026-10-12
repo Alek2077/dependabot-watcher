@@ -266,6 +266,7 @@ def _notification(
     config_path: Path,
     state_directory: Path,
     execution: Mapping[str, Any],
+    execution_enabled: bool = False,
 ) -> dict[str, Any]:
     if execution.get("recovery_required") is True:
         return {
@@ -307,10 +308,18 @@ def _notification(
         }
     step_id = _first_executable_step(plan or {})
     if step_id and plan_path is not None:
+        if not execution_enabled:
+            return {
+                "needed": True,
+                "reason": "candidate_available_execution_disabled",
+                "message": "A candidate is available for investigation; GitHub execution is disabled in this profile.",
+                "next": {"argv": ["dependabot-watcher", "plan", "--config", str(config_path),
+                                  "--verbosity", "standard"]},
+            }
         return {
             "needed": True,
-            "reason": "approval_ready",
-            "message": "A fresh Dependabot plan has an approval-gated next action.",
+            "reason": "execution_preflight_required",
+            "message": "A candidate needs fresh execution preflight and any required agent investigation; no merge is approved.",
             "next": {
                 "argv": [
                     "dependabot-watcher",
@@ -413,6 +422,7 @@ def _suppressed_notification(
     default: Mapping[str, Any],
     notification_mode: str,
     execution_revision: str,
+    current_candidate: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     previous_notification = previous.get("notification")
     notification = (
@@ -444,6 +454,13 @@ def _suppressed_notification(
             "message": None,
             "next": None,
         }
+    if should_retry:
+        if default.get("needed") is True:
+            return copy.deepcopy(dict(default))
+        if current_candidate is not None and notification.get("reason") in {
+            "approval_ready", "execution_preflight_required", "candidate_available_execution_disabled",
+        }:
+            return copy.deepcopy(dict(current_candidate))
     return copy.deepcopy(dict(notification if should_retry else default))
 
 
@@ -666,6 +683,7 @@ def reconcile(
                     failure={"category": "github_collection_error"},
                 )
                 notification = _notification(
+                    execution_enabled=config.operation.autonomy == "approval_required" and config.operation.mutation_enabled,
                     outcome="failed",
                     plan=None,
                     plan_path=None,
@@ -772,7 +790,13 @@ def reconcile(
                 )
                 notification = _suppressed_notification(
                     previous,
+                    current_candidate=_notification(
+                        outcome="action_required", plan=retained_plan, plan_path=retained_plan_path,
+                        config_path=config_path, state_directory=state_path, execution=execution,
+                        execution_enabled=config.operation.autonomy == "approval_required" and config.operation.mutation_enabled,
+                    ),
                     default=_notification(
+                        execution_enabled=config.operation.autonomy == "approval_required" and config.operation.mutation_enabled,
                         outcome=outcome,
                         plan=retained_plan,
                         plan_path=retained_plan_path,
@@ -825,7 +849,13 @@ def reconcile(
                 )
                 notification = _suppressed_notification(
                     previous,
+                    current_candidate=_notification(
+                        outcome="action_required", plan=retained_plan, plan_path=retained_plan_path,
+                        config_path=config_path, state_directory=state_path, execution=execution,
+                        execution_enabled=config.operation.autonomy == "approval_required" and config.operation.mutation_enabled,
+                    ),
                     default=_notification(
+                        execution_enabled=config.operation.autonomy == "approval_required" and config.operation.mutation_enabled,
                         outcome=outcome,
                         plan=retained_plan,
                         plan_path=retained_plan_path,
@@ -890,6 +920,7 @@ def reconcile(
                 _attach_notification(
                     record,
                     _notification(
+                        execution_enabled=config.operation.autonomy == "approval_required" and config.operation.mutation_enabled,
                         outcome=outcome,
                         plan=None,
                         plan_path=None,
@@ -978,6 +1009,7 @@ def reconcile(
             _attach_notification(
                 record,
                 _notification(
+                    execution_enabled=config.operation.autonomy == "approval_required" and config.operation.mutation_enabled,
                     outcome=outcome,
                     plan=plan,
                     plan_path=plan_path,

@@ -14,31 +14,35 @@ Use it with your existing AI agent, or try Watcher's development supervisor to i
 | Have Watcher investigate in the background | Try the unreleased [Codex supervisor](docs/setup.md#tool-capable-supervisor-setup-development) from reviewed source. The current WSL path needs the Windows component. |
 | Ask AI about the collected facts | Choose `economy` advice or `reviewed` advice with a second pass for selected items. These modes cannot research or run tests. |
 
-We recommend an agent that can investigate and test updates—your own or Watcher's supervisor—rather than relying on opinions about collected facts alone. You choose the supported model, permissions and validation limits. You can also use Watcher without AI. Setup starts read-only and makes no AI calls until you explicitly enable them. Watcher should fit your workflow, not impose ours. See the [agent operator guide](docs/agent-operator-guide.md) and [setup choices](docs/setup.md#choose-the-operating-path).
+We recommend an agent that can investigate and test updates—your own or Watcher's supervisor—rather than relying on opinions about collected facts alone. You choose the supported model, permissions and validation limits. Confirm the exact model and reasoning level before the first Watcher-managed AI call; a newer or available model is not automatically the right usage/cost choice. You can also use Watcher without AI. Setup starts read-only and makes no AI calls until you explicitly enable them. Watcher should fit your workflow, not impose ours. See the [agent operator guide](docs/agent-operator-guide.md) and [setup choices](docs/setup.md#choose-the-operating-path).
 
 We are working toward [complete agent-led maintenance](#direction-complete-agent-led-maintenance): investigate, validate, handle approved changes, update selected working copies and report the results. That full loop is not finished yet.
 
 ## Install and set up
 
-Install the published package from PyPI with `uv` (recommended) or `pipx`.
-Homebrew, standalone installers, and release binaries remain later distribution
-options rather than current claims.
+During the private prerelease, install a reviewed source revision with `uv`
+(recommended) or `pipx`. No published Python release is claimed here.
+Homebrew and standalone installers remain later distribution options.
 
-Before the first PyPI release, or when evaluating an unreleased revision, install
-an explicitly reviewed public tag or commit from a source checkout:
+Install an explicitly reviewed tag or commit from a source checkout; private
+source access is required until the repository becomes public:
 
 ```bash
-git clone https://github.com/Alek2077/dependabot-watcher.git
+gh repo clone Alek2077/dependabot-watcher
 cd dependabot-watcher
 git checkout EXACT_TAG_OR_COMMIT
-uv tool install .
+uv tool install --python 3.14 .
 ```
 
 The moving `main` branch is prerelease source, not a reproducible release target.
 
+The example asks `uv` for stable Python 3.14; an existing stable Python 3.11 or
+newer also satisfies the runtime requirement. For a source install with `pipx`,
+select that installed interpreter explicitly: `pipx install --python /path/to/stable/python .`.
+
 Prerequisites:
 
-- Python 3.11 or newer;
+- stable Python 3.11 or newer (not a prerelease interpreter);
 - [`uv`](https://docs.astral.sh/uv/) (recommended) or [`pipx`](https://pipx.pypa.io/);
 - [GitHub CLI](https://cli.github.com/) installed and authenticated; and
 - access to every configured repository and its Dependabot alerts.
@@ -52,10 +56,11 @@ gh auth status
 gh auth login # only if no suitable account is authenticated
 ```
 
-Install the command with `uv`:
+After the first published PyPI release, install an explicitly selected release
+version with `uv` (replace `VERSION` with that release):
 
 ```bash
-uv tool install dependabot-watcher
+uv tool install --python 3.14 'dependabot-watcher==VERSION'
 ```
 
 `uv` installs Watcher in an isolated user-level tool environment and exposes
@@ -64,7 +69,7 @@ the `dependabot-watcher` command without modifying the system Python.
 Alternatively, install with `pipx`:
 
 ```bash
-pipx install dependabot-watcher
+pipx install 'dependabot-watcher==VERSION'
 ```
 
 The recommended setup verifies GitHub CLI authentication and read-only access, discovers the repository's default branch, then creates a non-secret, model-off, read-only profile. Replace `OWNER/REPOSITORY` with the GitHub repository you want to inspect:
@@ -126,7 +131,7 @@ A capable agent can investigate a dependency update directly. Watcher supplies r
 - one-action execution followed by reinspection and replanning; and
 - auditable execution, reconciliation, and recovery evidence.
 
-The agent supplies judgment; Watcher supplies dependable evidence and authority boundaries. Revision deduplication, bounded run history, native scheduling adapters, and sparse desktop notifications are available in the current release line. The development supervisor supports tool-capable investigation and bounded isolated validation; complete operating acceptance remains in progress. Unattended mutation remains future work.
+The agent supplies judgment; Watcher supplies dependable evidence and authority boundaries. Revision deduplication, bounded run history, native scheduling adapters, and sparse desktop notifications are available in the current prerelease source. The unreleased supervisor supports tool-capable investigation, bounded isolated validation and post-merge reassessment. One real connected automatic continuation with separately approved local synchronization passed; fresh-user distribution, broader recovery and platform acceptance remain distinct gates. Unattended mutation remains future work.
 
 Common output and scope options:
 
@@ -142,7 +147,7 @@ dependabot-watcher plan --plain                          # No animation, color, 
 
 Interactive text runs use a restrained spinner on stderr for live setup, diagnostics, inspection, advice, planning, and execution revalidation, then add status hierarchy to the final stdout report. Long operations add elapsed-time reassurance on the same transient line. `--plain`, `TERM=dumb`, or `CI` selects stable line-oriented progress without animation or styling. `NO_COLOR` keeps the hierarchy and animation but removes ANSI color. JSON, Markdown, pipes, redirected output, and non-interactive agent runs never receive animation or terminal styling.
 
-Optional advice is a separate, explicit operation:
+Optional advice is a separate, explicit operation. It uses ambient Codex CLI authentication, not a Watcher-verified account binding. Before invoking it, confirm the effective account/usage boundary and exact model/reasoning; stop for a new decision if authentication changes or cannot be verified. See the [bounded-advice consent boundary](docs/agent-operator-guide.md#bounded-model-advice).
 
 ```bash
 dependabot-watcher advise
@@ -320,18 +325,27 @@ The JSON output is versioned with `schema_version: 1`. See [the architecture](ht
 
 ## Update, reset, uninstall, or roll back
 
-Upgrade to the latest published release with the installer that owns the tool:
+During the prerelease, update or roll back by selecting a reviewed source commit
+and reinstalling it with the installer that owns the tool. For example, from
+that clean pinned checkout: `uv tool install --force --python 3.14 .`.
+Use the GitHub CLI acquisition path above rather than assuming successful API
+access proves a separate plain HTTPS Git clone is configured. Never copy a token
+into a Git remote URL; resolve authentication through supported GitHub CLI flows.
+
+After the first PyPI release, upgrade to the latest published release with the
+installer that owns the tool:
 
 ```bash
 uv tool upgrade dependabot-watcher
 # or: pipx upgrade dependabot-watcher
 ```
 
-To pin or roll back, install an exact published version:
+To pin or roll back after publication, replace `VERSION` with an exact published
+version (the source's current version string is not proof that it is published):
 
 ```bash
-uv tool install --force dependabot-watcher==0.3.0
-# or: pipx install --force dependabot-watcher==0.3.0
+uv tool install --force 'dependabot-watcher==VERSION'
+# or: pipx install --force 'dependabot-watcher==VERSION'
 ```
 
 Published versions are reproducible installation targets; a moving source branch is not.
@@ -368,7 +382,7 @@ The run-once reconciler remains scheduler-independent. GitHub Actions or another
 
 The intended end state is a closed maintenance loop: scheduled agents investigate dependency changes, prepare isolated environments, run relevant checks, choose an evidenced order, perform policy-authorized merges or repairs, reconcile selected working copies and report outcomes. Users choose capabilities and approval levels; routine work should not become repeated technical homework. Full unattended operation and broader provider support remain future capabilities, not current claims.
 
-An unreleased [selected-checkout update increment](docs/setup.md#selected-local-checkout-updates-development) implements separately approved clean fast-forward integration. Independent review, controlled installed/native checks and live read-only GitHub object acquisition passed. One real connected approval/recovery loop also completed post-merge AI assessment, exact merged-revision validation and separately approved local integration. The original automatic continuation failed; uninterrupted automatic operation and fresh unaided adoption remain acceptance gates. See the [validation record](docs/validation.md#connected-supervised-completion--development-checkpoint-2026-10-11). General dirty/divergent integration, repair publication, conflict resolution, production-health orchestration, unattended merges, component-free supervision and email remain post-release work. Watcher's GitHub executor only merges an exact approved PR; it does not comment, label, rebase a PR branch or publish repairs. Configured GitHub `rebase` merge is a separate supported merge method. The [roadmap](docs/roadmap.md#agreed-supervisor-architecture--development-path-operating-acceptance-open) records scope and evidence. A remote merge alone does not update your developer checkout or establish deployment health.
+An unreleased [selected-checkout update increment](docs/setup.md#selected-local-checkout-updates-development) implements separately approved clean fast-forward integration. Independent review, controlled installed/native checks and live read-only GitHub object acquisition passed. One real connected approval/recovery loop also completed post-merge AI assessment, exact merged-revision validation and separately approved local integration. The original automatic continuation failed, and a subsequent uninterrupted automatic run passed with separately approved local integration; fresh unaided adoption and broader recovery remain acceptance gates. See the [validation record](docs/validation.md#connected-supervised-completion--development-checkpoint-2026-10-11). General dirty/divergent integration, repair publication, conflict resolution, production-health orchestration, unattended merges, component-free supervision and email remain post-release work. Watcher's GitHub executor only merges an exact approved PR; it does not comment, label, rebase a PR branch or publish repairs. Configured GitHub `rebase` merge is a separate supported merge method. The [roadmap](docs/roadmap.md#agreed-supervisor-architecture--development-path-operating-acceptance-open) records scope and evidence. A remote merge alone does not update your developer checkout or establish deployment health.
 
 ## Development
 
@@ -376,7 +390,7 @@ An unreleased [selected-checkout update increment](docs/setup.md#selected-local-
 
 Unreleased source adds a tool-capable Codex supervisor and one optional aggregate Windows review window. Python owns the saved context, messages, attempts, permissions and exact-action recovery; the window is an interaction channel, not a browser page or a second policy engine. AI-supervised maintenance is the intended primary automation path; the existing deterministic/manual and bounded metadata-advice modes remain available.
 
-The basic CLI works without the Windows component. The current WSL scheduled AI supervisor requires it installed, although the window can stay hidden. Component-free AI operation is post-release work; optional window visibility does not mean the current component is optional for that route.
+The basic CLI works without the Windows component. The current WSL scheduled AI supervisor requires it installed, although the window can stay hidden. Use the [separate packaged component](docs/setup.md#windows-component-for-wsl-supervision), not an SDK build, for end-user setup. During private prerelease testing, a package must be explicitly supplied; a public release archive is not available yet. Component-free AI operation is post-release work; optional window visibility does not mean the current component is optional for that route.
 
 The development WSL entry can open an already built, deliberately selected component:
 
@@ -394,7 +408,7 @@ that profile's link/notices. Supply the same `--config` and `--state-dir` as
 `review`. The toast has one action—open this saved queue—not approve a merge.
 See the [native component guide](native/windows/README.md#notification-link-and-diagnostics).
 
-The development queue, feedback, permissions and installed entry have Windows/WSL evidence, including one founder-confirmed supervised merge, agent-directed isolated validation and owned maintenance-worktree refresh. Ordinary setup saves supervisor policy; the WSL `run` route can submit the registered native owner quietly for configured investigations. Compatible runs retain one repository conversation rather than discarding history after a commit or merge. Supervised merge readiness requires current verified affirmative agent reasoning as well as separate exact approval and fresh GitHub checks. Maintenance-copy provisioning and packaged entry/lifecycle have installed evidence. Guided updates, complete installed automatic post-merge and crash recovery acceptance, reliable foreground activation and other publication gates remain open. This is a private development checkpoint, not an unattended-maintenance release. See [architecture](docs/architecture.md#planned-supervisor-access-and-approval-boundary), [validation evidence](docs/validation.md#installed-agent-directed-validation--2026-10-07) and [native component source](native/windows/README.md).
+The development queue, feedback, permissions and installed entry have Windows/WSL evidence, including one founder-confirmed supervised merge, agent-directed isolated validation and owned maintenance-worktree refresh. Ordinary setup saves supervisor policy; the WSL `run` route can submit the registered native owner quietly for configured investigations. Compatible runs retain one repository conversation rather than discarding history after a commit or merge. Supervised merge readiness requires current verified affirmative agent reasoning as well as separate exact approval and fresh GitHub checks. Maintenance-copy provisioning and packaged entry/lifecycle have installed evidence. One installed automatic post-merge assessment and selected-local-completion run passed. Guided install/update, broader crash recovery, reliable foreground activation and other publication gates remain open. This is a private development checkpoint, not an unattended-maintenance release. See [architecture](docs/architecture.md#planned-supervisor-access-and-approval-boundary), [validation evidence](docs/validation.md#subsequent-uninterrupted-automatic-run) and [native component source](native/windows/README.md).
 
 ```bash
 python -m pip install -e '.[dev]'

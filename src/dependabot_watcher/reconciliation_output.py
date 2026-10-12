@@ -71,6 +71,13 @@ def _delivery_summary(delivery: Mapping[str, Any]) -> str:
     return f"{mode} / {_plain(status)}"
 
 
+def _cadence_summary(schedule: Mapping[str, Any]) -> str:
+    if schedule.get("expected_interval_minutes") is None:
+        return "no cadence supplied for this run; schedule installation not checked"
+    timing = "overdue catch-up" if schedule.get("overdue_catch_up") else "current"
+    return f"{timing}; schedule installation not checked"
+
+
 def _text(report: Mapping[str, Any]) -> str:
     summary = report.get("summary")
     queue = summary if isinstance(summary, Mapping) else {}
@@ -85,7 +92,7 @@ def _text(report: Mapping[str, Any]) -> str:
     schedule_value = report.get("schedule_observation")
     schedule = schedule_value if isinstance(schedule_value, Mapping) else {}
     lines = [
-        "Dependabot Watcher scheduled run",
+        "Dependabot Watcher reconciliation",
         f"Status: {_plain(report.get('status'))}",
         f"Outcome: {_plain(report.get('outcome'))}",
         f"Run: {_plain(report.get('run_id'))}",
@@ -104,11 +111,7 @@ def _text(report: Mapping[str, Any]) -> str:
             f"{_plain(execution.get('action_count', 0))} actions | "
             f"{_plain(execution.get('recovery_required_count', 0))} need recovery"
         ),
-        (
-            "Schedule: overdue catch-up"
-            if schedule.get("overdue_catch_up")
-            else "Schedule: current"
-        ),
+        f"Cadence: {_cadence_summary(schedule)}",
         f"Persistent state: {_plain(report.get('state_path'))}",
         (
             f"Notification: required ({_plain(notice.get('reason'))})"
@@ -142,7 +145,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
     schedule_value = report.get("schedule_observation")
     schedule = schedule_value if isinstance(schedule_value, Mapping) else {}
     lines = [
-        "# Dependabot Watcher scheduled run",
+        "# Dependabot Watcher reconciliation",
         "",
         f"Status: **{_escape(report.get('status'))}**  ",
         f"Outcome: **{_escape(report.get('outcome'))}**  ",
@@ -155,11 +158,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"{_escape(execution.get('action_count', 0))} actions | "
             f"{_escape(execution.get('recovery_required_count', 0))} need recovery  "
         ),
-        (
-            "Schedule: **overdue catch-up**  "
-            if schedule.get("overdue_catch_up")
-            else "Schedule: **current**  "
-        ),
+        f"Cadence: {_escape(_cadence_summary(schedule))}  ",
         "Mutation authorized: **no**",
         "",
         "| Repositories | Open PRs | Open alerts | Attention required |",

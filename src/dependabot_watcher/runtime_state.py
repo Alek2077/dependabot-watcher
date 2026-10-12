@@ -351,15 +351,23 @@ def load_private_json(
     relative_path: Path,
     *,
     maximum_bytes: int = _MAX_ARTIFACT_BYTES,
+    read_only: bool = False,
 ) -> dict[str, Any]:
     if relative_path.is_absolute() or not relative_path.parts or any(
         part in {"", ".", ".."} for part in relative_path.parts
     ):
         raise RuntimeStateError("Runtime artifact path must remain inside the state directory.")
-    root = _ensure_private_directory(state_directory)
+    if read_only:
+        root = validate_user_owned_directory(state_directory)
+        if not _windows_platform() and stat.S_IMODE(root.stat().st_mode) & 0o077:
+            raise RuntimeStateError("Runtime state directory is not private.")
+    else:
+        root = _ensure_private_directory(state_directory)
     directory = root
     for part in relative_path.parts[:-1]:
         directory = validate_user_owned_directory(directory / part)
+        if read_only and not _windows_platform() and stat.S_IMODE(directory.stat().st_mode) & 0o077:
+            raise RuntimeStateError("Runtime artifact directory is not private.")
     path = directory / relative_path.name
     return _read_private_json_object(path, maximum_bytes=maximum_bytes)
 

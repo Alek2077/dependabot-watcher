@@ -23,8 +23,9 @@ recommendations. Installed-wheel read-only queue/feedback/decision/reopen plumbi
 has been exercised on Windows/WSL. Installed development checks also cover cold
 notification opening, quiet scheduled initiation and same-session live feedback;
 one exact approved merge and subsequent same-conversation validation have also
-completed. Reliable foreground focus, component distribution/setup and complete
-maintenance-loop acceptance remain open. See validation for exact snapshot boundaries.
+completed. One subsequent real automatic post-merge assessment and separately approved
+local-completion run passed. Reliable foreground focus, fresh-user component
+distribution/setup and broader recovery acceptance remain open. See validation for exact snapshot boundaries.
 Synthetic notification controls are not offered in a normal profile. The
 development `notification test` command instead exercises the normal selected
 component without changing queue decisions or production reminder state.

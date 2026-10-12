@@ -162,7 +162,7 @@ def _doctor_text(report: dict[str, Any]) -> str:
             f"{_authentication(tools['github_cli']['authentication'])}"
         ),
         (
-            "Codex CLI (optional advice): "
+            "Codex CLI: "
             f"{_availability(tools['codex_cli']['availability'])} / "
             f"{_authentication(tools['codex_cli']['authentication'])}"
         ),
@@ -225,7 +225,7 @@ def _doctor_markdown(report: dict[str, Any]) -> str:
         )
     for label, key in (
         ("GitHub CLI", "github_cli"),
-        ("Codex CLI (optional advice)", "codex_cli"),
+        ("Codex CLI", "codex_cli"),
     ):
         tool = tools[key]
         lines.append(

@@ -290,6 +290,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip authentication and repository network checks.",
     )
+    doctor_parser.add_argument("--state-dir", type=Path, default=default_state_directory(),
+        help="Private state containing the selected supervisor component; inspected, not created.")
     setup_parser.add_argument(
         "--config",
         type=Path,
@@ -859,7 +861,7 @@ def main(argv: list[str] | None = None) -> int:
                 presentation=presentation,
                 stream=sys.stderr,
             ):
-                report = doctor(args.config, offline=args.offline)
+                report = doctor(args.config, offline=args.offline, state_directory=args.state_dir)
             _write_report(render_operational(report, args.output_format), presentation)
             return (
                 ExitCode.SUCCESS

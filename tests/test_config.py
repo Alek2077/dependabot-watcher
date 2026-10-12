@@ -39,6 +39,15 @@ def test_supervisor_defaults_off_without_changing_advice_or_merge_policy() -> No
     assert config.supervisor.model is None
 
 
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-6-luna", "user-selected-model"])
+def test_supervisor_keeps_exact_model_without_generation_upgrade(model: str) -> None:
+    data = valid_config()
+    data["supervisor"] = configured_supervisor(model=model, reasoning_effort="xhigh")
+    config = parse_config(data)
+    assert config.supervisor.model == model
+    assert config.supervisor.reasoning_effort == "xhigh"
+
+
 def test_validation_preparation_limits_are_explicit_and_not_merge_authority() -> None:
     data = valid_config()
     data['supervisor'] = configured_supervisor(validation_authorized=True, validation={
