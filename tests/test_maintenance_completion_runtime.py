@@ -59,8 +59,10 @@ def record_completed_merge(reviews_case: dict[str, Any], monkeypatch: pytest.Mon
     return reviews_case
 
 
+@pytest.mark.parametrize("tracking_only,tracking_race", [(False, False), (True, False), (True, True)])
 def test_selected_loop_uses_the_existing_real_git_writer_and_requires_separate_confirmation(
     reviews_case: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    tracking_only: bool, tracking_race: bool,
 ) -> None:
     checkout = tmp_path / "selected-checkout"
     checkout.mkdir()
@@ -77,6 +79,11 @@ def test_selected_loop_uses_the_existing_real_git_writer_and_requires_separate_c
     git(checkout, "commit", "-am", "Synthetic merged revision")
     merged = git(checkout, "rev-parse", "HEAD")
     git(checkout, "switch", "main")
+    git(checkout, "config", "branch.main.remote", "origin")
+    git(checkout, "config", "branch.main.merge", "refs/heads/main")
+    git(checkout, "update-ref", "refs/remotes/origin/main", before)
+    if tracking_only:
+        git(checkout, "reset", "--hard", merged)
     config_path = reviews_case["config_path"]
     text = config_path.read_text().replace('default_branch = "main"',
         'default_branch = "main"\ncompletion_policy = "selected_local_sync"')
@@ -91,11 +98,13 @@ def test_selected_loop_uses_the_existing_real_git_writer_and_requires_separate_c
     case = record_completed_merge(reviews_case, monkeypatch)
     pending = observe_completion(case["reviews"], case["review_id"])
     assert pending["stage"] == "local_sync" and not pending["complete"]
-    assert git(checkout, "rev-parse", "HEAD") == before
+    assert git(checkout, "rev-parse", "HEAD") == (merged if tracking_only else before)
+    assert git(checkout, "rev-parse", "origin/main") == before
     target_id = selected_checkouts(queue.config)[0]["target_id"]
     preview = prepare_sync(queue.config, config_path, queue.directory, case["client"], target_id)
     assert preview["status"] == "ready"
-    assert git(checkout, "rev-parse", "HEAD") == before
+    assert git(checkout, "rev-parse", "HEAD") == (merged if tracking_only else before)
+    assert preview["binding"]["commits"] == (0 if tracking_only else 1)
     observing_fetch = case["client"].fetch_branch_head
     # The existing mutating transaction intentionally owns its operation lock;
     # only the completion observer promises unlocked transport inspection.
@@ -113,6 +122,8 @@ def test_selected_loop_uses_the_existing_real_git_writer_and_requires_separate_c
             lock_directory = Path(git(checkout, "rev-parse", "--absolute-git-dir")) / "dependabot-watcher-sync"
             with run_lock(lock_directory):
                 pass
+            if tracking_race:
+                git(checkout, "update-ref", "refs/remotes/origin/main", before)
         return observing_fetch(repository, branch)
 
     original_local_state = maintenance_completion_runtime._local_state
@@ -132,11 +143,19 @@ def test_selected_loop_uses_the_existing_real_git_writer_and_requires_separate_c
 
     monkeypatch.setattr(maintenance_completion_runtime, "_local_state", coordinated_local_state)
     monkeypatch.setattr(case["client"], "fetch_branch_head", coordinated_fetch)
+    if tracking_race:
+        with pytest.raises(ReviewQueueError, match="tracking reference changed"):
+            observe_completion(case["reviews"], case["review_id"])
+        saved = load_private_json(queue.directory, Path("review-actions.json"))
+        assert saved["reviews"][case["review_id"]]["completion"]["finalization"] is None
+        assert git(checkout, "rev-parse", "origin/main") == before
+        return
     complete = observe_completion(case["reviews"], case["review_id"])
     assert complete["complete"] and complete["targets"][0]["status"] == "verified"
     assert verification_reads == 2
     assert final_local_reads == 1
     assert git(checkout, "rev-parse", "HEAD") == merged
+    assert git(checkout, "rev-parse", "origin/main") == merged
     assert git(checkout, "status", "--porcelain") == ""
     assert len(case["client"].merges) == 1
 

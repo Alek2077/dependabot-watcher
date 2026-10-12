@@ -117,7 +117,8 @@ def _fetch_credential_overrides(directory: Path, gh: str) -> tuple[str, ...]:
 
 
 def _validate_binding(binding: Any) -> None:
-    if not isinstance(binding, dict) or set(binding) != _LOCAL_FIELDS | {"target_id", "target_sha", "commits"}:
+    fields = _LOCAL_FIELDS | {"target_id", "target_sha", "commits"}
+    if not isinstance(binding, dict) or set(binding) not in (fields, fields | {"tracking_refresh"}):
         raise LocalSyncError("Synchronization checkout binding is malformed.")
     for key in ("repository", "directory", "branch", "git_directory", "common_directory"):
         if not isinstance(binding[key], str) or not binding[key] or any(ord(char) < 32 for char in binding[key]):
@@ -134,8 +135,37 @@ def _validate_binding(binding: Any) -> None:
         pattern = _SHA if key.endswith("sha") else re.compile(r"[a-f0-9]{32}" if key == "target_id" else r"[a-f0-9]{64}")
         if not isinstance(value, str) or not pattern.fullmatch(value):
             raise LocalSyncError("Synchronization revision identity is malformed.")
-    if type(binding["commits"]) is not int or binding["commits"] < 1:
+    tracking = binding.get("tracking_refresh")
+    if tracking is not None:
+        if (not isinstance(tracking, dict) or set(tracking) != {"ref", "old_sha", "config_digest"}
+                or tracking["ref"] != "refs/remotes/origin/" + binding["branch"]
+                or not isinstance(tracking["config_digest"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", tracking["config_digest"])
+                or tracking["old_sha"] is not None and (
+                    not isinstance(tracking["old_sha"], str) or not _SHA.fullmatch(tracking["old_sha"]))):
+            raise LocalSyncError("Synchronization tracking reference is malformed.")
+    if (type(binding["commits"]) is not int or binding["commits"] < 0
+            or binding["commits"] == 0 and (binding["head_sha"] != binding["target_sha"]
+                or tracking is None or tracking["old_sha"] == binding["target_sha"])):
         raise LocalSyncError("Synchronization commit count is malformed.")
+
+
+def _tracking_state(path: Path, branch: str) -> dict[str, Any] | None:
+    """Resolve only the selected branch's matching origin upstream, never invent it."""
+    keys = (f"branch.{branch}.remote", f"branch.{branch}.merge", "remote.origin.fetch")
+    settings = [_git(path, "config", "--get-all", key, empty_ok=True) for key in keys]
+    upstream = _git(path, "for-each-ref", "--format=%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)",
+                    "refs/heads/" + branch).split("\0")
+    reference = "refs/remotes/origin/" + branch
+    if upstream != ["origin", "refs/heads/" + branch, reference]:
+        return None  # A different/no upstream is the user's workflow, not ours to change.
+    _git(path, "check-ref-format", reference)
+    if _git(path, "symbolic-ref", "-q", reference, empty_ok=True):
+        raise LocalSyncError("Symbolic remote-tracking references cannot be refreshed safely.")
+    old = _git(path, "rev-parse", "--verify", "--quiet", reference, empty_ok=True).lower()
+    if old and not _SHA.fullmatch(old):
+        raise LocalSyncError("Remote-tracking revision identity is invalid.")
+    return {"ref": reference, "old_sha": old or None, "config_digest": _digest(settings)}
 
 
 def _digest(value: Any) -> str:
@@ -335,7 +365,7 @@ def synchronization_observations(config: WatcherConfig, directory: Path, reposit
 
 
 def prepare_sync(config: WatcherConfig, config_path: Path, directory: Path, client: BranchHeadClient,
-                 target_id: str) -> dict[str, Any]:
+                 target_id: str, *, refresh_tracking: bool = True) -> dict[str, Any]:
     """Read live state and acquire missing objects, without integrating a branch."""
     _current_config(config, config_path)
     repository, target = _target(config, target_id)
@@ -373,7 +403,8 @@ def prepare_sync(config: WatcherConfig, config_path: Path, directory: Path, clie
     _current_config(config, config_path)
     if _local_state(repository, target) != local:
         raise LocalSyncError("Local checkout changed during preflight; nothing was integrated.")
-    if local["head_sha"] == target_sha:
+    tracking = _tracking_state(path, target.branch) if refresh_tracking else None
+    if local["head_sha"] == target_sha and (tracking is None or tracking["old_sha"] == target_sha):
         return {"schema_version": 1, "status": "up_to_date", "binding": local, "mutation_performed": False}
     try:
         _git(path, "merge-base", "--is-ancestor", local["head_sha"], target_sha)
@@ -386,6 +417,8 @@ def prepare_sync(config: WatcherConfig, config_path: Path, directory: Path, clie
     _git(path, "read-tree", "--dry-run", "-m", "-u", local["head_sha"], target_sha)
     binding = {**local, "target_id": target_id, "target_sha": target_sha,
                "commits": int(_git(path, "rev-list", "--count", local["head_sha"] + ".." + target_sha))}
+    if refresh_tracking:
+        binding["tracking_refresh"] = tracking
     with run_lock(directory):
         _current_config(config, config_path)
         journal = _journal(directory)
@@ -453,7 +486,12 @@ def _fast_forward(binding: dict[str, Any], check: Callable[[], None]) -> None:
             raise LocalSyncError(f"Git refused the synchronization transaction at {expected}; inspect the saved outcome.")
     try:
         transaction("start\n", "start")
-        transaction(f'update refs/heads/{binding["branch"]} {binding["target_sha"]} {binding["head_sha"]}\nprepare\n', "prepare")
+        updates = f'option no-deref\nupdate refs/heads/{binding["branch"]} {binding["target_sha"]} {binding["head_sha"]}\n'
+        tracking = binding.get("tracking_refresh")
+        if tracking is not None:
+            old = tracking["old_sha"] or "0" * len(binding["target_sha"])
+            updates += f'update {tracking["ref"]} {binding["target_sha"]} {old}\n'
+        transaction(updates + "prepare\n", "prepare")
         check()
         _check_collisions(path, binding["head_sha"], binding["target_sha"])
         _git(path, "read-tree", "-m", "-u", binding["head_sha"], binding["target_sha"])
@@ -502,13 +540,15 @@ def confirm_sync(config: WatcherConfig, config_path: Path, directory: Path, clie
         def check() -> None:
             _current_config(config, config_path)
             actual = _local_state(repository, target)
-            if actual != {key: value for key, value in binding.items() if key not in {"target_id", "target_sha", "commits"}}:
+            if actual != {key: binding[key] for key in _LOCAL_FIELDS}:
                 raise LocalSyncError("Local checkout identity, branch or files changed; nothing will be overwritten.")
+            if "tracking_refresh" in binding and _tracking_state(Path(target.directory), target.branch) != binding["tracking_refresh"]:
+                raise LocalSyncError("Remote-tracking reference or upstream configuration changed; review synchronization again.")
             if client.fetch_branch_head(repository, target.branch).lower() != binding["target_sha"]:
                 raise LocalSyncError("The remote branch changed after review; request a fresh synchronization review.")
         actual = _local_state(repository, target)
         _separate_control_paths(actual, config_path, directory)
-        if actual != {key: value for key, value in binding.items() if key not in {"target_id", "target_sha", "commits"}}:
+        if actual != {key: binding[key] for key in _LOCAL_FIELDS}:
             raise LocalSyncError("Local checkout changed; review synchronization again.")
         lock_directory = ensure_private_directory(Path(actual["git_directory"]) / "dependabot-watcher-sync")
         with run_lock(lock_directory):
@@ -523,6 +563,12 @@ def confirm_sync(config: WatcherConfig, config_path: Path, directory: Path, clie
                 expected["head_sha"] = binding["target_sha"]
                 if current != expected:
                     raise LocalSyncError("The local synchronization outcome could not be verified.")
+                if "tracking_refresh" in binding:
+                    expected_tracking = binding["tracking_refresh"]
+                    if expected_tracking is not None:
+                        expected_tracking = {**expected_tracking, "old_sha": binding["target_sha"]}
+                    if _tracking_state(Path(target.directory), target.branch) != expected_tracking:
+                        raise LocalSyncError("The tracking-reference outcome could not be verified.")
                 record["status"] = "completed"
                 record["result"] = {"status": "synchronized", "binding": binding, "mutation_performed": True}
                 _save(directory, journal)
@@ -563,13 +609,17 @@ def recover_sync(config: WatcherConfig | None, config_path: Path, directory: Pat
             if current["head_sha"] not in {binding["head_sha"], binding["target_sha"]}:
                 raise LocalSyncError("Checkout moved to an unexpected commit; no recovery mutation was performed.")
             if record["status"] in {"executing", "recovery_required"}:
-                if _checkout_dirty(Path(binding["directory"])):
+                tracking = binding.get("tracking_refresh")
+                actual_tracking = _tracking_state(Path(binding["directory"]), binding["branch"]) if tracking is not None else None
+                applied_tracking = {**tracking, "old_sha": binding["target_sha"]} if tracking is not None else None
+                applied = current["head_sha"] == binding["target_sha"] and actual_tracking == applied_tracking
+                not_applied = current["head_sha"] == binding["head_sha"] and actual_tracking == tracking
+                if _checkout_dirty(Path(binding["directory"])) or not (applied or not_applied):
                     # This may be a partial Git write or subsequent user work.
                     # Do not guess, roll back, replay, or retain file contents.
                     record["status"] = "recovery_required"
                     record["result"] = {"status": "manual_repair_required", "binding": binding, "mutation_performed": False}
                 else:
-                    applied = current["head_sha"] == binding["target_sha"]
                     record["status"] = "completed" if applied else "failed"
                     record["result"] = {"status": "observed_applied" if applied else "observed_not_applied",
                                         "binding": binding, "mutation_performed": False}
@@ -586,8 +636,9 @@ def handle_sync_request(config: WatcherConfig | None, config_path: Path, directo
     additions = {"local_sync_targets": set(), "prepare_local_sync": {"target_id"},
                  "confirm_local_sync": {"review_id", "approval_token"},
                  "recover_local_sync": {"review_id"}}
+    tracking_capable = operation == "prepare_local_sync" and request.get("tracking_refresh_supported") is True
     if (not isinstance(operation, str) or operation not in additions
-            or set(request) != fields | additions[operation]
+            or set(request) != fields | additions[operation] | ({"tracking_refresh_supported"} if tracking_capable else set())
             or type(request.get("schema_version")) is not int or request["schema_version"] != 1
             or not isinstance(request.get("request_id"), str)
             or not re.fullmatch(r"sync_[A-Za-z0-9_]{1,59}", request["request_id"])
@@ -611,7 +662,8 @@ def handle_sync_request(config: WatcherConfig | None, config_path: Path, directo
         result = {"targets": targets, "reviews": reviews}
     elif operation == "prepare_local_sync":
         assert config is not None and client is not None
-        result = {"review": prepare_sync(config, config_path, directory, client, request["target_id"])}
+        result = {"review": prepare_sync(config, config_path, directory, client, request["target_id"],
+                                        refresh_tracking=tracking_capable)}
     elif operation == "confirm_local_sync":
         assert config is not None and client is not None
         result = {"review": confirm_sync(config, config_path, directory, client,

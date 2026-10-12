@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .config import LocalSyncCheckout, repository_names_equal
-from .local_sync import _local_state, _separate_control_paths
+from .local_sync import _local_state, _separate_control_paths, _tracking_state
 from .maintenance_completion import new_obligation, obligation_scope, validate_obligation
 from .review_actions import ActionReviews, _load_reviews, _require_current_config, _save_reviews, _time, _timestamp
 from .review_queue import ReviewQueueError, supervisor_context_digest
@@ -145,14 +145,17 @@ def observe_completion(actions: ActionReviews, review_id: str) -> dict[str, Any]
         stage, message = "local_sync", "Review the selected local updates to finish this maintenance action."
     targets: list[dict[str, str]] = []
     verified_locals: dict[str, dict[str, Any]] = {}
+    verified_tracking: dict[str, dict[str, Any] | None] = {}
     if not obligation["assessment_required"] or obligation["assessment"] is not None:
         for target in sorted(obligation["targets"], key=lambda item: item["target_id"]):
             observed = {**target, "status": "pending", "message": "Review this selected local update."}
             try:
                 local = _local_state(repository, LocalSyncCheckout(target["directory"], target["branch"]))
                 _separate_control_paths(local, actions.config_path, queue.directory)
-                if local["head_sha"].lower() == base_sha:
+                tracking = _tracking_state(Path(target["directory"]), target["branch"])
+                if local["head_sha"].lower() == base_sha and (tracking is None or tracking["old_sha"] == base_sha):
                     verified_locals[target["target_id"]] = local
+                    verified_tracking[target["target_id"]] = tracking
                     obligation["local_results"][target["target_id"]] = {"head_sha": base_sha, "remote_sha": base_sha}
                     observed.update(status="verified", message="Clean selected branch matches the current remote revision.")
             except (ReviewQueueError, RuntimeStateError, OSError):
@@ -184,6 +187,8 @@ def observe_completion(actions: ActionReviews, review_id: str) -> dict[str, Any]
                 checkout_locks.enter_context(run_lock(lock_directory))
                 if _local_state(repository, LocalSyncCheckout(target["directory"], target["branch"])) != local:
                     raise ReviewQueueError("Selected checkout changed before completion was recorded; check progress again.")
+                if _tracking_state(Path(target["directory"]), target["branch"]) != verified_tracking[target["target_id"]]:
+                    raise ReviewQueueError("Selected tracking reference changed before completion was recorded; check progress again.")
         state["reviews"][review_id]["completion"] = obligation
         _save_reviews(queue.directory, state, keep=review_id)
     return {"review_id": review_id, "action_id": obligation["action_id"], "repository": repository,
