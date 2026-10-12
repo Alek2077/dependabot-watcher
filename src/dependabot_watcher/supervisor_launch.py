@@ -150,11 +150,12 @@ def run_configured_supervisor(
             jobs._recover_under_lock(state, repository)
             attempts = [item for item in state["jobs"].values()
                         if item["repository"].casefold() == repository.casefold()]
-            # Continue only a completed, backend-owned session whose policy and
-            # workspace ownership/harness still match. A newly verified base
+            # Continue a completed owner or the explicitly retried failed owner
+            # only while policy and workspace/harness still match. A verified base
             # changes evidence, not conversation identity. Arbitrary thread IDs
             # never come from UI or model output.
-            owners = [item for item in attempts if item["status"] in {"completed", "superseded"}
+            owners = [item for item in attempts if (item["status"] in {"completed", "superseded"}
+                      or item["job_id"] == retry_job_id and item["status"] in {"failed", "interrupted"})
                       and item["session_id"] is not None
                       and _session_policy_identity(item["context"].get("supervisor")) == _session_policy_identity(current["supervisor"])
                       and same_supervisor_session_workspace(item["context"].get("workspace_evidence"), current["workspace_evidence"])]

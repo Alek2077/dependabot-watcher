@@ -14,7 +14,13 @@ internal sealed class NativeSupervisorView
 {
     private readonly List<JsonObject> _jobs;
     internal NativeLaunchPolicy? LaunchPolicy { get; }
-    internal bool HasActiveInvestigation => _jobs.LastOrDefault(job => job["current_context"]!.GetValue<bool>())?["status"]?.GetValue<string>() is "prepared" or "running";
+    internal bool HasActiveInvestigation {
+        get {
+            var job = _jobs.LastOrDefault(value => value["current_context"]!.GetValue<bool>());
+            return job?["status"]?.GetValue<string>() == "running"
+                || job?["status"]?.GetValue<string>() == "prepared" && job["retry_of"] is null;
+        }
+    }
     internal string? CurrentAssessmentSummary
     {
         get
@@ -183,7 +189,9 @@ internal sealed class NativeSupervisorView
         var sections = new List<string>();
         foreach (var failed in _jobs.Where(job => job["current_context"]!.GetValue<bool>()
                      && job["status"]!.GetValue<string>() is "failed" or "interrupted"))
-            sections.Add($"Investigation {failed["status"]}. No completed recommendation is claimed. "
+            sections.Add((failed["failure"]?.GetValue<string>() == "output_contract_invalid"
+                ? "The agent finished, but its answer failed validation. No recommendation or maintenance completion was accepted. "
+                : $"Investigation {failed["status"]}. No completed recommendation is claimed. ")
                 + (failed["retry_available"]?.GetValue<bool>() == true
                     ? "Use Retry investigation for a fresh checked attempt; the failed record is retained."
                     : "This earlier attempt is retained; check the newer attempt's outcome."));

@@ -15,14 +15,13 @@ internal sealed partial class BackendQueueWindow
     private readonly StackPanel _localSyncTargets = new();
     private readonly TextBlock _localSyncStatus = new() { TextWrapping = TextWrapping.Wrap };
 
-    private void InitializeLocalSync(DockPanel inspector)
+    private void InitializeLocalSync(StackPanel inspector)
     {
         _localSyncPanel.Children.Add(new TextBlock { Text = "Your selected local checkouts", FontSize = 16,
             FontWeight = FontWeights.SemiBold });
         _localSyncPanel.Children.Add(_localSyncStatus);
         _localSyncPanel.Children.Add(new ScrollViewer { Content = _localSyncTargets, MaxHeight = 150,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
-        DockPanel.SetDock(_localSyncPanel, Dock.Top);
         inspector.Children.Add(_localSyncPanel);
     }
 
@@ -46,6 +45,20 @@ internal sealed partial class BackendQueueWindow
                 var label = NativeDisplayText.Escape($"{target["repository"]} · {target["branch"]}\n{target["directory"]}");
                 var row = new StackPanel();
                 row.Children.Add(new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap });
+                var applied = reviews.OfType<JsonObject>().LastOrDefault(review =>
+                    review["binding"]?["target_id"]?.GetValue<string>() == id
+                    && review["status"]?.GetValue<string>() == "completed"
+                    && review["result"]?["status"]?.GetValue<string>() is "synchronized" or "observed_applied");
+                if (applied is not null && JsonNode.DeepEquals(applied["binding"], applied["result"]?["binding"])
+                    && new[] { "repository", "directory", "branch" }.All(key => JsonNode.DeepEquals(applied["binding"]?[key], target[key]))
+                    && applied["result"]?["mutation_performed"]?.GetValue<bool>() ==
+                        (applied["result"]?["status"]?.GetValue<string>() == "synchronized"))
+                    row.Children.Add(new TextBlock { Text = NativeDisplayText.Escape(
+                        $"✓ {(applied["result"]?["status"]?.GetValue<string>() == "synchronized" ? "Saved local update succeeded" : "Saved outcome verified; target was already present")} · {applied["binding"]?["target_sha"]}\nHistorical receipt; review again to check current remote state."),
+                        TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold,
+                        Foreground = SystemParameters.HighContrast ? SystemColors.WindowTextBrush
+                            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(20, 100, 65)),
+                        Margin = new Thickness(0, 6, 0, 4) });
                 var pending = reviews.OfType<JsonObject>().LastOrDefault(review =>
                     review["binding"]?["target_id"]?.GetValue<string>() == id
                     && review["status"]?.GetValue<string>() is "executing" or "recovery_required");
@@ -93,8 +106,7 @@ internal sealed partial class BackendQueueWindow
             if (review["status"]?.GetValue<string>() != "ready" || review["binding"] is not JsonObject binding)
                 throw new InvalidDataException("Local update is not ready for confirmation.");
             var description = NativeDisplayText.Escape($"{binding["repository"]} · {binding["branch"]}\n{binding["directory"]}\n\n{binding["head_sha"]} → {binding["target_sha"]}\n{binding["commits"]} commits\n\nUpdates this clean local branch, its index and tracked files. {NativeLocalSyncReview.TrackingDescription(binding)} No tests, push, remote merge, stash, reset, branch switch, dependency installation or deployment.\n\nUpdate this checkout now?");
-            if (MessageBox.Show(this, description, "Confirm selected local update", MessageBoxButton.YesNo,
-                                MessageBoxImage.Question, MessageBoxResult.No) != MessageBoxResult.Yes)
+            if (!NativeConfirmationDialog.Confirm(this, "Confirm selected local update", description, "Update this checkout"))
             {
                 ShowActionNotice("Local update cancelled", "Nothing was integrated. The selected checkout remains unchanged.");
                 return;

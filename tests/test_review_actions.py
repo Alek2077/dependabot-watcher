@@ -235,6 +235,18 @@ def saved_review(case: dict[str, Any]) -> dict[str, Any]:
     return case["reviews"].prepare(item["proposal_id"], item["version"])
 
 
+def test_external_merge_between_review_and_confirm_records_no_op_outcome(reviews_case: dict[str, Any]) -> None:
+    review = saved_review(reviews_case)
+    reviews_case["client"].state = "MERGED"
+    result = reviews_case["reviews"].confirm(review["review_id"])
+    assert result["status"] == "completed"
+    assert result["result"]["status"] == "already_applied"
+    assert result["result"]["binding"] == review["preparation"]["binding"]
+    assert result["result"]["mutation_performed"] is False
+    assert reviews_case["client"].merges == []
+    assert reviews_case["reviews"].snapshot()[0] == result
+
+
 def test_confirmation_is_durable_separate_and_single_use(reviews_case: dict[str, Any]) -> None:
     review = saved_review(reviews_case)
     assert review["status"] == "awaiting_confirmation"

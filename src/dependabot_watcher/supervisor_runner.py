@@ -8,7 +8,7 @@ from typing import Any, Mapping, Protocol
 
 from .review_queue import ReviewConfigurationChanged, ReviewQueueError
 from .runtime_state import save_private_json
-from .supervision import SupervisorJobs, _validate_result
+from .supervision import SupervisorJobs, SupervisorResultError, _validate_result
 from .supervisor_events import EventfulSupervisorProvider, SupervisorEvents
 from .supervisor_workspace import SupervisorInstructionGuard
 
@@ -116,7 +116,8 @@ class SupervisorRunner:
                 observation = self.provider.analyze(copy.deepcopy(job))
         except Exception as exc:
             self._record_failure_location(job, exc)
-            self.jobs.fail(job_id, interrupted=isinstance(exc, ReviewConfigurationChanged))
+            self.jobs.fail(job_id, interrupted=isinstance(exc, ReviewConfigurationChanged),
+                           invalid_result=isinstance(exc, SupervisorResultError))
             raise
         # The trusted adapter returns only normalized evidence. No UI-controlled
         # observation path, executable, command or approval token is accepted.
@@ -127,7 +128,7 @@ class SupervisorRunner:
             self.jobs.attach_session(job_id, observation["session_id"])
         except ReviewQueueError as exc:
             self._record_failure_location(job, exc)
-            self.jobs.fail(job_id)
+            self.jobs.fail(job_id, invalid_result=isinstance(exc, SupervisorResultError))
             raise
         # Persist observed output before acknowledging completion. A failed disk
         # write cannot turn a received reply into a completed/delivered job.

@@ -17,13 +17,12 @@ internal sealed partial class BackendQueueWindow
     private readonly TextBlock _completionStatus = new() { TextWrapping = TextWrapping.Wrap };
     private readonly StackPanel _completionActions = new();
 
-    private void InitializeCompletion(DockPanel inspector)
+    private void InitializeCompletion(StackPanel inspector)
     {
-        _completionPanel.Children.Add(new TextBlock { Text = "Finish this maintenance action", FontSize = 16,
+        _completionPanel.Children.Add(new TextBlock { Text = "Post-merge verification · separate from the selected queue item", FontSize = 16,
             FontWeight = FontWeights.SemiBold });
         _completionPanel.Children.Add(_completionStatus);
         _completionPanel.Children.Add(_completionActions);
-        DockPanel.SetDock(_completionPanel, Dock.Top);
         inspector.Children.Add(_completionPanel);
     }
 
@@ -33,7 +32,7 @@ internal sealed partial class BackendQueueWindow
         var pending = _reviews.Where(review => review.HasPendingCompletion).ToList();
         _completionPanel.Visibility = pending.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         if (pending.Count == 0) return;
-        _completionStatus.Text = "Remote merge recorded. Required post-merge follow-up still needs confirmation. Checking progress never retries a merge or updates a checkout.";
+        _completionStatus.Text = "The remote merge is recorded. Verification below is a separate follow-up, not another merge. Check its status to see the next required step.";
         foreach (var review in pending)
             _completionActions.Children.Add(Button($"Check next step · PR #{review.Binding["pull_request"]}",
                 () => CheckCompletionAsync(review)));
@@ -41,7 +40,11 @@ internal sealed partial class BackendQueueWindow
 
     private async Task CheckCompletionAsync(NativeActionReview review)
     {
-        if (_busy || _shutdownRequested || _scheduledRunning || _investigationCancellation is not null) return;
+        if (_busy || _shutdownRequested || _scheduledRunning || _investigationCancellation is not null)
+        {
+            _completionStatus.Text = $"PR #{review.Binding["pull_request"]}: work is already in progress. No new check or merge was started. Review the activity status and any pending access requests.";
+            return;
+        }
         SetBusy(true);
         try { await CheckCompletionCoreAsync(review); }
         catch (Exception exception)
@@ -92,7 +95,7 @@ internal sealed partial class BackendQueueWindow
             _completionActions.Children.Add(Button("Continue post-merge assessment", async () => {
                 if (_busy || _shutdownRequested || _scheduledRunning || _investigationCancellation is not null) return;
                 SetBusy(true);
-                try { await ContinueAfterMergeAsync(review); }
+                try { await ContinueAfterMergeAsync(review, allowRecovery: true); }
                 finally { SetBusy(false); }
             }));
         else if (stage == "local_sync")
