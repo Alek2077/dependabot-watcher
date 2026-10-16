@@ -39,6 +39,7 @@ def trusted_windows_executable(relative_path: str) -> Path:
     normalized = relative_path.replace("\\", "/").strip("/")
     if normalized.casefold() not in {
         "wsl.exe",
+        "wscript.exe",
         "windowspowershell/v1.0/powershell.exe",
     }:
         raise WindowsHelperError("Unsupported Windows system helper requested.")

@@ -312,7 +312,9 @@ def _journal(directory: Path, *, read_only: bool = False) -> dict[str, Any]:
         raise LocalSyncError("Local synchronization history is malformed.")
     for key, record in value["records"].items():
         if (not isinstance(key, str) or not _ID.fullmatch(key) or not isinstance(record, dict)
-                or set(record) != {"binding", "config_digest", "expires_at", "status", "result"}
+                or set(record) not in ({"binding", "config_digest", "expires_at", "status", "result"},
+                                      {"binding", "config_digest", "expires_at", "status", "result", "sequence"})
+                or ("sequence" in record and (type(record["sequence"]) is not int or not 1 <= record["sequence"] <= 2**63 - 1))
                 or not isinstance(record["status"], str)
                 or record["status"] not in {"awaiting_confirmation", "executing", "completed", "failed", "recovery_required"}
                 or not isinstance(record["binding"], dict) or not isinstance(record["expires_at"], str)
@@ -348,6 +350,11 @@ def _token(review_id: str, binding: dict[str, Any]) -> str:
     return "sync-" + _digest([review_id, binding])
 
 
+def _ordered_records(records: dict[str, Any]) -> list[tuple[str, Any]]:
+    return sorted(records.items(), key=lambda entry: (
+        entry[1].get("sequence", 0), datetime.fromisoformat(entry[1]["expires_at"]), entry[0]))
+
+
 def synchronization_observations(config: WatcherConfig, directory: Path, repository: str) -> list[dict[str, Any]]:
     """Bounded historical evidence for reasoning, not live checkout readiness.
 
@@ -355,13 +362,14 @@ def synchronization_observations(config: WatcherConfig, directory: Path, reposit
     mutation authority while assembling an agent's evidence packet.
     """
     selected = {item["target_id"] for item in selected_checkouts(config, repository)}
-    records = _journal(directory)["records"]
+    records = {identity: record for identity, record in _journal(directory)["records"].items()
+               if record["binding"]["target_id"] in selected}
     return [{"review_id": identity, "target_id": record["binding"]["target_id"],
              "directory": record["binding"]["directory"], "branch": record["binding"]["branch"],
              "from_sha": record["binding"]["head_sha"], "target_sha": record["binding"]["target_sha"],
              "status": record["status"], "outcome": record["result"]["status"] if record["result"] else None,
              "applicability": "historical_recheck_before_use"}
-            for identity, record in list(records.items())[-20:] if record["binding"]["target_id"] in selected]
+            for identity, record in _ordered_records(records)[-20:]]
 
 
 def prepare_sync(config: WatcherConfig, config_path: Path, directory: Path, client: BranchHeadClient,
@@ -426,6 +434,9 @@ def prepare_sync(config: WatcherConfig, config_path: Path, directory: Path, clie
                       and item["status"] in {"executing", "recovery_required"}]
         if unresolved:
             raise LocalSyncError("A prior synchronization outcome needs observation; do not approve another attempt.")
+        sequence = max((item.get("sequence", 0) for item in journal["records"].values()), default=0) + 1
+        if sequence > 2**63 - 1:
+            raise LocalSyncError("Synchronization history sequence is exhausted; existing outcomes were preserved.")
         # A new preview supersedes only unconsumed previews for this target.
         # Expired previews for other targets hold no execution intent either.
         now = datetime.now(timezone.utc)
@@ -434,13 +445,17 @@ def prepare_sync(config: WatcherConfig, config_path: Path, directory: Path, clie
                     item["binding"]["target_id"] == target_id or now >= datetime.fromisoformat(item["expires_at"])):
                 del journal["records"][key]
         if len(journal["records"]) >= _MAX_RECORDS:
-            retired = next((key for key, item in journal["records"].items() if item["status"] in {"completed", "failed"}), None)
+            retired = next((key for key, item in _ordered_records(journal["records"])
+                            if item["status"] in {"completed", "failed"}), None)
             if retired is None:
                 raise LocalSyncError("Synchronization history is full; existing decisions were preserved.")
             del journal["records"][retired]
         review_id = "sync_" + secrets.token_hex(16)
         journal["records"][review_id] = {"binding": binding, "config_digest": _digest(asdict(config)),
             "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat(),
+            # Durable preparation order is independent of wall-clock changes.
+            # Legacy receipts have no sequence and stay readable as history.
+            "sequence": sequence,
             "status": "awaiting_confirmation", "result": None}
         _save(directory, journal)
     return {"schema_version": 1, "status": "ready", "review_id": review_id, "binding": binding,

@@ -4,6 +4,7 @@ import io
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
 from typing import Any
@@ -37,6 +38,21 @@ def status_case(tmp_path: Path) -> tuple[ReviewQueue, SupervisorJobs, dict[str, 
 def request() -> dict[str, Any]:
     return {"schema_version": 1, "request_id": "read_supervision", "operation": "supervisor_status",
             "repository": "example-org/example-app"}
+
+
+def test_retry_after_clock_rollback_remains_latest_current_result(
+    status_case: tuple[ReviewQueue, SupervisorJobs, dict[str, Any]],
+) -> None:
+    queue, jobs, parent = status_case
+    jobs.start(parent["job_id"])
+    failed = jobs.fail(parent["job_id"])
+    earlier = datetime.fromisoformat(failed["finished_at"]) - timedelta(seconds=1)
+    queue.clock = lambda: earlier
+    retry = jobs.prepare(parent["repository"], retry_job_id=parent["job_id"])
+    SupervisorRunner(jobs, FixtureProvider(queue)).run(retry["job_id"])
+    current = [item for item in supervision_status(queue, request())["jobs"] if item["current_context"]]
+    assert [item["job_id"] for item in current] == [parent["job_id"], retry["job_id"]]
+    assert current[-1]["status"] == "completed" and current[-1]["provider_completion_observed"] is True
 
 
 def test_preparation_is_not_agent_delivery(status_case: tuple[ReviewQueue, SupervisorJobs, dict[str, Any]]) -> None:

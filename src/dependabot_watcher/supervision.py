@@ -4,7 +4,7 @@ import copy
 import re
 import secrets
 from contextlib import AbstractContextManager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -338,15 +338,20 @@ class SupervisorJobs:
         for job in state["jobs"].values():
             if (job["repository"].casefold() == repository.casefold()
                     and job["status"] == "running" and not self._owner_is_live(job["job_id"])):
-                job.update(status="interrupted", finished_at=self._now(), failure="interrupted")
+                job.update(status="interrupted", finished_at=self._now(job["started_at"]), failure="interrupted")
                 changed = True
         if changed:
             self._save(state)
 
-    def _now(self) -> str:
+    def _now(self, not_before: str | None = None) -> str:
         value = self.queue.clock()
         if value.utcoffset() is None:
             raise ReviewQueueError("Supervisor clock must include a time zone.")
+        # Wall-clock corrections must not write a journal that its own strict
+        # chronology validator rejects. This is an event-order floor, not new
+        # evidence, elapsed-time measurement or extension of any consent.
+        if not_before is not None:
+            value = max(value, _time(not_before) + timedelta(microseconds=1))
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def _load(self) -> dict[str, Any]:
@@ -485,8 +490,9 @@ class SupervisorJobs:
             if len(state["jobs"]) >= _MAX_JOBS:
                 raise ReviewQueueError("Supervisor history is full; archive reviewed jobs before continuing.")
             job_id = f"job_{secrets.token_hex(16)}"
+            parent_finish = state["jobs"][retry_job_id]["finished_at"] if retry_job_id is not None else None
             job = {"job_id": job_id, "repository": repository, "context": context,
-                   "context_digest": digest, "status": "prepared", "created_at": self._now(),
+                   "context_digest": digest, "status": "prepared", "created_at": self._now(parent_finish),
                    "started_at": None, "finished_at": None, "session_id": None,
                    "result": None, "failure": None}
             if retry_job_id is not None:
@@ -525,7 +531,7 @@ class SupervisorJobs:
             owner = run_lock(directory)
             owner.__enter__()
             try:
-                job.update(status="running", started_at=self._now(), session_id=resume_session_id)
+                job.update(status="running", started_at=self._now(job["created_at"]), session_id=resume_session_id)
                 self._save(state)
             except BaseException:
                 owner.__exit__(None, None, None)
@@ -561,7 +567,7 @@ class SupervisorJobs:
                 raise ReviewQueueError("Supervisor result does not belong to a running attempt.")
             current = self.queue._supervision_context_under_lock(job["repository"])
             stale = _digest(current) != job["context_digest"]
-            job.update(status="superseded" if stale else "completed", finished_at=self._now(),
+            job.update(status="superseded" if stale else "completed", finished_at=self._now(job["started_at"]),
                        result=copy.deepcopy(dict(result)), failure="context_changed" if stale else None)
             self._save(state)
             self.release_owner(job_id)
@@ -577,7 +583,7 @@ class SupervisorJobs:
         job = self._job(state, job_id)
         if job["status"] != "running":
             raise ReviewQueueError("Only a running supervisor attempt can fail.")
-        job.update(status="interrupted" if interrupted else "failed", finished_at=self._now(),
+        job.update(status="interrupted" if interrupted else "failed", finished_at=self._now(job["started_at"]),
                    failure="interrupted" if interrupted else "output_contract_invalid" if invalid_result else "provider_failed")
         self._save(state)
         self.release_owner(job_id)

@@ -1,8 +1,13 @@
 using System;
 using System.IO;
+using System.Collections;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Text.Json.Nodes;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
 
 internal static class CompletionContracts
 {
@@ -118,6 +123,56 @@ internal static class CompletionContracts
             || !recoveredText.Contains("No new merge was performed")
             || !recoveredText.Contains("Saved completion:"))
             throw new InvalidDataException("Recovered merge hides recorded completion or claims a new merge.");
-        Console.WriteLine("Maintenance display contracts passed: legacy records, pending restart and exact action/branch binding.");
+        Exception? workspaceFailure = null;
+        var workspaceThread = new Thread(() => {
+            try {
+                var clientType = assembly.GetType("WatcherNativeProof.BackendClient", true)!;
+                var client = Activator.CreateInstance(clientType, BindingFlags.Instance | BindingFlags.NonPublic,
+                    null, new object[] { Array.Empty<string>(), true }, null)!;
+                var windowType = assembly.GetType("WatcherNativeProof.BackendQueueWindow", true)!;
+                var window = Activator.CreateInstance(windowType, BindingFlags.Instance | BindingFlags.NonPublic,
+                    null, new object[] { client }, null)!;
+                object Field(string name) => windowType.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+                var reviews = (IList)Field("_reviews");
+                var assessment = (JsonObject)value.DeepClone();
+                assessment["completion_stage"] = "assessment";
+                assessment["completion"]!["assessment_required"] = true;
+                assessment["preparation"]!["decision"]!["completion_scope"]!["assessment_required"] = true;
+                reviews.Add(Parse(assessment));
+                windowType.GetMethod("RenderActivity", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+                windowType.GetMethod("RenderCompletion", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+                var tabs = (TabControl)Field("_workspaces");
+                if (!ReferenceEquals(tabs.SelectedItem, Field("_selectedWorkspace"))
+                    || ((TabItem)Field("_maintenanceWorkspace")).Header.ToString() != "Maintenance · 1 pending")
+                    throw new InvalidDataException("Historical pending work stole selection or lost its pending count.");
+                var messages = ((StackPanel)Field("_completionActions")).Children.OfType<StackPanel>()
+                    .SelectMany(row => row.Children.OfType<Grid>())
+                    .SelectMany(block => block.Children.OfType<TextBlock>()).Select(text => text.Text);
+                if (!messages.Any(text => text.Contains("No accepted post-merge assessment is saved")))
+                    throw new InvalidDataException("Pending assessment hides its specific missing receipt.");
+                var another = (JsonObject)assessment.DeepClone();
+                another["review_id"] = "review_" + new string('f', 32);
+                another["preparation"]!["binding"]!["pull_request"] = 43;
+                another["result"]!["binding"]!["pull_request"] = 43;
+                reviews.Add(Parse(another));
+                windowType.GetMethod("RenderCompletion", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+                var completionRows = (IDictionary)Field("_completionRows");
+                if (completionRows.Count != 2 || ((StackPanel)Field("_completionActions")).Children.Count != 2)
+                    throw new InvalidDataException("One pending action replaced another action's controls.");
+                var firstRow = (StackPanel)((StackPanel)Field("_completionActions")).Children[0];
+                var firstActions = (StackPanel)firstRow.Children[1]; firstActions.Children.Clear();
+                var secondRow = (StackPanel)((StackPanel)Field("_completionActions")).Children[1];
+                if (((StackPanel)secondRow.Children[1]).Children.Count != 1)
+                    throw new InvalidDataException("Updating one action's controls changed another pending action.");
+                reviews.Clear(); reviews.Add(Parse(finished));
+                windowType.GetMethod("RenderCompletion", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+                if (((StackPanel)Field("_completionPanel")).Visibility != Visibility.Collapsed
+                    || ((TabItem)Field("_maintenanceWorkspace")).Header.ToString() != "Maintenance")
+                    throw new InvalidDataException("Completed maintenance still presents a pending task.");
+            } catch (Exception exception) { workspaceFailure = exception; }
+        });
+        workspaceThread.SetApartmentState(ApartmentState.STA); workspaceThread.Start(); workspaceThread.Join();
+        if (workspaceFailure is not null) throw new InvalidDataException("Maintenance workspace contract failed.", workspaceFailure);
+        Console.WriteLine("Maintenance display contracts passed: legacy records, pending restart, workspace isolation and exact action/branch binding.");
     }
 }

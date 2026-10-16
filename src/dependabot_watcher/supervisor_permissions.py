@@ -147,7 +147,7 @@ class SupervisorPermissions:
     def _retire_orphan(self, connection: dict[str, Any]) -> None:
         for request in connection["requests"].values():
             if request["status"] in ("waiting", "decided", "consumed"):
-                request.update(status="invalidated", resolved_at=self.jobs._now())
+                request.update(status="invalidated", resolved_at=self.jobs._now(request["created_at"]))
         connection["status"] = "closed"
         job = self.jobs._job(self.jobs._load(), connection["job_id"])
         if job["status"] == "running":
@@ -263,7 +263,7 @@ class SupervisorPermissions:
                 return
             if request["status"] != "consumed":
                 raise ReviewQueueError("Permission resolution requires a consumed decision.")
-            request.update(status="resolved", resolved_at=self.jobs._now())
+            request.update(status="resolved", resolved_at=self.jobs._now(request["created_at"]))
             self._save(state)
 
     def close(self, connection_id: str) -> None:
@@ -272,7 +272,7 @@ class SupervisorPermissions:
             connection = self._connection(state, connection_id, active=False)
             for request in connection["requests"].values():
                 if request["status"] in ("waiting", "decided", "consumed"):
-                    request.update(status="invalidated", resolved_at=self.jobs._now())
+                    request.update(status="invalidated", resolved_at=self.jobs._now(request["created_at"]))
             connection["status"] = "closed"
             self._save(state)
 

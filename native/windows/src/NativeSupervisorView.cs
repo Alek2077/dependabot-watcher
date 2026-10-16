@@ -32,6 +32,14 @@ internal sealed class NativeSupervisorView
         }
     }
     internal string? RetryJobId => _jobs.SingleOrDefault(job => job["retry_available"]?.GetValue<bool>() == true)?["job_id"]?.GetValue<string>();
+    internal string? RetryExplanation {
+        get {
+            var job = _jobs.SingleOrDefault(value => value["retry_available"]?.GetValue<bool>() == true);
+            return job?["failure"]?.GetValue<string>() == "output_contract_invalid"
+                ? "The agent finished, but its answer failed validation. No recommendation or maintenance completion was accepted. Retry requests a new checked answer; completed merges and local updates will not be repeated."
+                : null;
+        }
+    }
 
     private NativeSupervisorView(List<JsonObject> jobs, NativeLaunchPolicy? launchPolicy)
     { _jobs = jobs; LaunchPolicy = launchPolicy; }

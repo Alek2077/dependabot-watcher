@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -11,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from dependabot_watcher import local_sync
 from dependabot_watcher.config import load_config, parse_config
 from dependabot_watcher.local_sync import LocalSyncError, confirm_sync, handle_sync_request, prepare_sync, recover_sync, selected_checkouts
 from dependabot_watcher.review_queue import ReviewQueueError
@@ -83,6 +85,84 @@ def test_fast_forward_is_preflighted_and_explicitly_confirmed(sync_case):
     with pytest.raises(LocalSyncError, match="consumed"):
         confirm(case, prepared)
     assert prepare(case)["status"] == "up_to_date"
+
+
+def test_receipt_order_survives_backward_clock_without_extending_approval(
+    sync_case: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = sync_case
+    first = prepare(case)
+    confirm(case, first)
+    first_record = load_private_json(case["state"], Path("local-sync.json"))["records"][first["review_id"]]
+    git(case["path"], "switch", "remote-update")
+    (case["path"] / "app.txt").write_text("third\n")
+    git(case["path"], "commit", "-am", "Third revision")
+    case["client"].sha = git(case["path"], "rev-parse", "HEAD")
+    git(case["path"], "switch", "integration")
+    earlier = datetime.fromisoformat(first_record["expires_at"]) - timedelta(hours=1)
+
+    class CorrectedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return earlier.astimezone(tz)
+
+    monkeypatch.setattr(local_sync, "datetime", CorrectedClock)
+    second = prepare(case)
+    records = load_private_json(case["state"], Path("local-sync.json"))["records"]
+    assert records[second["review_id"]]["sequence"] > first_record["sequence"]
+    assert datetime.fromisoformat(records[second["review_id"]]["expires_at"]) == earlier + timedelta(minutes=15)
+    assert records[first["review_id"]] == first_record
+    assert git(case["path"], "rev-parse", "HEAD") == case["new"]
+
+
+@pytest.mark.parametrize("sequence", [0, True, 2**63])
+def test_native_receipt_sequence_rejects_out_of_range_values(sync_case: dict[str, Any], sequence: object) -> None:
+    case = sync_case
+    prepared = prepare(case)
+    journal = load_private_json(case["state"], Path("local-sync.json"))
+    journal["records"][prepared["review_id"]]["sequence"] = sequence
+    save_private_json(case["state"], Path("local-sync.json"), journal)
+    with pytest.raises(LocalSyncError, match="invalid record"):
+        handle_sync_request(case["config"], case["config_path"], case["state"], case["client"],
+            {"schema_version": 1, "request_id": "sync_bounds", "operation": "local_sync_targets"})
+
+
+def test_native_receipt_sequence_exhaustion_preserves_journal(sync_case: dict[str, Any]) -> None:
+    case = sync_case
+    prepared = prepare(case)
+    journal = load_private_json(case["state"], Path("local-sync.json"))
+    record = journal["records"][prepared["review_id"]]
+    record.update(sequence=2**63 - 1, status="failed",
+        result={"status": "observed_not_applied", "binding": record["binding"], "mutation_performed": False})
+    save_private_json(case["state"], Path("local-sync.json"), journal)
+    with pytest.raises(LocalSyncError, match="sequence is exhausted"):
+        prepare(case)
+    assert load_private_json(case["state"], Path("local-sync.json")) == journal
+    assert git(case["path"], "rev-parse", "HEAD") == case["old"]
+
+
+@pytest.mark.parametrize("count", [21, 100])
+def test_bounded_receipt_history_uses_causal_order_not_random_ids(sync_case: dict[str, Any], count: int) -> None:
+    case = sync_case
+    prepared = prepare(case)
+    journal = load_private_json(case["state"], Path("local-sync.json"))
+    prototype = journal["records"].pop(prepared["review_id"])
+    identities = []
+    for index in range(count):
+        identity = "sync_" + f"{count-index:032x}"
+        identities.append(identity)
+        record = copy.deepcopy(prototype)
+        record.update(sequence=index + 1, status="failed",
+            result={"status": "observed_not_applied", "binding": record["binding"], "mutation_performed": False})
+        journal["records"][identity] = record
+    save_private_json(case["state"], Path("local-sync.json"), journal)
+    observations = local_sync.synchronization_observations(case["config"], case["state"], "example-org/example-app")
+    assert [item["review_id"] for item in observations] == identities[-20:]
+    if count == 100:
+        newest = prepare(case)
+        remaining = load_private_json(case["state"], Path("local-sync.json"))["records"]
+        assert identities[0] not in remaining and identities[-1] in remaining
+        assert remaining[newest["review_id"]]["sequence"] == count + 1
 
 
 def configure_tracking(case: dict[str, Any], *, missing: bool = False) -> None:

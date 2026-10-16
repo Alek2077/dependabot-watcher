@@ -8,6 +8,22 @@ internal static class LocalSyncContracts
 {
     internal static void Run(Assembly assembly)
     {
+        var windowType = assembly.GetType("WatcherNativeProof.BackendQueueWindow", true)!;
+        var latestMethod = windowType.GetMethod("LatestLocalSyncOutcome", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var older = JsonNode.Parse("{\"review_id\":\"sync_zz\",\"binding\":{\"target_id\":\"target\"},\"expires_at\":\"2026-10-16T09:15:00Z\",\"status\":\"completed\"}")!;
+        var newer = JsonNode.Parse("{\"review_id\":\"sync_aa\",\"binding\":{\"target_id\":\"target\"},\"expires_at\":\"2026-10-16T09:30:00Z\",\"status\":\"recovery_required\"}")!;
+        var preview = JsonNode.Parse("{\"review_id\":\"sync_mm\",\"binding\":{\"target_id\":\"target\"},\"expires_at\":\"2026-10-16T09:45:00Z\",\"status\":\"awaiting_confirmation\"}")!;
+        var history = new JsonArray(newer, preview, older);
+        if (!ReferenceEquals(latestMethod.Invoke(null, new object[] { history, "target" }), newer))
+            throw new InvalidDataException("Random review ordering or a preview hid the latest uncertain checkout outcome.");
+        older["sequence"] = 1L; newer["sequence"] = 2L;
+        newer["expires_at"] = "2026-10-16T08:00:00Z";
+        if (!ReferenceEquals(latestMethod.Invoke(null, new object[] { history, "target" }), newer))
+            throw new InvalidDataException("Clock rollback hid a causally newer checkout outcome.");
+        var wireHistory = JsonNode.Parse(history.ToJsonString())!.AsArray();
+        var wireLatest = (JsonObject?)latestMethod.Invoke(null, new object[] { wireHistory, "target" });
+        if (wireLatest?["review_id"]?.GetValue<string>() != "sync_aa")
+            throw new InvalidDataException("Serialized checkout history lost causal outcome ordering.");
         var type = assembly.GetType("WatcherNativeProof.NativeLocalSyncReview", true)!;
         object? Call(string name, params object?[] values) {
             try { return type.GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, values); }
