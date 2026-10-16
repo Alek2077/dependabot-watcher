@@ -67,7 +67,7 @@ internal sealed partial class BackendQueueWindow
 
     private async Task CheckCompletionAsync(NativeActionReview review)
     {
-        if (_busy || _shutdownRequested || _scheduledRunning || _investigationCancellation is not null)
+        if (MaintenanceOperationBlocked)
         {
             _completionStatus.Text = $"PR #{review.Binding["pull_request"]}: work is already in progress. No new check or merge was started. Review the activity status and any pending access requests.";
             return;
@@ -84,6 +84,8 @@ internal sealed partial class BackendQueueWindow
 
     private async Task RecheckPendingCompletionsAsync()
     {
+        // Internal callers may own _busy; investigation ownership is distinct.
+        if (_shutdownRequested || InvestigationOwnsMaintenance) return;
         foreach (var review in _reviews.Where(item => item.HasPendingCompletion).ToList())
         {
             if (_shutdownRequested) return;

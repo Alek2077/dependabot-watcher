@@ -39,6 +39,45 @@ internal static class UiStateContracts
                     throw new InvalidDataException("Live investigation enables context-mutating local decisions.");
                 type.GetField("_investigationCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, null);
                 investigation.Dispose();
+                foreach (var scheduled in new[] { false, true })
+                {
+                    using var active = new System.Threading.CancellationTokenSource();
+                    type.GetField("_scheduledRunning", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, scheduled);
+                    type.GetField("_investigationCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, scheduled ? null : active);
+                    type.GetMethod("SetBusy", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, new object[] { false });
+                    if (((System.Windows.UIElement)Field("_activity")).IsEnabled
+                        || ((System.Windows.UIElement)Field("_completionPanel")).IsEnabled)
+                        throw new InvalidDataException("Investigation enables maintenance recovery controls.");
+                    // Invoke handlers directly too: disabled visuals alone are
+                    // not a concurrency fence. No backend is initialized.
+                    foreach (var method in new[] { "CollectAsync", "CheckReviewOutcomeAsync" })
+                    {
+                        var arguments = method == "CollectAsync" ? null : new object?[] { null };
+                        ((System.Threading.Tasks.Task)type.GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!
+                            .Invoke(window, arguments)!).GetAwaiter().GetResult();
+                    }
+                }
+                type.GetField("_scheduledRunning", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
+                type.GetField("_investigationCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, null);
+                foreach (var marker in new[] { "_savedInvestigationActive", "_agentStatusUnverified" })
+                {
+                    type.GetField(marker, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, true);
+                    type.GetMethod("SetBusy", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, new object[] { false });
+                    if (((System.Windows.UIElement)Field("_activity")).IsEnabled
+                        || ((System.Windows.UIElement)Field("_completionPanel")).IsEnabled)
+                        throw new InvalidDataException("Saved or unverified investigation state enables maintenance.");
+                    foreach (var method in new[] { "CollectAsync", "CheckReviewOutcomeAsync", "RecheckPendingCompletionsAsync", "PrepareLocalSyncAsync", "RecoverLocalSyncAsync" })
+                    {
+                        object?[]? arguments = method switch {
+                            "CheckReviewOutcomeAsync" or "PrepareLocalSyncAsync" => new object?[] { null },
+                            "RecoverLocalSyncAsync" => new object?[] { null, null },
+                            _ => null
+                        };
+                        ((System.Threading.Tasks.Task)type.GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!
+                            .Invoke(window, arguments)!).GetAwaiter().GetResult();
+                    }
+                    type.GetField(marker, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
+                }
                 type.GetMethod("SetBusy", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, new object[] { false });
                 var workspaces = (System.Windows.Controls.TabControl)Field("_workspaces");
                 var selectedWorkspace = (System.Windows.Controls.TabItem)Field("_selectedWorkspace");

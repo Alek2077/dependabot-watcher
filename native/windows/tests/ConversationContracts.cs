@@ -139,6 +139,20 @@ internal static class ConversationContracts
             if (!(bool)viewType.GetProperty("HasActiveInvestigation", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(activeView)!
                 || (bool)Call(viewType, activeView, "SuggestsInvestigation", item)!)
                 throw new InvalidDataException("An active saved job offered another investigation.");
+            if (activeStatus == "running")
+            {
+                activeJob["context_digest"] = new string('f', 64);
+                activeJob["current_context"] = false;
+                var staleActiveView = Call(viewType, null, "Parse", activeResponse, Repository, Context)!;
+                if (!(bool)viewType.GetProperty("HasActiveInvestigation", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(staleActiveView)!
+                    || (bool)Call(viewType, staleActiveView, "SuggestsInvestigation", item)!
+                    || Call(viewType, staleActiveView, "CurrentRecommendation", item) is not null)
+                    throw new InvalidDataException("Stale running ownership was lost or promoted to current advice.");
+                activeJob["status"] = "superseded";
+                var finishedStaleView = Call(viewType, null, "Parse", activeResponse, Repository, Context)!;
+                if ((bool)viewType.GetProperty("HasActiveInvestigation", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(finishedStaleView)!)
+                    throw new InvalidDataException("Terminal stale history retained investigation ownership.");
+            }
         }
         currentAdvice["ready_for_action"] = true; currentAdvice["conclusion"] = "hold";
         var contradictionRefused = false;

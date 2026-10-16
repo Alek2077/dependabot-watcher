@@ -632,9 +632,27 @@ $xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name
         report["capabilities"]["persistent_local_writes"] = True
         return report
 
+    def _management_definition(self, spec: ScheduleSpec, native: Mapping[str, Any]) -> dict[str, Any]:
+        """Describe observed ownership without requiring new launcher prerequisites."""
+        definition: dict[str, Any] = {"task_name": spec.job_id,
+                                      "output": "Watcher runtime state plus Windows Task Scheduler history"}
+        if native.get("installed"):
+            self._require_root_task_path(native)
+            xml = self._require_owned_xml(spec, native.get("xml"))
+            definition.update(xml=xml, normalized=self._normalized_xml(xml), authority=self._user())
+        return definition
+
     def status(self, spec: ScheduleSpec) -> dict[str, Any]:
-        definition = self._definition(spec)
         native = self._native_status(spec)
+        observed = self._management_definition(spec, native)
+        unavailable = None
+        try:
+            definition = self._definition(spec)
+        except ScheduleError as exc:
+            # Status and removal must remain available for an owned legacy
+            # task even when its replacement cannot currently be provisioned.
+            definition = observed
+            unavailable = str(exc)
         if not native.get("installed"):
             return schedule_report(
                 action="status",
@@ -646,7 +664,7 @@ $xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name
         self._require_root_task_path(native)
         xml = self._require_owned_xml(spec, native.get("xml"))
         installed_definition = self._normalized_xml(xml)
-        drifted = any(
+        drifted = unavailable is not None or any(
             value != installed_definition.get(key)
             for key, value in definition["normalized"].items()
             if key != "task_enabled"
@@ -673,11 +691,13 @@ $xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name
                 "last_result": native.get("last_result") if has_run else None,
                 "missed_runs": native.get("missed_runs"),
             },
+            next_step=("Current launcher readiness could not be verified: " + unavailable
+                       + " The owned task can still be disabled or removed.") if unavailable else None,
         )
 
     def disable(self, spec: ScheduleSpec) -> dict[str, Any]:
-        definition = self._definition(spec)
         prior = self._native_status(spec)
+        definition = self._management_definition(spec, prior)
         if not prior.get("installed"):
             return schedule_report(
                 action="disable",
@@ -720,8 +740,8 @@ Disable-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -Erro
         )
 
     def remove(self, spec: ScheduleSpec) -> dict[str, Any]:
-        definition = self._definition(spec)
         prior = self._native_status(spec)
+        definition = self._management_definition(spec, prior)
         if not prior.get("installed"):
             return schedule_report(
                 action="remove",
