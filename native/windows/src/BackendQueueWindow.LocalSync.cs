@@ -17,11 +17,15 @@ internal sealed partial class BackendQueueWindow
 
     private void InitializeLocalSync(StackPanel inspector)
     {
-        _localSyncPanel.Children.Add(new TextBlock { Text = "Your selected local checkouts", FontSize = 16,
-            FontWeight = FontWeights.SemiBold });
-        _localSyncPanel.Children.Add(_localSyncStatus);
-        _localSyncPanel.Children.Add(new ScrollViewer { Content = _localSyncTargets, MaxHeight = 150,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        var description = new StackPanel();
+        description.Children.Add(new TextBlock { Text = "Local checkouts", FontSize = 16, FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 8, 0, 6) });
+        description.Children.Add(_localSyncStatus);
+        _localSyncPanel.Children.Add(description);
+        AddCopyIcon(_localSyncStatus, description);
+        // The inspector owns scrolling. A nested ScrollViewer swallows wheel
+        // input over checkout rows even when its contents fit without scrolling.
+        _localSyncPanel.Children.Add(_localSyncTargets);
         inspector.Children.Add(_localSyncPanel);
     }
 
@@ -30,7 +34,7 @@ internal sealed partial class BackendQueueWindow
         ["operation"] = operation
     };
 
-    private async Task ReadLocalSyncTargetsAsync()
+    private async Task ReadLocalSyncTargetsAsync(NativeActionReview? currentLocalStep = null)
     {
         try
         {
@@ -45,23 +49,27 @@ internal sealed partial class BackendQueueWindow
                 var label = NativeDisplayText.Escape($"{target["repository"]} · {target["branch"]}\n{target["directory"]}");
                 var row = new StackPanel();
                 row.Children.Add(new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap });
-                var applied = reviews.OfType<JsonObject>().LastOrDefault(review =>
-                    review["binding"]?["target_id"]?.GetValue<string>() == id
-                    && review["status"]?.GetValue<string>() == "completed"
-                    && review["result"]?["status"]?.GetValue<string>() is "synchronized" or "observed_applied");
-                if (applied is not null && JsonNode.DeepEquals(applied["binding"], applied["result"]?["binding"])
+                var latest = LatestLocalSyncOutcome(reviews, id);
+                var applied = latest is not null &&
+                    latest["status"]?.GetValue<string>() == "completed"
+                    && latest["result"]?["status"]?.GetValue<string>() is "synchronized" or "observed_applied"
+                    ? latest : null;
+                var hasApplied = applied is not null && JsonNode.DeepEquals(applied["binding"], applied["result"]?["binding"])
                     && new[] { "repository", "directory", "branch" }.All(key => JsonNode.DeepEquals(applied["binding"]?[key], target[key]))
                     && applied["result"]?["mutation_performed"]?.GetValue<bool>() ==
-                        (applied["result"]?["status"]?.GetValue<string>() == "synchronized"))
+                        (applied["result"]?["status"]?.GetValue<string>() == "synchronized");
+                if (hasApplied)
                     row.Children.Add(new TextBlock { Text = NativeDisplayText.Escape(
-                        $"✓ {(applied["result"]?["status"]?.GetValue<string>() == "synchronized" ? "Saved local update succeeded" : "Saved outcome verified; target was already present")} · {applied["binding"]?["target_sha"]}\nHistorical receipt; review again to check current remote state."),
+                        $"✓ {(applied!["result"]?["status"]?.GetValue<string>() == "synchronized" ? "Saved local update succeeded" : "Saved outcome verified; target was already present")} · {applied["binding"]?["target_sha"]}\nHistorical receipt; check again to compare with current remote state."),
                         TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold,
                         Foreground = SystemParameters.HighContrast ? SystemColors.WindowTextBrush
                             : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(20, 100, 65)),
                         Margin = new Thickness(0, 6, 0, 4) });
-                var pending = reviews.OfType<JsonObject>().LastOrDefault(review =>
-                    review["binding"]?["target_id"]?.GetValue<string>() == id
-                    && review["status"]?.GetValue<string>() is "executing" or "recovery_required");
+                var pending = latest is not null && latest["status"]?.GetValue<string>() is "executing" or "recovery_required"
+                    ? latest : null;
+                if (latest?["status"]?.GetValue<string>() == "failed")
+                    row.Children.Add(new TextBlock { Text = "The latest saved update was not applied. Review current checkout state before another update.",
+                        TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 4) });
                 if (pending is not null)
                 {
                     var reviewId = pending["review_id"]!.GetValue<string>();
@@ -69,7 +77,21 @@ internal sealed partial class BackendQueueWindow
                         ?? throw new InvalidDataException("Saved local update binding is missing.");
                     row.Children.Add(Button("Check saved local update outcome", () => RecoverLocalSyncAsync(reviewId, binding)));
                 }
-                else row.Children.Add(Button("Review local update", () => PrepareLocalSyncAsync((JsonObject)target.DeepClone())));
+                else
+                {
+                    var update = Button(hasApplied ? "Check local checkout" : "Review local update",
+                        () => PrepareLocalSyncAsync((JsonObject)target.DeepClone()));
+                    update.IsEnabled = !_refreshRequired;
+                    if (_refreshRequired) update.ToolTip = "Refresh saved queue before reviewing a checkout update.";
+                    var next = !hasApplied && ((currentLocalStep?.HasPendingCompletion == true
+                        && currentLocalStep.MatchesRepository(target["repository"]?.GetValue<string>()))
+                        || _reviews.Any(review => review.HasPendingCompletion
+                        && review.MatchesRepository(target["repository"]?.GetValue<string>())
+                        && review.Value["completion_stage"]?.GetValue<string>() == "local_sync"));
+                    if (next) { update.Background = PrimaryBrush; update.Foreground = SystemColors.HighlightTextBrush; }
+                    row.Children.Add(update);
+                }
+                foreach (var text in row.Children.OfType<TextBlock>().ToArray()) AddCopyIcon(text);
                 _localSyncTargets.Children.Add(row);
             }
             _localSyncStatus.Text = _reviews.Any(review => review.HasPendingCompletion
@@ -86,9 +108,17 @@ internal sealed partial class BackendQueueWindow
         }
     }
 
+    private static JsonObject? LatestLocalSyncOutcome(JsonArray reviews, string targetId) => reviews.OfType<JsonObject>()
+        .Where(review => review["binding"]?["target_id"]?.GetValue<string>() == targetId
+            && review["status"]?.GetValue<string>() != "awaiting_confirmation")
+        // New backend receipts carry causal order; expiry is only a fallback
+        // for legacy history. It never changes the approval deadline.
+        .OrderBy(review => review["sequence"]?.GetValue<long>() ?? 0)
+        .ThenBy(review => DateTimeOffset.Parse(review["expires_at"]!.GetValue<string>())).LastOrDefault();
+
     private async Task PrepareLocalSyncAsync(JsonObject target)
     {
-        if (_busy || _shutdownRequested || _scheduledRunning || _investigationCancellation is not null) return;
+        if (_busy || _shutdownRequested || _refreshRequired || _scheduledRunning || _investigationCancellation is not null) return;
         SetBusy(true);
         ShowActionNotice("Checking local checkout update", "Checking the selected branch and current remote commit. Missing Git objects may be downloaded; no branch integration is being performed.");
         try

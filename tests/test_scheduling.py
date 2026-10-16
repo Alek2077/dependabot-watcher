@@ -11,7 +11,7 @@ from typing import Any, Sequence
 import pytest
 
 from dependabot_watcher.schedulers import launchd as launchd_module
-from dependabot_watcher.schedulers.common import CommandResult, ScheduleError, schedule_spec
+from dependabot_watcher.schedulers.common import CommandResult, ScheduleError, ScheduleSpec, schedule_spec
 from dependabot_watcher.schedulers.launchd import LaunchdAdapter
 from dependabot_watcher.schedulers.systemd import SystemdUserAdapter
 from dependabot_watcher.schedulers.windows import (
@@ -107,6 +107,7 @@ class _WindowsRunner:
         self.missed_runs = 0
         self.commands: list[list[str]] = []
         self.payloads: list[dict[str, Any]] = []
+        self.launchers: dict[str, str] = {}
 
     def run(
         self,
@@ -119,6 +120,14 @@ class _WindowsRunner:
         script = command[-1]
         payload = json.loads(input_text or "{}")
         self.payloads.append(payload)
+        if "launcher_path" in payload:
+            path = payload["launcher_path"]
+            source = payload.get("source")
+            if source is not None:
+                if path in self.launchers and self.launchers[path] != source:
+                    return CommandResult(1, "", "changed launcher")
+                self.launchers[path] = source
+            return CommandResult(0, json.dumps({"launcher_content": self.launchers.get(path)}), "")
         if "-TaskPath" in script:
             assert "$payload.task_path" in script
             assert payload["task_path"] == "\\"
@@ -427,7 +436,21 @@ def _windows_adapter(
         wsl_path=wsl,
         inventory_platform=inventory_platform,
         expected_wsl_user="alex" if inventory_platform == "wsl" else None,
+        wscript_path="C:\\Windows\\System32\\wscript.exe",
+        launcher_directory="C:\\Users\\alex\\AppData\\Local\\DependabotWatcher\\schedules",
     )
+
+
+def _legacy_windows_xml(adapter: WindowsTaskSchedulerAdapter, spec: ScheduleSpec) -> str:
+    definition = adapter.preview(spec)["definition"]
+    root = ET.fromstring(definition["xml"])
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    command = root.find("t:Actions/t:Exec/t:Command", ns)
+    arguments = root.find("t:Actions/t:Exec/t:Arguments", ns)
+    assert command is not None and arguments is not None
+    command.text = definition["command"]
+    arguments.text = subprocess.list2cmdline(definition["arguments"])
+    return ET.tostring(root, encoding="unicode")
 
 
 def test_schedule_spec_is_stable_and_binds_exact_run_command(tmp_path: Path) -> None:
@@ -1258,6 +1281,8 @@ def test_windows_inventory_recovers_owned_current_user_task(
     )
     spec = _spec(tmp_path, platform=platform, distro=distro)
     runner.xml = adapter.preview(spec)["definition"]["xml"]
+    launcher = adapter.preview(spec)["definition"]["launcher"]
+    runner.launchers[launcher["path"]] = launcher["source"]
     runner.enabled = True
 
     report = adapter.inventory()
@@ -1318,7 +1343,7 @@ def test_windows_inventory_rejects_unexpected_owned_command(tmp_path: Path) -> N
     adapter = _windows_adapter(tmp_path, runner, inventory_platform="windows")
     spec = _spec(tmp_path, platform="windows")
     expected = str(spec.executable)
-    runner.xml = adapter.preview(spec)["definition"]["xml"].replace(
+    runner.xml = _legacy_windows_xml(adapter, spec).replace(
         expected,
         str(spec.executable.with_name("other-tool")),
     )
@@ -1334,7 +1359,7 @@ def test_windows_inventory_rejects_missing_native_interval(tmp_path: Path) -> No
     runner = _WindowsRunner()
     adapter = _windows_adapter(tmp_path, runner, inventory_platform="windows")
     spec = _spec(tmp_path, platform="windows")
-    runner.xml = adapter.preview(spec)["definition"]["xml"].replace(
+    runner.xml = _legacy_windows_xml(adapter, spec).replace(
         "<Interval>PT60M</Interval>",
         "",
     )
@@ -1351,7 +1376,7 @@ def test_windows_inventory_rejects_untrusted_wsl_wrapper(tmp_path: Path) -> None
     adapter = _windows_adapter(tmp_path, runner, inventory_platform="wsl")
     spec = _spec(tmp_path, platform="wsl", distro="Ubuntu-24.04")
     expected = adapter.preview(spec)["definition"]["command"]
-    runner.xml = adapter.preview(spec)["definition"]["xml"].replace(
+    runner.xml = _legacy_windows_xml(adapter, spec).replace(
         expected,
         str(tmp_path / "Untrusted/wsl.exe"),
     )
@@ -1378,7 +1403,7 @@ def test_windows_inventory_rejects_altered_wsl_user_or_path(
     runner = _WindowsRunner()
     adapter = _windows_adapter(tmp_path, runner, inventory_platform="wsl")
     spec = _spec(tmp_path, platform="wsl", distro="Ubuntu-24.04")
-    xml = adapter.preview(spec)["definition"]["xml"]
+    xml = _legacy_windows_xml(adapter, spec)
     assert original in xml
     runner.xml = xml.replace(original, replacement, 1)
 

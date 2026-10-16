@@ -15,6 +15,18 @@ internal static class ConversationContracts
     {
         var proposalType = assembly.GetType("WatcherNativeProof.QueueProposal", true)!;
         var viewType = assembly.GetType("WatcherNativeProof.NativeSupervisorView", true)!;
+        var rejected = new System.Collections.Generic.List<JsonObject> { new() {
+            ["retry_available"] = true, ["failure"] = "output_contract_invalid"
+        } };
+        var rejectedView = Activator.CreateInstance(viewType, BindingFlags.Instance | BindingFlags.NonPublic,
+            null, new object?[] { rejected, null }, null)!;
+        var retryExplanation = viewType.GetProperty("RetryExplanation", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        if (retryExplanation.GetValue(rejectedView) is not string explanation
+            || !explanation.Contains("answer failed validation") || !explanation.Contains("will not be repeated"))
+            throw new InvalidDataException("Rejected-output recovery lacks specific visible guidance.");
+        rejected[0]["failure"] = "interrupted";
+        if (retryExplanation.GetValue(rejectedView) is not null)
+            throw new InvalidDataException("Interrupted investigation was mislabeled as invalid output.");
         object? Call(Type type, object? target, string method, params object?[] arguments)
         {
             try { return type.GetMethod(method, BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)!

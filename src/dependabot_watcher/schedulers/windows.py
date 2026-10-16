@@ -25,6 +25,7 @@ from ..windows_helpers import (
     trusted_windows_executable,
     windows_host_path,
 )
+from .windows_launch import launcher_path, launcher_source, verified_launcher_argv
 
 
 _TASK_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
@@ -113,12 +114,16 @@ class WindowsTaskSchedulerAdapter:
         wsl_path: Path | None = None,
         inventory_platform: str | None = None,
         expected_wsl_user: str | None = None,
+        wscript_path: str | None = None,
+        launcher_directory: str | None = None,
     ) -> None:
         self._runner = runner or SubprocessRunner()
         self._windows_user = windows_user
         self._powershell_path = powershell_path
         self._wsl_path = wsl_path
         self._expected_wsl_user = expected_wsl_user
+        self._wscript_path = wscript_path
+        self._launcher_directory = launcher_directory
         if inventory_platform not in {None, "windows", "wsl"}:
             raise ScheduleError("Windows scheduler inventory platform is invalid.")
         self._inventory_platform = inventory_platform
@@ -144,6 +149,54 @@ class WindowsTaskSchedulerAdapter:
             return windows_host_path(trusted_windows_executable("wsl.exe"))
         except WindowsHelperError as exc:
             raise ScheduleError(str(exc)) from exc
+
+    def _launcher_root(self) -> str:
+        if self._launcher_directory is None:
+            value = self._run_script(
+                "@{directory=[Environment]::GetFolderPath('LocalApplicationData')} | ConvertTo-Json -Compress",
+                {},
+            ).get("directory")
+            if not isinstance(value, str) or not PureWindowsPath(value).is_absolute():
+                raise ScheduleError("Windows local application data could not be resolved safely.")
+            self._launcher_directory = str(PureWindowsPath(value) / "DependabotWatcher" / "schedules")
+        return self._launcher_directory
+
+    def _wscript(self) -> str:
+        if self._wscript_path is not None:
+            return self._wscript_path
+        try:
+            return windows_host_path(trusted_windows_executable("wscript.exe"))
+        except WindowsHelperError as exc:
+            raise ScheduleError(str(exc)) from exc
+
+    def _launcher_content(self, path: str, *, source: str | None = None) -> object:
+        # All callers supply a locally derived path, never a task-supplied file.
+        script = """
+$ErrorActionPreference = 'Stop'
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$parent = [IO.Path]::GetDirectoryName($payload.launcher_path)
+$cursor = $parent
+while ($cursor) {
+  if ((Test-Path -LiteralPath $cursor) -and ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Launcher directory is a reparse point.' }
+  $cursor = [IO.Path]::GetDirectoryName($cursor)
+}
+if ($null -ne $payload.source) {
+  [IO.Directory]::CreateDirectory($parent) | Out-Null
+}
+if (Test-Path -LiteralPath $payload.launcher_path) {
+  $item = Get-Item -LiteralPath $payload.launcher_path -Force
+  if ($item.PSIsContainer -or $item.Length -gt 65536 -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Launcher is not a regular bounded file.' }
+  $content = [IO.File]::ReadAllText($payload.launcher_path)
+  if ($null -ne $payload.source -and $content -cne $payload.source) { throw 'Refusing to overwrite changed launcher.' }
+} elseif ($null -ne $payload.source) {
+  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($payload.source)
+  $stream = [IO.File]::Open($payload.launcher_path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+  try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+  $content = [IO.File]::ReadAllText($payload.launcher_path)
+} else { $content = $null }
+@{launcher_content=$content} | ConvertTo-Json -Compress
+""".strip()
+        return self._run_script(script, {"launcher_path": path, "source": source}).get("launcher_content")
 
     def _run_script(self, script: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         result = self._runner.run(
@@ -225,6 +278,16 @@ $tasks = @(Get-ScheduledTask -TaskPath $payload.task_path -ErrorAction Stop | Wh
                 if not isinstance(argument_line, str):
                     raise ScheduleError("candidate has an invalid argument string")
                 arguments = _split_windows_command_line(argument_line)
+                windowless = PureWindowsPath(command).name.casefold() == "wscript.exe"
+                if windowless:
+                    if command.casefold() != self._wscript().casefold() or arguments[:3] != ["/b", "/nologo", "/e:JScript"] or len(arguments) != 4:
+                        raise ScheduleError("candidate has an unexpected windowless host")
+                    # Read only a fingerprint-bound path under the owned directory.
+                    path = arguments[3]
+                    if PureWindowsPath(path).parent != PureWindowsPath(self._launcher_root()) or not re.fullmatch(re.escape(job_id) + r"-[0-9a-f]{64}\.js", PureWindowsPath(path).name):
+                        raise ScheduleError("candidate has an unexpected launcher path")
+                    underlying = verified_launcher_argv(self._launcher_root(), job_id, path, self._launcher_content(path))
+                    command, arguments = underlying[0], underlying[1:]
                 platform = (
                     "wsl"
                     if PureWindowsPath(command).name.casefold() == "wsl.exe"
@@ -234,7 +297,7 @@ $tasks = @(Get-ScheduledTask -TaskPath $payload.task_path -ErrorAction Stop | Wh
                     continue
                 enabled_value = raw_task.get("enabled")
                 enabled = enabled_value if isinstance(enabled_value, bool) else None
-                native_complete = all(
+                native_complete = windowless and all(
                     normalized.get(key) == expected
                     for key, expected in (
                         ("trigger_count", 1),
@@ -242,6 +305,32 @@ $tasks = @(Get-ScheduledTask -TaskPath $payload.task_path -ErrorAction Stop | Wh
                         ("principal_count", 1),
                         ("action_count", 1),
                         ("exec_action_count", 1),
+                        ("run_level", "LeastPrivilege"),
+                        ("logon_type", "InteractiveToken"),
+                        ("start_boundary", "2000-01-01T00:00:00"),
+                        ("stop_at_duration_end", "false"),
+                        ("repetition_duration", None),
+                        ("trigger_enabled", "true"),
+                        ("start_when_available", "true"),
+                        ("multiple_instances", "IgnoreNew"),
+                        ("network_required", "true"),
+                        ("execution_time_limit", "PT2H"),
+                        ("disallow_start_on_batteries", "false"),
+                        ("stop_on_batteries", "false"),
+                        ("allow_hard_terminate", "true"),
+                        ("actions_context", "Author"),
+                        ("random_delay", "PT0S"),
+                        ("end_boundary", None),
+                        ("wake_to_run", "false"),
+                        ("run_only_if_idle", "false"),
+                        ("idle_stop", "true"),
+                        ("idle_restart", "false"),
+                        ("working_directory", None),
+                        ("restart_interval", None),
+                        ("restart_count", None),
+                        ("network_id", None),
+                        ("network_name", None),
+                        ("priority", "7"),
                     )
                 )
                 registrations.append(
@@ -314,6 +403,8 @@ $tasks = @(Get-ScheduledTask -TaskPath $payload.task_path -ErrorAction Stop | Wh
 
     def _task_xml(self, spec: ScheduleSpec) -> str:
         command, arguments = self._action(spec)
+        source = launcher_source([command, *arguments])
+        command, arguments = self._wscript(), ["/b", "/nologo", "/e:JScript", launcher_path(self._launcher_root(), spec.job_id, source)]
         root = ET.Element(_tag("Task"), {"version": "1.4"})
         registration = ET.SubElement(root, _tag("RegistrationInfo"))
         _text(registration, "Source", "Dependabot Watcher")
@@ -407,6 +498,18 @@ $tasks = @(Get-ScheduledTask -TaskPath $payload.task_path -ErrorAction Stop | Wh
             "exec_action_count": len(exec_actions),
             "command": value("t:Actions/t:Exec/t:Command"),
             "arguments": value("t:Actions/t:Exec/t:Arguments"),
+            "working_directory": value("t:Actions/t:Exec/t:WorkingDirectory"),
+            "random_delay": value("t:Triggers/t:TimeTrigger/t:RandomDelay") or "PT0S",
+            "end_boundary": value("t:Triggers/t:TimeTrigger/t:EndBoundary"),
+            "wake_to_run": value("t:Settings/t:WakeToRun") or "false",
+            "run_only_if_idle": value("t:Settings/t:RunOnlyIfIdle") or "false",
+            "idle_stop": value("t:Settings/t:IdleSettings/t:StopOnIdleEnd") or "true",
+            "idle_restart": value("t:Settings/t:IdleSettings/t:RestartOnIdle") or "false",
+            "restart_interval": value("t:Settings/t:RestartOnFailure/t:Interval"),
+            "restart_count": value("t:Settings/t:RestartOnFailure/t:Count"),
+            "network_id": value("t:Settings/t:NetworkSettings/t:Id"),
+            "network_name": value("t:Settings/t:NetworkSettings/t:Name"),
+            "priority": value("t:Settings/t:Priority") or "7",
         }
 
     def _require_owned_xml(self, spec: ScheduleSpec, xml: object) -> str:
@@ -431,6 +534,7 @@ $tasks = @(Get-ScheduledTask -TaskPath $payload.task_path -ErrorAction Stop | Wh
     def _definition(self, spec: ScheduleSpec) -> dict[str, Any]:
         xml = self._task_xml(spec)
         command, arguments = self._action(spec)
+        source = launcher_source([command, *arguments])
         return {
             "task_name": spec.job_id,
             "xml": xml,
@@ -438,6 +542,7 @@ $tasks = @(Get-ScheduledTask -TaskPath $payload.task_path -ErrorAction Stop | Wh
             "authority": self._user(),
             "command": command,
             "arguments": arguments,
+            "launcher": {"path": launcher_path(self._launcher_root(), spec.job_id, source), "source": source, "host": self._wscript(), "windowless": True},
             "output": "Watcher runtime state plus Windows Task Scheduler history",
         }
 
@@ -504,6 +609,8 @@ $lastRunAt = if ($hasRun) { $info.LastRunTime.ToString('o') } else { $null }
         changed = not prior.get("installed") or (
             self._normalized_xml(str(prior_xml)) != definition["normalized"]
         )
+        launcher = definition["launcher"]
+        self._launcher_content(launcher["path"], source=launcher["source"])
         script = """
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
 Register-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name -Xml $payload.xml -Force | Out-Null
@@ -544,6 +651,9 @@ $xml = Export-ScheduledTask -TaskPath $payload.task_path -TaskName $payload.name
             for key, value in definition["normalized"].items()
             if key != "task_enabled"
         )
+        if not drifted:
+            launcher = definition["launcher"]
+            drifted = self._launcher_content(launcher["path"]) != launcher["source"]
         enabled = bool(native.get("enabled"))
         status = "drifted" if drifted else "active" if enabled else "disabled"
         has_run = bool(native.get("has_run"))

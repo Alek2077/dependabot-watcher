@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -48,6 +49,27 @@ def ask(journal: SupervisorPermissions, connection: str, **changes: Any) -> dict
               "description": "Read a synthetic denied file for this local test.",
               "choices": ["allow_once", "deny", "cancel"]}
     return journal.request(connection, **{**params, **changes})
+
+
+@pytest.mark.parametrize("terminal", ["resolved", "closed", "orphaned"])
+def test_backward_wall_clock_preserves_permission_resolution_order(
+    permissions_case: tuple[SupervisorJobs, SupervisorPermissions, str], terminal: str,
+) -> None:
+    jobs, journal, connection = permissions_case
+    requested = ask(journal, connection)
+    now = datetime.fromisoformat(requested["created_at"].replace("Z", "+00:00")) - timedelta(seconds=1)
+    jobs.queue.clock = lambda: now
+    if terminal == "resolved":
+        journal.decide(connection, requested["permission_id"], requested["digest"], "deny")
+        assert journal.consume(connection, requested["permission_id"], requested["digest"]) == "deny"
+        journal.resolve(connection, requested["permission_id"])
+    elif terminal == "orphaned":
+        jobs.release_owner(journal._load()["connections"][connection]["job_id"])
+    else:
+        journal.close(connection)
+    saved = journal.snapshot("example-org/example-app")["connections"][0]["requests"][requested["permission_id"]]
+    assert datetime.fromisoformat(saved["resolved_at"]) > datetime.fromisoformat(requested["created_at"])
+    assert saved["status"] == ("resolved" if terminal == "resolved" else "invalidated")
 
 
 @pytest.mark.parametrize("historical_connections", [0, 24])
@@ -432,11 +454,13 @@ def test_actual_owner_death_invalidates_consent_and_interrupts_job_without_repla
     job = jobs.prepare("example-org/example-app")
     program = '''
 import sys
+import time
 from pathlib import Path
 from dependabot_watcher.config import parse_config
 from dependabot_watcher.review_queue import ReviewQueue
 from dependabot_watcher.supervision import SupervisorJobs
 from dependabot_watcher.supervisor_permissions import SupervisorPermissions, permission_digest
+from dependabot_watcher.runtime_state import RuntimeLockBusyError
 config=parse_config({"schema_version":1,"repositories":[{"name":"example-org/example-app"}]})
 jobs=SupervisorJobs(ReviewQueue(config,Path(sys.argv[1])))
 jobs.start(sys.argv[2])
@@ -444,8 +468,18 @@ jobs.attach_session(sys.argv[2],"thread1")
 journal=SupervisorPermissions(jobs)
 with journal.live_connection(sys.argv[2],"thread1") as connection:
     journal.bind_turn(connection,"turn1")
-    journal.request(connection,provider_request_id=1,turn_id="turn1",item_id="item1",
-        digest=permission_digest({"id":1,"scope":"synthetic"}),description="Synthetic read only",choices=["allow_once","deny"])
+    # Mirror the provider's nonblocking admission retry. The parent polls the
+    # same journal; failed lock acquisition has not published any request.
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            journal.request(connection,provider_request_id=1,turn_id="turn1",item_id="item1",
+                digest=permission_digest({"id":1,"scope":"synthetic"}),description="Synthetic read only",choices=["allow_once","deny"])
+            break
+        except RuntimeLockBusyError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(.02)
     sys.stdin.read()
 '''
     child = subprocess.Popen([sys.executable, "-c", program, str(directory), job["job_id"]],
@@ -459,7 +493,9 @@ with journal.live_connection(sys.argv[2],"thread1") as connection:
             if records and records[0]["requests"]:
                 connection = records[0]
                 break
-            assert child.poll() is None, "Owner exited before publishing a permission"
+            if child.poll() is not None:
+                _, diagnostic = child.communicate(timeout=5)
+                pytest.fail(f"Owner exited before publishing a permission: {diagnostic}")
             time.sleep(.02)
         assert connection is not None and connection["live_connection_confirmed"] is True
         requested = next(iter(connection["requests"].values()))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,33 @@ def result_for(job: dict[str, Any]) -> dict[str, Any]:
             "replies": [{"proposal_id": item["proposal_id"], "request_id": message["request_id"],
                          "message": "This question belongs to this saved revision."}
                         for item in job["context"]["proposals"] for message in item["feedback"]]}
+
+
+@pytest.mark.parametrize("terminal", ["completed", "failed", "interrupted", "orphaned"])
+def test_backward_wall_clock_keeps_lifecycle_journal_readable(
+    jobs_case: tuple[SupervisorJobs, dict[str, Any]], terminal: str,
+) -> None:
+    jobs, _ = jobs_case
+    now = datetime(2026, 10, 16, 10, 0, tzinfo=timezone.utc)
+    jobs.queue.clock = lambda: now
+    job = jobs.prepare("example-org/example-app")
+    now -= timedelta(seconds=1)
+    started = jobs.start(job["job_id"])
+    assert datetime.fromisoformat(started["started_at"]) > datetime.fromisoformat(job["created_at"])
+    now -= timedelta(seconds=1)
+    if terminal == "completed":
+        finished = jobs.complete(job["job_id"], result_for(job))
+    elif terminal == "orphaned":
+        jobs.release_owner(job["job_id"])
+        finished = jobs.read(job["job_id"])
+    else:
+        finished = jobs.fail(job["job_id"], interrupted=terminal == "interrupted")
+    assert datetime.fromisoformat(finished["finished_at"]) > datetime.fromisoformat(started["started_at"])
+    assert jobs.read(job["job_id"])["status"] == ("interrupted" if terminal == "orphaned" else terminal)
+    if terminal != "completed":
+        retry = jobs.prepare(job["repository"], retry_job_id=job["job_id"])
+        assert datetime.fromisoformat(retry["created_at"]) > datetime.fromisoformat(finished["finished_at"])
+        assert jobs.read(retry["job_id"])["retry_of"] == job["job_id"]
 
 
 @pytest.mark.parametrize("conclusion", ["ready_for_completion", "blocked", "needs_attention"])
