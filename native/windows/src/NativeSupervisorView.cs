@@ -16,9 +16,11 @@ internal sealed class NativeSupervisorView
     internal NativeLaunchPolicy? LaunchPolicy { get; }
     internal bool HasActiveInvestigation {
         get {
+            // Ownership survives context changes; freshness only controls
+            // whether a job's advice can be presented as current.
+            if (_jobs.Any(value => value["status"]?.GetValue<string>() == "running")) return true;
             var job = _jobs.LastOrDefault(value => value["current_context"]!.GetValue<bool>());
-            return job?["status"]?.GetValue<string>() == "running"
-                || job?["status"]?.GetValue<string>() == "prepared" && job["retry_of"] is null;
+            return job?["status"]?.GetValue<string>() == "prepared" && job["retry_of"] is null;
         }
     }
     internal string? CurrentAssessmentSummary

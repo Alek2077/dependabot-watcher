@@ -115,6 +115,7 @@ internal sealed partial class BackendQueueWindow : Window
     private bool _suggestInvestigation;
     private bool _supervisionDisabled;
     private bool _savedInvestigationActive;
+    private bool _agentStatusUnverified;
     private string? _launchPolicyRepository;
     private string? _launchPolicyDigest;
     private string? _retryJobId;
@@ -720,6 +721,10 @@ internal sealed partial class BackendQueueWindow : Window
         ["operation"] = operation
     };
 
+    private bool InvestigationOwnsMaintenance => _scheduledRunning || _savedInvestigationActive
+        || _agentStatusUnverified || _investigationCancellation is not null;
+    private bool MaintenanceOperationBlocked => _busy || _shutdownRequested || InvestigationOwnsMaintenance;
+
     private void SetBusy(bool busy)
     {
         if (_refreshRequired) _permissionAttention.Visibility = Visibility.Collapsed;
@@ -728,11 +733,12 @@ internal sealed partial class BackendQueueWindow : Window
         _busy = busy;
         _queue.IsEnabled = !busy && !_shutdownRequested;
         _actions.IsEnabled = !busy && !_shutdownRequested && !_refreshRequired && _queue.SelectedItem is QueueProposal;
-        _activity.IsEnabled = !busy && !_shutdownRequested;
+        _activity.IsEnabled = !MaintenanceOperationBlocked;
+        _completionPanel.IsEnabled = !MaintenanceOperationBlocked;
         _permissions.IsEnabled = !busy && !_shutdownRequested && !_refreshRequired;
-        _collect.IsEnabled = !busy && !_shutdownRequested && !_scheduledRunning && _investigationCancellation is null;
-        _localSyncPanel.IsEnabled = !busy && !_shutdownRequested && !_refreshRequired && !_scheduledRunning && _investigationCancellation is null;
-        _decisions.IsEnabled = !busy && !_shutdownRequested && !_refreshRequired && !_scheduledRunning && _investigationCancellation is null;
+        _collect.IsEnabled = !MaintenanceOperationBlocked;
+        _localSyncPanel.IsEnabled = !MaintenanceOperationBlocked && !_refreshRequired;
+        _decisions.IsEnabled = !MaintenanceOperationBlocked && !_refreshRequired;
         _saveMessage.IsEnabled = _decisions.IsEnabled;
         UpdateInvestigationControls();
         if (!busy && !_shutdownRequested && _launchRefreshPending && !_launchRefreshInFlight) _ = RefreshInvestigationScopeAsync();
@@ -1111,6 +1117,8 @@ internal sealed partial class BackendQueueWindow : Window
         var request = new JsonObject { ["schema_version"] = 1, ["request_id"] = "read_" + Guid.NewGuid().ToString("N"),
             ["operation"] = "supervisor_status", ["repository"] = repository };
         _agentReplies.Text = "Checking saved agent replies. No model call is being made…";
+        _agentStatusUnverified = true;
+        SetBusy(_busy);
         try
         {
             var response = await _client.SendAsync(request);
@@ -1133,6 +1141,7 @@ internal sealed partial class BackendQueueWindow : Window
             var recommendation = view.CurrentRecommendation(item);
             _currentAgentReady = recommendation?.Ready == true;
             _savedInvestigationActive = view.HasActiveInvestigation;
+            _agentStatusUnverified = false;
             _suggestInvestigation = view.SuggestsInvestigation(item);
             _supervisionDisabled = response["configured_launch"]?["mode"]?.GetValue<string>() == "off";
             _agentRecommendation.Text = recommendation?.Heading ?? "Needs investigation";
@@ -1169,7 +1178,7 @@ internal sealed partial class BackendQueueWindow : Window
                 _nextStep.Text = "Wait for results, then refresh saved queue.";
                 _latestAnswer.Visibility = Visibility.Collapsed;
             }
-            UpdateInvestigationControls();
+            SetBusy(_busy);
             App.Record("supervisor_replies_loaded", new { proposal_id = item.Id, version = item.Version });
         }
         catch (Exception ex)
@@ -1184,7 +1193,8 @@ internal sealed partial class BackendQueueWindow : Window
                 _agentUsage.Text = "Sending is unavailable until configuration is verified.";
                 _latestAnswer.Visibility = Visibility.Collapsed;
                 ResetAgentGuidance("Current agent recommendation could not be verified");
-                UpdateInvestigationControls();
+                _agentStatusUnverified = true;
+                SetBusy(_busy);
             }
         }
     }
@@ -1200,6 +1210,7 @@ internal sealed partial class BackendQueueWindow : Window
         _suggestInvestigation = false;
         _supervisionDisabled = false;
         _savedInvestigationActive = false;
+        _agentStatusUnverified = _queue.SelectedItem is QueueProposal;
         _agentReason.Text = "";
         _nextStep.Text = "";
     }
@@ -1658,7 +1669,7 @@ internal sealed partial class BackendQueueWindow : Window
 
     private async Task CheckReviewOutcomeAsync(NativeActionReview review)
     {
-        if (_shutdownRequested || _busy || review.Id is not string reviewId) return;
+        if (MaintenanceOperationBlocked || review.Id is not string reviewId) return;
         var request = Request("check_action"); request["review_id"] = reviewId;
         var target = $"{review.Binding["repository"]} · PR #{review.Binding["pull_request"]}";
         SetBusy(true); _historyStatus.Text = $"Checking {target}'s execution audit and exact live PR. No action is being retried…";
@@ -1715,7 +1726,7 @@ internal sealed partial class BackendQueueWindow : Window
 
     private async Task CollectAsync()
     {
-        if (_shutdownRequested || _busy || _investigationCancellation is not null) return;
+        if (MaintenanceOperationBlocked) return;
         SetBusy(true);
         try { await CollectCoreAsync(); if (!_refreshRequired) await RecheckPendingCompletionsAsync(); }
         finally { SetBusy(false); }
@@ -1738,7 +1749,8 @@ internal sealed partial class BackendQueueWindow : Window
         }
         finally {
             await ReadLocalSyncTargetsAsync();
-            if (!_refreshRequired && !_shutdownRequested) await RecheckPendingCompletionsAsync();
+            if (!_refreshRequired && !_shutdownRequested && !InvestigationOwnsMaintenance)
+                await RecheckPendingCompletionsAsync();
             SetBusy(false);
         }
     }
@@ -1776,7 +1788,7 @@ internal sealed partial class BackendQueueWindow : Window
 
     private async Task<bool> SaveDecisionAsync(string operation, bool holdBusy = false, string? messageOverride = null)
     {
-        if (_shutdownRequested || _busy || _refreshRequired || _scheduledRunning || _investigationCancellation is not null
+        if (MaintenanceOperationBlocked || _refreshRequired
             || _queue.SelectedItem is not QueueProposal item) return false;
         var message = messageOverride ?? _message.Text;
         if (operation == "feedback" && (string.IsNullOrWhiteSpace(message) || Encoding.UTF8.GetByteCount(message) > 8192))

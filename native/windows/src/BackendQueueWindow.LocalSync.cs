@@ -118,7 +118,7 @@ internal sealed partial class BackendQueueWindow
 
     private async Task PrepareLocalSyncAsync(JsonObject target)
     {
-        if (_busy || _shutdownRequested || _refreshRequired || _scheduledRunning || _investigationCancellation is not null) return;
+        if (MaintenanceOperationBlocked || _refreshRequired) return;
         SetBusy(true);
         ShowActionNotice("Checking local checkout update", "Checking the selected branch and current remote commit. Missing Git objects may be downloaded; no branch integration is being performed.");
         try
@@ -159,7 +159,7 @@ internal sealed partial class BackendQueueWindow
 
     private async Task RecoverLocalSyncAsync(string reviewId, JsonObject binding)
     {
-        if (_busy || _shutdownRequested || _scheduledRunning || _investigationCancellation is not null) return;
+        if (MaintenanceOperationBlocked) return;
         SetBusy(true);
         ShowActionNotice("Checking saved local update", "Observing the checkout and saved attempt. No integration is being retried.");
         try

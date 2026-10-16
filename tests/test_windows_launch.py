@@ -88,6 +88,50 @@ def test_command_size_is_bounded_before_provisioning() -> None:
         launcher_source(["tool", "a" * 32767])
 
 
+@pytest.mark.parametrize("missing", ["_wscript", "_launcher_root"])
+@pytest.mark.parametrize("operation", ["status", "disable", "remove"])
+def test_owned_legacy_management_without_replacement_prerequisites(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str, operation: str,
+) -> None:
+    runner = _WindowsRunner()
+    adapter = _windows_adapter(tmp_path, runner)
+    spec = _spec(tmp_path, platform="wsl", distro="Ubuntu")
+    definition = adapter.preview(spec)["definition"]
+    root = ET.fromstring(definition["xml"])
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    command = root.find("t:Actions/t:Exec/t:Command", ns)
+    arguments = root.find("t:Actions/t:Exec/t:Arguments", ns)
+    assert command is not None and arguments is not None
+    command.text = definition["command"]
+    arguments.text = subprocess.list2cmdline(definition["arguments"])
+    runner.xml = ET.tostring(root, encoding="unicode")
+    runner.enabled = True
+
+    def unavailable() -> str:
+        raise ScheduleError("Replacement prerequisite unavailable")
+
+    monkeypatch.setattr(adapter, missing, unavailable)
+    report = getattr(adapter, operation)(spec)
+    assert report["status"] == {"status": "drifted", "disable": "disabled", "remove": "removed"}[operation]
+    if operation == "status":
+        assert "Replacement prerequisite unavailable" in report["next"]
+        assert runner.enabled and runner.xml is not None
+    elif operation == "disable":
+        assert not runner.enabled and runner.xml is not None
+    else:
+        assert runner.xml is None
+    assert not runner.launchers
+
+    # Recovery still refuses a task with foreign ownership, even without a
+    # usable replacement launcher. No disable/unregister call may escape.
+    runner.xml = ET.tostring(root, encoding="unicode").replace("Dependabot Watcher", "Other owner")
+    before = len(runner.commands)
+    with pytest.raises(ScheduleError, match="not owned"):
+        getattr(adapter, operation)(spec)
+    assert not any("Disable-ScheduledTask" in call[-1] or "Unregister-ScheduledTask" in call[-1]
+                   for call in runner.commands[before:])
+
+
 @pytest.mark.parametrize(("old", "new"), [("LeastPrivilege", "HighestAvailable"), ("InteractiveToken", "Password"), ("IgnoreNew", "Parallel"), ("PT2H", "PT72H")])
 def test_inventory_detects_principal_and_runtime_drift(tmp_path: Path, old: str, new: str) -> None:
     runner = _WindowsRunner()
