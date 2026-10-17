@@ -22,6 +22,29 @@ internal static class NativeLocalSyncReview
         return binding;
     }
 
+    internal static string Observation(JsonObject value, JsonObject target) {
+        if (!JsonNode.DeepEquals(value["target_id"], target["target_id"])
+            || value["mutation_performed"]?.GetValue<bool>() != false
+            || value["checked_at"]?.GetValue<string>() is not string checkedAt
+            || !Regex.IsMatch(checkedAt, "(?:Z|[+-][0-9]{2}:[0-9]{2})\\z")
+            || !DateTimeOffset.TryParse(checkedAt, out _))
+            throw new InvalidDataException("Checkout comparison identity or timestamp is invalid.");
+        var state = value["status"]?.GetValue<string>();
+        Text(value, "message", "\\A[\\s\\S]{1,8192}\\z");
+        if (state is not ("current" or "review_needed" or "unknown" or "unavailable"))
+            throw new InvalidDataException("Checkout comparison status is invalid.");
+        if (state is "current" or "review_needed") {
+            foreach (var key in new[] { "head_sha", "remote_sha" })
+                Text(value, key, "\\A(?:[a-f0-9]{40}|[a-f0-9]{64})\\z");
+            if (value["tracking_sha"] is not null)
+                Text(value, "tracking_sha", "\\A(?:[a-f0-9]{40}|[a-f0-9]{64})\\z");
+            if (state == "current" && (!JsonNode.DeepEquals(value["head_sha"], value["remote_sha"])
+                || value["tracking_sha"] is not null && !JsonNode.DeepEquals(value["tracking_sha"], value["remote_sha"])))
+                throw new InvalidDataException("Current checkout claim contradicts its observed revisions.");
+        }
+        return state;
+    }
+
     internal static string TrackingDescription(JsonObject binding) {
         if (binding["tracking_refresh"] is null) return "No remote-tracking reference update is included.";
         var tracking = binding["tracking_refresh"] as JsonObject

@@ -46,8 +46,17 @@ internal sealed class NativeSupervisorView
             // Ownership survives context changes; freshness only controls
             // whether a job's advice can be presented as current.
             if (_jobs.Any(value => value["status"]?.GetValue<string>() == "running")) return true;
-            var job = _jobs.LastOrDefault(value => value["current_context"]!.GetValue<bool>());
-            return job?["status"]?.GetValue<string>() == "prepared" && job["retry_of"] is null;
+            return false;
+        }
+    }
+    internal bool HasPreparedInvestigation => _jobs.LastOrDefault(job => job["current_context"]?.GetValue<bool>() == true)
+        ?["status"]?.GetValue<string>() == "prepared";
+    private JsonObject? ActiveJob => _jobs.LastOrDefault(job => job["status"]?.GetValue<string>() == "running");
+    internal string? ActiveJobId => ActiveJob?["job_id"]?.GetValue<string>();
+    internal DateTimeOffset? ActiveStartedAt {
+        get {
+            var active = ActiveJob;
+            return DateTimeOffset.TryParse(active?["created_at"]?.GetValue<string>(), out var value) ? value : null;
         }
     }
     internal string? CurrentAssessmentSummary

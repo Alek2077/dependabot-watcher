@@ -85,7 +85,8 @@ internal static class CompletionContracts
         if (type.GetProperty("HasPendingCompletion", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(Parse(finished)) is not false)
             throw new InvalidDataException("Completed maintenance remains falsely pending.");
         if (summary.GetValue(Parse(finished)) is not string text || !text.Contains("Saved completion:")
-            || !text.Contains("not a new live check") || !text.Contains("No deployment or production-health"))
+            || !text.Contains("not a live checkout check") || !text.Contains("Local synchronization:")
+            || !text.Contains("Production promotion:") || !text.Contains("not verified by this action"))
             throw new InvalidDataException("Saved completion is missing or overclaims live/production checks.");
         foreach (var fault in new[] { "no_completion", "no_merge", "empty_final", "wrong_digest", "missing_local", "missing_assessment", "wrong_scope", "no_zone" })
         {

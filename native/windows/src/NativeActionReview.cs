@@ -26,7 +26,10 @@ internal sealed class NativeActionReview
             + "Saved completion: configured follow-up checks"
             + (Value["completion"]?["policy"]?.GetValue<string>() == "selected_local_sync" ? " and selected local updates" : "")
             + " were verified. "
-            + "This is the recorded outcome, not a new live check. No deployment or production-health verification was performed."
+            + "This is saved remote-maintenance evidence, not a live checkout check.\n\n"
+            + "Local synchronization: see Local checkouts below.\n"
+            + "Production promotion: separate repository workflow, not performed here.\n"
+            + "Deployment and application health: not verified by this action; unverified does not mean failed."
         : null;
     internal bool CanAssessCompletion => Status == "completed" && Value["completion"] is JsonObject completion
         && completion["schema_version"]?.GetValue<int>() == 2

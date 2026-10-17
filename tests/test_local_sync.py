@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -85,6 +85,98 @@ def test_fast_forward_is_preflighted_and_explicitly_confirmed(sync_case):
     with pytest.raises(LocalSyncError, match="consumed"):
         confirm(case, prepared)
     assert prepare(case)["status"] == "up_to_date"
+
+
+def test_checkout_observation_distinguishes_current_remote_from_saved_receipt(sync_case):
+    case = sync_case
+    confirm(case, prepare(case))
+    case["client"].sha = case["old"]
+    refs = git(case["path"], "show-ref")
+    journal = (case["state"] / "local-sync.json").read_bytes()
+    response = handle_sync_request(case["config"], case["config_path"], case["state"], case["client"],
+        {"schema_version": 1, "request_id": "sync_observe", "operation": "local_sync_status"})
+    observed = response["observations"][0]
+    assert observed["status"] == "review_needed"
+    assert observed["head_sha"] == case["new"] and observed["remote_sha"] == case["old"]
+    assert observed["mutation_performed"] is False
+    assert git(case["path"], "show-ref") == refs
+    assert (case["state"] / "local-sync.json").read_bytes() == journal
+
+
+def test_checkout_observation_current_and_missing_remote_objects_never_fetch(sync_case, monkeypatch):
+    case = sync_case
+    target = selected_checkouts(case["config"])[0]
+    case["client"].sha = case["old"]
+    observed = local_sync.observe_checkout(case["config"], case["config_path"], target, case["state"], case["client"])
+    assert observed["status"] == "current"
+    original = local_sync._git
+    def no_fetch(path, *args, **kwargs):
+        assert "fetch" not in args
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(local_sync, "_git", no_fetch)
+    case["client"].sha = "f" * 40
+    observed = local_sync.observe_checkout(case["config"], case["config_path"], target, case["state"], case["client"])
+    assert observed["status"] == "review_needed" and observed["remote_sha"] == "f" * 40
+    assert not case["state"].exists()
+
+
+@pytest.mark.parametrize("condition", ["dirty", "custom_branch", "unfinished"])
+def test_checkout_observation_preserves_unsupported_local_work(sync_case, condition):
+    case = sync_case
+    if condition == "dirty":
+        (case["path"] / "app.txt").write_text("User work\n")
+    elif condition == "custom_branch":
+        git(case["path"], "switch", "remote-update")
+    else:
+        (case["path"] / ".git" / "MERGE_HEAD").write_text(case["new"] + "\n")
+    target = selected_checkouts(case["config"])[0]
+    observed = local_sync.observe_checkout(case["config"], case["config_path"], target, case["state"], case["client"])
+    assert observed["status"] == "unavailable" and observed["message"]
+    assert case["client"].reads == []
+
+
+def test_checkout_observation_does_not_claim_cached_origin_is_live(sync_case):
+    case = sync_case
+    target = selected_checkouts(case["config"])[0]
+    observed = local_sync.observe_checkout(case["config"], case["config_path"], target, case["state"], None)
+    assert observed["status"] == "unknown" and "remote_sha" not in observed
+
+
+def test_status_endpoint_does_not_change_cheap_history_listing(sync_case):
+    case = sync_case
+    request = {"schema_version": 1, "request_id": "sync_status", "operation": "local_sync_targets"}
+    listing = handle_sync_request(case["config"], case["config_path"], case["state"], case["client"], request)
+    assert "observations" not in listing and case["client"].reads == []
+    request["operation"] = "local_sync_status"
+    status = handle_sync_request(case["config"], case["config_path"], case["state"], case["client"], request)
+    assert status["observations"][0]["status"] == "review_needed"
+    assert not case["state"].exists()
+    with pytest.raises(LocalSyncError, match="bounded request"):
+        handle_sync_request(case["config"], case["config_path"], case["state"], case["client"],
+                            {**request, "directory": "/arbitrary"})
+
+
+def test_checkout_observation_rejects_tracking_change_during_remote_read(sync_case):
+    case = sync_case
+    git(case["path"], "config", "branch.integration.remote", "origin")
+    git(case["path"], "config", "branch.integration.merge", "refs/heads/integration")
+    git(case["path"], "update-ref", "refs/remotes/origin/integration", case["old"])
+    class MovingTrackingClient:
+        def fetch_branch_head(self, repository, branch):
+            git(case["path"], "update-ref", "refs/remotes/origin/integration", case["new"])
+            return case["old"]
+    observed = local_sync.observe_checkout(case["config"], case["config_path"],
+        selected_checkouts(case["config"])[0], case["state"], MovingTrackingClient())
+    assert observed["status"] == "unavailable" and "tracking changed" in observed["message"]
+    assert "remote_sha" not in observed
+
+
+def test_checkout_observation_handles_transport_without_branch_capability(sync_case):
+    case = sync_case
+    response = handle_sync_request(case["config"], case["config_path"], case["state"], cast(local_sync.BranchHeadClient, object()),
+        {"schema_version": 1, "request_id": "sync_status", "operation": "local_sync_status"})
+    assert response["observations"][0]["status"] == "unknown"
+    assert "unavailable" in response["observations"][0]["message"]
 
 
 def test_receipt_order_survives_backward_clock_without_extending_approval(

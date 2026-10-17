@@ -22,6 +22,11 @@ internal static class NativeConfirmationDialog
         cancel.Click += (_, _) => dialog.DialogResult = false;
         var confirm = new Button { Content = confirmLabel, Padding = new Thickness(18, 9, 18, 9),
             FontWeight = FontWeights.SemiBold };
+        if (!SystemParameters.HighContrast) {
+            confirm.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(24, 104, 91));
+            confirm.Foreground = System.Windows.Media.Brushes.White;
+            confirm.BorderBrush = confirm.Background;
+        }
         confirm.Click += (_, _) => dialog.DialogResult = true;
         buttons.Children.Add(cancel); buttons.Children.Add(confirm);
         DockPanel.SetDock(buttons, Dock.Bottom); root.Children.Add(buttons);

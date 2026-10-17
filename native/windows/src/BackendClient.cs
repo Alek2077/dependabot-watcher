@@ -78,14 +78,24 @@ internal sealed class BackendClient
         return new BackendClient(arguments, diagnostic);
     }
 
-    internal async Task<JsonObject> SendAsync(JsonObject request)
+    internal Task<JsonObject> SendAsync(JsonObject request) => SendCoreAsync(request, CancellationToken.None);
+
+    internal Task<JsonObject> ObserveLocalSyncAsync(JsonObject request, CancellationToken cancellation)
     {
+        if (request["operation"]?.GetValue<string>() != "local_sync_status")
+            throw new InvalidOperationException("Only optional checkout observation accepts cancellation.");
+        return SendCoreAsync(request, cancellation);
+    }
+
+    private async Task<JsonObject> SendCoreAsync(JsonObject request, CancellationToken cancellation)
+    {
+        cancellation.ThrowIfCancellationRequested();
         using var operationOwner = OwnOperation();
         var operation = request["operation"]?.GetValue<string>();
         if (operation is not ("snapshot" or "reject" or "defer" or "resume" or "feedback"
             or "prepare_action" or "confirm_action" or "check_action" or "check_completion" or "action_history" or "collect_queue" or "supervisor_status"
             or "supervisor_permissions" or "supervisor_permission_decide" or "notification_attention"
-            or "local_sync_targets" or "prepare_local_sync" or "confirm_local_sync" or "recover_local_sync"
+            or "local_sync_targets" or "local_sync_status" or "prepare_local_sync" or "confirm_local_sync" or "recover_local_sync"
             or "scheduled_supervisor_claim" or "prepare_branch_refresh" or "confirm_branch_refresh" or "check_branch_refresh" or "continue_branch_refresh" or "release_branch_refresh"))
             throw new InvalidOperationException("Unsupported backend operation.");
         var mutating = operation is "confirm_action" or "confirm_local_sync" or "confirm_branch_refresh";
@@ -115,7 +125,7 @@ internal sealed class BackendClient
             // native deadline must not override that policy. An approved action
             // also must not be killed or retried after a response fault.
             if (liveOperation) await completion;
-            else await completion.WaitAsync(TimeSpan.FromSeconds(30));
+            else await completion.WaitAsync(TimeSpan.FromSeconds(30), cancellation);
             var response = JsonNode.Parse(await output) as JsonObject
                 ?? throw new InvalidDataException("Backend response is not a JSON object.");
             if (response["schema_version"]?.GetValue<int>() != 1

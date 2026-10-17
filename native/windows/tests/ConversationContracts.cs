@@ -173,9 +173,12 @@ internal static class ConversationContracts
             activeJob["status"] = activeStatus; activeJob["result"] = null;
             activeJob["provenance"] = null; activeJob["provider_completion_observed"] = false;
             var activeView = Call(viewType, null, "Parse", activeResponse, Repository, Context)!;
-            if (!(bool)viewType.GetProperty("HasActiveInvestigation", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(activeView)!
-                || (bool)Call(viewType, activeView, "SuggestsInvestigation", item)!)
+            var isRunning = activeStatus == "running";
+            if ((bool)viewType.GetProperty("HasActiveInvestigation", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(activeView)! != isRunning
+                || (bool)Call(viewType, activeView, "SuggestsInvestigation", item)! == isRunning)
                 throw new InvalidDataException("An active saved job offered another investigation.");
+            if (!isRunning && viewType.GetProperty("HasPreparedInvestigation", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(activeView) is not true)
+                throw new InvalidDataException("An unstarted prepared job was hidden instead of offering explicit investigation.");
             if (activeStatus == "running")
             {
                 activeJob["context_digest"] = new string('f', 64);
