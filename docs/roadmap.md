@@ -350,6 +350,10 @@ Feedback must not silently broaden repository scope, increase spending, enable m
 
 ### Diagnostics and observability
 
+Prioritize truthful next-step guidance over an always-on repository overseer. Selected-checkout comparisons should be bounded read-only observations, distinguish live GitHub evidence from cached tracking references and historical receipts, and never infer behind/ahead from unequal hashes alone. Keep local integration, remote maintenance, production promotion and application health separate; each follows the user's configured scope and its own authority. Broader background monitoring and harness-derived workflow summaries remain later work: evaluate source availability, freshness, conflicts and user confirmation before treating inferred conventions as structured configuration. Do not spawn an agent on every refresh or infer permission from repository instructions. Cache provenance-bound summaries only when their applicability can be established, and keep deterministic action policy authoritative.
+
+Defer validation-speed optimization until measured evidence identifies a bottleneck; suspected network latency is not a diagnosis. Reuse compatible dependency caches and exact-revision evidence without weakening clean validation. Fuller tool-phase/output telemetry and usage accounting remain post-launch scope unless a bounded visibility improvement is needed to make an existing operation understandable.
+
 Agents need actionable failure evidence, but raw provider stdout/stderr may contain credentials or private repository text. Keep normal reports structured and sanitized: adapter, stage, exit category/code, retryability, timestamp, and a correlation identifier where available.
 
 A later opt-in local diagnostic mode may retain more detail only with explicit disclosure, bounded retention, redaction, and a private path. Raw diagnostics must never be included automatically in notifications, public artifacts, or ordinary agent context.

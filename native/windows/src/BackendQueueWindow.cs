@@ -100,6 +100,12 @@ internal sealed partial class BackendQueueWindow : Window
     private readonly StackPanel _latestAnswer = new() { Visibility = Visibility.Collapsed };
     private readonly TextBlock _launchPolicy = new() { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _launchProgress = new() { TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold };
+    private readonly TextBlock _elapsedActivity = new() { TextWrapping = TextWrapping.Wrap,
+        Foreground = SystemColors.GrayTextBrush, Visibility = Visibility.Collapsed };
+    private readonly System.Diagnostics.Stopwatch _activityElapsed = new();
+    private TimeSpan _activityBaseline;
+    private string? _activityJobId;
+    private readonly System.Windows.Threading.DispatcherTimer _activityClock = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly ProgressBar _activityIndicator = new() { Height = 3, IsIndeterminate = true,
         Visibility = Visibility.Collapsed, Margin = new Thickness(0, 8, 0, 0) };
     private readonly Button _permissionAttention = new() { Visibility = Visibility.Collapsed,
@@ -212,6 +218,18 @@ internal sealed partial class BackendQueueWindow : Window
         header.Children.Add(new TextBlock { Text = "Dependency review", FontSize = 24, FontWeight = FontWeights.SemiBold });
         header.Children.Add(_summary);
         header.Children.Add(_launchProgress);
+        header.Children.Add(_elapsedActivity);
+        _activityClock.Tick += (_, _) => {
+            var active = !_shutdownRequested && (_savedInvestigationActive || _investigationCancellation is not null);
+            _elapsedActivity.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
+            if (!active) { ResetActivityElapsed(); return; }
+            if (!_activityElapsed.IsRunning) _activityElapsed.Start();
+            var elapsed = _activityBaseline + _activityElapsed.Elapsed;
+            _elapsedActivity.Text = $"Investigation elapsed: {Math.Max(0, (int)elapsed.TotalMinutes)}m {Math.Max(0, elapsed.Seconds):00}s wall time · includes approvals and tool waits."
+                + " Current tool progress is not reported; elapsed time alone does not prove progress.";
+        };
+        _activityClock.Start();
+        Closed += (_, _) => _activityClock.Stop();
         System.Windows.Automation.AutomationProperties.SetName(_activityIndicator, "Background operation in progress");
         header.Children.Add(_activityIndicator);
         _permissionAttention.Click += (_, _) => {
@@ -540,6 +558,7 @@ internal sealed partial class BackendQueueWindow : Window
         _shutdownRequested = true;
         _agentReadSequence++; _permissionReadSequence++;
         _launchRefreshPending = false;
+        _localObservationCancellation?.Cancel();
         _investigationCancellation?.Cancel();
         SetBusy(_busy);
         _launchProgress.Text = "Finishing owned backend requests before quitting. "
@@ -565,8 +584,15 @@ internal sealed partial class BackendQueueWindow : Window
         return Task.CompletedTask;
     }
 
+    private void ResetActivityElapsed()
+    {
+        _activityElapsed.Reset();
+        _activityBaseline = TimeSpan.Zero;
+        _activityJobId = null;
+    }
+
     private static Brush PrimaryBrush => SystemParameters.HighContrast
-        ? SystemColors.HighlightBrush : Brushes.DarkSlateGray;
+        ? SystemColors.HighlightBrush : new SolidColorBrush(Color.FromRgb(24, 104, 91));
 
     private void ApplyTheme()
     {
@@ -1106,6 +1132,9 @@ internal sealed partial class BackendQueueWindow : Window
                         if (!_shutdownRequested) await ReadPermissionsAsync();
                     }
                 });
+                batchAction.HorizontalAlignment = HorizontalAlignment.Left;
+                batchAction.Background = PrimaryBrush;
+                batchAction.Foreground = SystemColors.HighlightTextBrush;
                 _permissions.Children.Add(batchAction);
             }
             foreach (var permission in requests)
@@ -1127,7 +1156,7 @@ internal sealed partial class BackendQueueWindow : Window
                     if ((choice is "allow_once" or "allow_session") && !hasPreview) continue;
                     var label = choice switch { "allow_once" => "Allow once", "allow_session" => "Allow for this session",
                         "deny" => "Deny access", _ => "Cancel this request" };
-                    choices.Children.Add(Button(label, async () => {
+                    var permissionAction = Button(label, async () => {
                         if (!DecisionCurrent() || _busy || _permissionDecisionInFlight) return;
                         if (choice is "allow_once" or "allow_session")
                             if (!_permissionPreviews.TryGetValue(previewKey, out var livePreview)
@@ -1172,7 +1201,13 @@ internal sealed partial class BackendQueueWindow : Window
                             _permissions.IsEnabled = !_busy && !_shutdownRequested && !_refreshRequired;
                             if (!_shutdownRequested) await ReadPermissionsAsync();
                         }
-                    }));
+                    });
+                    if (choice == "allow_once") {
+                        permissionAction.BorderBrush = PrimaryBrush;
+                        permissionAction.Foreground = PrimaryBrush;
+                        permissionAction.FontWeight = FontWeights.SemiBold;
+                    }
+                    choices.Children.Add(permissionAction);
                 }
                 panel.Children.Add(choices);
                 _permissions.Children.Add(panel);
@@ -1289,6 +1324,12 @@ internal sealed partial class BackendQueueWindow : Window
             var recommendation = view.CurrentRecommendation(item);
             _currentAgentReady = recommendation?.Ready == true && _investigationCancellation is null;
             _savedInvestigationActive = view.HasActiveInvestigation || _investigationCancellation is not null;
+            if (view.HasActiveInvestigation && view.ActiveJobId is string activeJob && _activityJobId != activeJob) {
+                _activityJobId = activeJob;
+                var baseline = view.ActiveStartedAt is DateTimeOffset started ? DateTimeOffset.UtcNow - started : TimeSpan.Zero;
+                _activityBaseline = baseline > TimeSpan.Zero ? baseline : TimeSpan.Zero;
+                _activityElapsed.Restart();
+            }
             _agentStatusUnverified = false;
             _suggestInvestigation = view.SuggestsInvestigation(item);
             _supervisionDisabled = response["configured_launch"]?["mode"]?.GetValue<string>() == "off";
@@ -1296,6 +1337,10 @@ internal sealed partial class BackendQueueWindow : Window
             _agentRecommendation.Foreground = _currentAgentReady && !SystemParameters.HighContrast
                 ? new SolidColorBrush(Color.FromRgb(20, 100, 65)) : SystemColors.WindowTextBrush;
             _nextStep.Text = view.ActionGuidance(item, _executionEnabled);
+            if (view.HasPreparedInvestigation && _investigationCancellation is null) {
+                _agentRecommendation.Text = "Investigation has not started";
+                _nextStep.Text = "Next: choose Investigate this item to start after fresh checks. A saved preparation is not a running agent or a result.";
+            }
             if (view.ResourceGuidance is not null && !_currentAgentReady) {
                 _agentRecommendation.Text = "Validation needs attention";
                 _nextStep.Text = "Next: review storage and approve any limit change, or choose a smaller validation scope. Do not repeat the same blocked work unchanged.";
@@ -1393,6 +1438,8 @@ internal sealed partial class BackendQueueWindow : Window
         // Chosen policy is displayed above this explicit start control. No UI
         // field can supply a model, workspace, account or broader permissions.
         var generation = ++_investigationGeneration;
+        ResetActivityElapsed();
+        _activityElapsed.Start();
         using var cancellation = new CancellationTokenSource();
         _investigationCancellation = cancellation;
         _agentReadSequence++;
@@ -1625,7 +1672,7 @@ internal sealed partial class BackendQueueWindow : Window
         _actionSummary.Text = NativeDisplayText.Escape(summary);
         _actionNotice.Visibility = Visibility.Visible;
         var success = headline.EndsWith("merged successfully", StringComparison.Ordinal)
-            || headline is "Maintenance action complete (saved)" or "Selected local checkout updated" or "Local update verified";
+            || headline is "Maintenance action complete (saved)" or "Remote maintenance complete (saved)" or "Selected local checkout updated" or "Local update verified";
         _actionNotice.Background = SystemParameters.HighContrast ? SystemColors.ControlBrush
             : new SolidColorBrush(success ? Color.FromRgb(220, 242, 228) : Color.FromRgb(226, 232, 240));
     }
@@ -1637,7 +1684,7 @@ internal sealed partial class BackendQueueWindow : Window
             && review.Value["result"]?["status"]?.GetValue<string>() == "merged";
         if (review.RecordedMaintenanceSummary is string completion)
         {
-            ShowActionNotice("Maintenance action complete (saved)", target
+            ShowActionNotice("Remote maintenance complete (saved)", target
                 + "\n" + completion
                 + "\nNo further merge will start automatically.", reveal);
             return;

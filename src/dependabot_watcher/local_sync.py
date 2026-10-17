@@ -372,6 +372,46 @@ def synchronization_observations(config: WatcherConfig, directory: Path, reposit
             for identity, record in _ordered_records(records)[-20:]]
 
 
+def observe_checkout(config: WatcherConfig, config_path: Path, target: dict[str, str],
+                     directory: Path, client: BranchHeadClient | None) -> dict[str, Any]:
+    """Point-in-time guidance only: no fetch, ref update, preview or approval.
+
+    A cached origin ref is reported separately from the GitHub read. Missing
+    objects do not trigger a download; integration readiness belongs to prepare.
+    """
+    observed: dict[str, Any] = {"target_id": target["target_id"], "status": "unknown",
+        "checked_at": datetime.now(timezone.utc).isoformat(), "mutation_performed": False}
+    try:
+        _current_config(config, config_path)
+        repository, checkout = _target(config, target["target_id"])
+        local = _local_state(repository, checkout)
+        _separate_control_paths(local, config_path, directory)
+        observed["head_sha"] = local["head_sha"]
+        tracking = _tracking_state(Path(checkout.directory), checkout.branch)
+        observed["tracking_sha"] = tracking["old_sha"] if tracking else None
+        if client is None or not callable(getattr(client, "fetch_branch_head", None)):
+            observed["message"] = "Live remote status is unavailable. Check this checkout before updating."
+            return observed
+        remote = client.fetch_branch_head(repository, checkout.branch).lower()
+        if not _SHA.fullmatch(remote):
+            raise LocalSyncError("GitHub returned an invalid branch commit.")
+        _current_config(config, config_path)
+        if _local_state(repository, checkout) != local:
+            raise LocalSyncError("Checkout changed during this check; refresh before reviewing an update.")
+        if _tracking_state(Path(checkout.directory), checkout.branch) != tracking:
+            raise LocalSyncError("Origin tracking changed during this check; refresh before reviewing an update.")
+        observed["remote_sha"] = remote
+        observed["status"] = "current" if local["head_sha"] == remote and (
+            tracking is None or tracking["old_sha"] == remote) else "review_needed"
+        observed["message"] = ("Local branch matches the checked GitHub commit."
+            if observed["status"] == "current" else
+            "Local branch or origin tracking differs from GitHub. Review the local update; no files were changed.")
+    except (OSError, ReviewQueueError, GitHubError, ConfigError, RuntimeStateError) as exc:
+        observed["status"] = "unavailable"
+        observed["message"] = str(exc)
+    return observed
+
+
 def prepare_sync(config: WatcherConfig, config_path: Path, directory: Path, client: BranchHeadClient,
                  target_id: str, *, refresh_tracking: bool = True) -> dict[str, Any]:
     """Read live state and acquire missing objects, without integrating a branch."""
@@ -648,7 +688,7 @@ def handle_sync_request(config: WatcherConfig | None, config_path: Path, directo
     """Native channel selects registered identities, never caller-supplied paths."""
     operation = request.get("operation")
     fields = {"schema_version", "request_id", "operation"}
-    additions = {"local_sync_targets": set(), "prepare_local_sync": {"target_id"},
+    additions = {"local_sync_targets": set(), "local_sync_status": set(), "prepare_local_sync": {"target_id"},
                  "confirm_local_sync": {"review_id", "approval_token"},
                  "recover_local_sync": {"review_id"}}
     tracking_capable = operation == "prepare_local_sync" and request.get("tracking_refresh_supported") is True
@@ -659,7 +699,7 @@ def handle_sync_request(config: WatcherConfig | None, config_path: Path, directo
             or not re.fullmatch(r"sync_[A-Za-z0-9_]{1,59}", request["request_id"])
             or any(not isinstance(request[key], str) for key in additions[operation])):
         raise LocalSyncError("Local synchronization requires an exact bounded request.")
-    if operation not in {"local_sync_targets", "recover_local_sync"}:
+    if operation not in {"local_sync_targets", "recover_local_sync", "local_sync_status"}:
         if config is None or client is None:
             raise LocalSyncError("Integration requires current configuration and the supported GitHub transport.")
         _current_config(config, config_path)
@@ -675,6 +715,12 @@ def handle_sync_request(config: WatcherConfig | None, config_path: Path, directo
                 targets.append({key: binding[key] for key in ("repository", "target_id", "directory", "branch")})
                 selected.add(binding["target_id"])
         result = {"targets": targets, "reviews": reviews}
+    elif operation == "local_sync_status":
+        if config is None:
+            raise LocalSyncError("Current checkout observation requires current configuration.")
+        _current_config(config, config_path)
+        result = {"observations": [observe_checkout(config, config_path, target, directory, client)
+                                   for target in selected_checkouts(config)]}
     elif operation == "prepare_local_sync":
         assert config is not None and client is not None
         result = {"review": prepare_sync(config, config_path, directory, client, request["target_id"],

@@ -17,6 +17,14 @@ internal static class UiStateContracts
                 var window = Activator.CreateInstance(type, BindingFlags.Instance | BindingFlags.NonPublic,
                     null, new object[] { client }, null)!;
                 object Field(string name) => type.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+                type.GetField("_activityBaseline", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, TimeSpan.FromMinutes(8));
+                type.GetField("_activityJobId", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, "old_attempt");
+                var elapsed = (System.Diagnostics.Stopwatch)Field("_activityElapsed"); elapsed.Start();
+                type.GetMethod("ResetActivityElapsed", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+                if (elapsed.IsRunning || elapsed.Elapsed != TimeSpan.Zero
+                    || (TimeSpan)Field("_activityBaseline") != TimeSpan.Zero
+                    || type.GetField("_activityJobId", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window) is not null)
+                    throw new InvalidDataException("Elapsed clock reset retained another attempt or wall-clock baseline.");
                 var showConversation = type.GetMethod("ShowConversation", BindingFlags.Instance | BindingFlags.NonPublic)!;
                 showConversation.Invoke(window, new object?[] { ("Saved question", "Saved answer", "Fixture", "Verified saved reply"), true });
                 if (((System.Windows.UIElement)Field("_latestAnswer")).Visibility != System.Windows.Visibility.Visible

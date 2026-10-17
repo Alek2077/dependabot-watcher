@@ -39,6 +39,21 @@ internal static class LocalSyncContracts
         var target = new JsonObject { ["repository"] = "example-org/example-app", ["directory"] = "/owned/checkout",
             ["branch"] = "integration", ["target_id"] = new string('a', 32) };
         var binding = (JsonObject)target.DeepClone();
+        var observation = new JsonObject { ["target_id"] = target["target_id"]!.GetValue<string>(),
+            ["status"] = "current", ["mutation_performed"] = false, ["checked_at"] = "2026-10-17T20:00:00Z",
+            ["message"] = "Local branch matched the checked remote commit.",
+            ["head_sha"] = new string('b', 40), ["remote_sha"] = new string('b', 40), ["tracking_sha"] = new string('b', 40) };
+        Call("Observation", observation, target);
+        var noZone = (JsonObject)observation.DeepClone(); noZone["checked_at"] = "2026-10-17T20:00:00";
+        Refused("Observation", noZone, target);
+        var different = (JsonObject)observation.DeepClone(); different["remote_sha"] = new string('c', 40);
+        Refused("Observation", different, target);
+        different["status"] = "review_needed";
+        Call("Observation", different, target);
+        different["target_id"] = new string('f', 32);
+        Refused("Observation", different, target);
+        var staleTracking = (JsonObject)observation.DeepClone(); staleTracking["tracking_sha"] = new string('c', 40);
+        Refused("Observation", staleTracking, target);
         binding["head_sha"] = new string('b', 40); binding["target_sha"] = new string('c', 40); binding["commits"] = 1;
         var prepared = new JsonObject { ["schema_version"] = 1, ["status"] = "ready", ["mutation_performed"] = false,
             ["review_id"] = "sync_" + new string('d', 32), ["approval_token"] = "sync-" + new string('e', 64),

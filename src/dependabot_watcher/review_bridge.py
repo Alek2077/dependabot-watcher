@@ -108,8 +108,8 @@ def exchange(queue: ReviewQueue | None, incoming: BinaryIO, outgoing: BinaryIO, 
             if actions is None:
                 raise ReviewQueueError('PR branch update is not connected to this backend.')
             response = BranchRefreshReviews(queue, cast(BranchRefreshClient, actions.client), actions.config_path).handle(request)
-        elif request.get("operation") in {"local_sync_targets", "prepare_local_sync", "confirm_local_sync", "recover_local_sync"}:
-            observing = request["operation"] in {"local_sync_targets", "recover_local_sync"}
+        elif request.get("operation") in {"local_sync_targets", "local_sync_status", "prepare_local_sync", "confirm_local_sync", "recover_local_sync"}:
+            observing = request["operation"] in {"local_sync_targets", "local_sync_status", "recover_local_sync"}
             if actions is None and not observing:
                 raise ReviewQueueError("Local synchronization is not connected to this backend.")
             client = actions.client if actions is not None else None

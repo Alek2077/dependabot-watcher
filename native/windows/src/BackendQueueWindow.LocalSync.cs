@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using System.Windows;
@@ -14,6 +15,9 @@ internal sealed partial class BackendQueueWindow
         Margin = new Thickness(0, 0, 0, 12) };
     private readonly StackPanel _localSyncTargets = new();
     private readonly TextBlock _localSyncStatus = new() { TextWrapping = TextWrapping.Wrap };
+    private long _localSyncReadGeneration;
+    private Task _localObservationTask = Task.CompletedTask;
+    private CancellationTokenSource? _localObservationCancellation;
 
     private void InitializeLocalSync(StackPanel inspector)
     {
@@ -36,11 +40,52 @@ internal sealed partial class BackendQueueWindow
 
     private async Task ReadLocalSyncTargetsAsync(NativeActionReview? currentLocalStep = null)
     {
+        var generation = ++_localSyncReadGeneration;
+        _localObservationCancellation?.Cancel();
         try
         {
             var response = await _client.SendAsync(LocalSyncRequest("local_sync_targets"));
             if (response["targets"] is not JsonArray targets || response["reviews"] is not JsonArray reviews)
                 throw new InvalidDataException("Local checkout state is unavailable.");
+            if (_shutdownRequested || generation != _localSyncReadGeneration) return;
+            RenderLocalSyncTargets(targets, reviews, null, currentLocalStep, observing: true);
+            // History/recovery and the queue never await slow network status.
+            var previous = _localObservationTask;
+            var cancellation = new CancellationTokenSource();
+            _localObservationCancellation = cancellation;
+            _localObservationTask = ObserveLocalSyncTargetsAsync(targets, reviews, currentLocalStep, generation, previous, cancellation);
+        }
+        catch (Exception)
+        {
+            if (_shutdownRequested || generation != _localSyncReadGeneration) return;
+            _localSyncPanel.Visibility = Visibility.Visible;
+            _localSyncTargets.Children.Clear();
+            _localSyncStatus.Text = "Local checkout status could not be loaded. Refresh saved state before reviewing an update.";
+        }
+    }
+
+    private async Task ObserveLocalSyncTargetsAsync(JsonArray targets, JsonArray reviews,
+        NativeActionReview? currentLocalStep, long generation, Task previous, CancellationTokenSource cancellation)
+    {
+        JsonArray? observations = null;
+        try {
+            await previous; // Coalesce refreshes: never run two optional status children at once.
+            if (_shutdownRequested || generation != _localSyncReadGeneration || cancellation.IsCancellationRequested) return;
+            var observed = await _client.ObserveLocalSyncAsync(LocalSyncRequest("local_sync_status"), cancellation.Token);
+            observations = observed["observations"] as JsonArray;
+        }
+        catch (Exception) { /* The bounded read cannot hide history/recovery. */ }
+        finally {
+            if (ReferenceEquals(_localObservationCancellation, cancellation)) _localObservationCancellation = null;
+            cancellation.Dispose();
+        }
+        if (_shutdownRequested || generation != _localSyncReadGeneration) return;
+        RenderLocalSyncTargets(targets, reviews, observations, currentLocalStep);
+    }
+
+    private void RenderLocalSyncTargets(JsonArray targets, JsonArray reviews, JsonArray? observations,
+        NativeActionReview? currentLocalStep, bool observing = false)
+    {
             _localSyncTargets.Children.Clear();
             foreach (var node in targets)
             {
@@ -48,7 +93,47 @@ internal sealed partial class BackendQueueWindow
                 var id = target["target_id"]!.GetValue<string>();
                 var label = NativeDisplayText.Escape($"{target["repository"]} · {target["branch"]}\n{target["directory"]}");
                 var row = new StackPanel();
-                row.Children.Add(new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap });
+                row.Children.Add(new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap,
+                    Foreground = SystemColors.GrayTextBrush, Margin = new Thickness(0, 0, 0, 10) });
+                JsonObject? observation = null;
+                var state = "unknown";
+                try {
+                    var matching = observations?.OfType<JsonObject>().Where(value =>
+                        value["target_id"]?.GetValue<string>() == id).ToArray();
+                    if (matching?.Length == 1) {
+                        observation = matching[0];
+                        state = NativeLocalSyncReview.Observation(observation, target);
+                    }
+                }
+                catch (Exception) { observation = null; } // A live-data fault must not remove recovery controls.
+                var needsReview = state == "review_needed";
+                var current = state == "current";
+                var guidance = current ? "✓ Local checkout matched GitHub at the last check"
+                    : needsReview ? "Local update needs review"
+                    : observing ? "Checking current checkout status…"
+                    : "Local checkout needs checking";
+                var message = observation?["message"]?.GetValue<string>()
+                    ?? (observing ? "Comparing with GitHub. Your checkout is unchanged; saved history remains available."
+                        : "No current comparison is available. A past successful update is not current sync status.");
+                var detail = "Read-only observation. No Git objects were fetched and no approval was created.";
+                if (observation?["checked_at"]?.GetValue<string>() is string checkedAt)
+                    detail += "\nChecked " + checkedAt + ". Changes made afterward require another check.";
+                if (state is "current" or "review_needed" && observation?["head_sha"] is JsonNode head)
+                    detail += $"\nLocal: {head}\nGitHub: {observation["remote_sha"]}\nCached origin: {observation["tracking_sha"] ?? JsonValue.Create("no matching upstream")}";
+                var statusText = new TextBlock { Text = NativeDisplayText.Escape(guidance),
+                    TextWrapping = TextWrapping.Wrap, FontSize = 16, FontWeight = FontWeights.SemiBold,
+                    Margin = new Thickness(0, 0, 0, 5) };
+                row.Children.Add(statusText);
+                row.Children.Add(new TextBlock { Text = NativeDisplayText.Escape(message),
+                    TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10) });
+                var evidence = new TextBlock { Text = NativeDisplayText.Escape(detail), TextWrapping = TextWrapping.Wrap };
+                row.Children.Add(new Expander { Header = "Comparison details and checked time", Content = evidence,
+                    Margin = new Thickness(0, 0, 0, 6) });
+                AddCopyIcon(evidence);
+                if (!current && !SystemParameters.HighContrast)
+                {
+                    statusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(135, 72, 10));
+                }
                 var latest = LatestLocalSyncOutcome(reviews, id);
                 var applied = latest is not null &&
                     latest["status"]?.GetValue<string>() == "completed"
@@ -58,13 +143,16 @@ internal sealed partial class BackendQueueWindow
                     && new[] { "repository", "directory", "branch" }.All(key => JsonNode.DeepEquals(applied["binding"]?[key], target[key]))
                     && applied["result"]?["mutation_performed"]?.GetValue<bool>() ==
                         (applied["result"]?["status"]?.GetValue<string>() == "synchronized");
-                if (hasApplied)
-                    row.Children.Add(new TextBlock { Text = NativeDisplayText.Escape(
-                        $"✓ {(applied!["result"]?["status"]?.GetValue<string>() == "synchronized" ? "Saved local update succeeded" : "Saved outcome verified; target was already present")} · {applied["binding"]?["target_sha"]}\nHistorical receipt; check again to compare with current remote state."),
-                        TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold,
-                        Foreground = SystemParameters.HighContrast ? SystemColors.WindowTextBrush
-                            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(20, 100, 65)),
-                        Margin = new Thickness(0, 6, 0, 4) });
+                if (hasApplied) {
+                    var receipt = new TextBlock { Text = NativeDisplayText.Escape(
+                        $"Previously verified: {applied!["binding"]?["target_sha"]}\nHistorical receipt only; the current comparison is shown above."),
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = SystemColors.GrayTextBrush,
+                        Margin = new Thickness(0, 8, 0, 6) };
+                    row.Children.Add(new Expander { Header = "Previous local update", Content = receipt,
+                        Margin = new Thickness(0, 0, 0, 6) });
+                    AddCopyIcon(receipt);
+                }
                 var pending = latest is not null && latest["status"]?.GetValue<string>() is "executing" or "recovery_required"
                     ? latest : null;
                 if (latest?["status"]?.GetValue<string>() == "failed")
@@ -79,33 +167,29 @@ internal sealed partial class BackendQueueWindow
                 }
                 else
                 {
-                    var update = Button(hasApplied ? "Check local checkout" : "Review local update",
-                        () => PrepareLocalSyncAsync((JsonObject)target.DeepClone()));
-                    update.IsEnabled = !_refreshRequired;
+                    var update = Button(current ? "Recheck local checkout" : "Review local update",
+                        () => current ? ReadLocalSyncTargetsAsync() : PrepareLocalSyncAsync((JsonObject)target.DeepClone()));
+                    update.HorizontalAlignment = HorizontalAlignment.Left;
+                    update.Margin = new Thickness(0, 8, 0, 0);
+                    update.IsEnabled = !_refreshRequired && !observing;
                     if (_refreshRequired) update.ToolTip = "Refresh saved queue before reviewing a checkout update.";
-                    var next = !hasApplied && ((currentLocalStep?.HasPendingCompletion == true
-                        && currentLocalStep.MatchesRepository(target["repository"]?.GetValue<string>()))
-                        || _reviews.Any(review => review.HasPendingCompletion
-                        && review.MatchesRepository(target["repository"]?.GetValue<string>())
-                        && review.Value["completion_stage"]?.GetValue<string>() == "local_sync"));
-                    if (next) { update.Background = PrimaryBrush; update.Foreground = SystemColors.HighlightTextBrush; }
+                    if (!current) { update.Background = PrimaryBrush; update.Foreground = SystemColors.HighlightTextBrush; }
                     row.Children.Add(update);
                 }
                 foreach (var text in row.Children.OfType<TextBlock>().ToArray()) AddCopyIcon(text);
-                _localSyncTargets.Children.Add(row);
+                _localSyncTargets.Children.Add(new Border { Child = row, Padding = new Thickness(16, 14, 16, 14),
+                    Margin = new Thickness(0, 12, 0, 4), BorderThickness = new Thickness(3, 0, 0, 0),
+                    BorderBrush = SystemParameters.HighContrast ? SystemColors.WindowTextBrush
+                        : new System.Windows.Media.SolidColorBrush(!current
+                            ? System.Windows.Media.Color.FromRgb(193, 119, 24) : System.Windows.Media.Color.FromRgb(196, 207, 203)),
+                    Background = SystemParameters.HighContrast ? SystemColors.WindowBrush
+                        : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(247, 249, 248)) });
             }
             _localSyncStatus.Text = _reviews.Any(review => review.HasPendingCompletion
                 && review.Value["completion"]?["policy"]?.GetValue<string>() == "selected_local_sync")
                 ? "Selected updates are part of your configured maintenance completion. Each update is separately approved; no automatic integration."
                 : "Optional and separately approved. Remote merges do not update these checkouts automatically.";
             _localSyncPanel.Visibility = targets.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-        }
-        catch (Exception)
-        {
-            _localSyncPanel.Visibility = Visibility.Visible;
-            _localSyncTargets.Children.Clear();
-            _localSyncStatus.Text = "Local checkout status could not be loaded. Refresh saved state before reviewing an update.";
-        }
     }
 
     private static JsonObject? LatestLocalSyncOutcome(JsonArray reviews, string targetId) => reviews.OfType<JsonObject>()
