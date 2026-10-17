@@ -52,6 +52,8 @@ After self-contained publishing, run `complete-publish.ps1 -PublishedDirectory P
 
 ### Package a verified build
 
+Build and package from a complete repository checkout. The Python source distribution includes only selected optional native sources, not the full native build scripts or test suite; it is not a standalone Windows build workspace.
+
 Maintainers can create the separate Windows x64 ZIP without copying SDKs or caches into it:
 
 ```bash
