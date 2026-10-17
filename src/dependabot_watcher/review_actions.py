@@ -202,6 +202,8 @@ class PendingMaintenanceError(ReviewQueueError):
 
 def require_prior_completion(directory: Path, repository: str, now: datetime) -> None:
     """Caller holds the operation lock at execution; no network or Git reads."""
+    from .branch_refresh import require_no_pending_refresh
+    require_no_pending_refresh(directory, repository)
     state = _load_reviews(directory, now)
     for record in state["reviews"].values():
         if not repository_names_equal(record["preparation"]["binding"]["repository"], repository):

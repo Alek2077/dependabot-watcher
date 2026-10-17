@@ -91,6 +91,43 @@ internal static class ConversationContracts
         var currentAdvice = currentJob["result"]!["recommendations"]![0]!;
         currentAdvice["proposal_id"] = CurrentId; currentAdvice["conclusion"] = "recommend"; currentAdvice["ready_for_action"] = true;
         var currentView = Call(viewType, null, "Parse", currentResponse, Repository, Context)!;
+        var resourceResponse = (JsonObject)currentResponse.DeepClone();
+        resourceResponse["jobs"]![0]!["validation_blocker"] = new JsonObject {
+            ["job_id"] = resourceResponse["jobs"]![0]!["job_id"]!.GetValue<string>(),
+            ["context_digest"] = Context, ["active"] = true,
+            ["maximum_bytes"] = 2147483648L, ["minimum_free_bytes"] = 1073741824L,
+            ["allocated_bytes_after_cleanup"] = 4096L
+        };
+        var resourceView = Call(viewType, null, "Parse", resourceResponse, Repository, Context)!;
+        var resourceGuidance = (string?)viewType.GetProperty("ResourceGuidance", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(resourceView);
+        if (resourceGuidance is null || !resourceGuidance.Contains("after cleanup") || !resourceGuidance.Contains("approved budget change")
+            || !resourceGuidance.Contains("4 KiB") || !resourceGuidance.Contains("2 GiB"))
+            throw new InvalidDataException("Storage blocker lacks measured provenance or bounded next step.");
+        var retryResponse = (JsonObject)resourceResponse.DeepClone();
+        var retry = (JsonObject)currentJob.DeepClone();
+        retry["job_id"] = "job_" + new string('e', 32); retry["status"] = "prepared";
+        retry["retry_of"] = currentJob["job_id"]!.GetValue<string>();
+        retry["provider_completion_observed"] = false; retry["result"] = null; retry["provenance"] = null;
+        retry["observed_result"] = null; retry["messages"] = new JsonArray();
+        retryResponse["jobs"]!.AsArray().Add(retry);
+        var retryView = Call(viewType, null, "Parse", retryResponse, Repository, Context)!;
+        if (viewType.GetProperty("ResourceGuidance", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(retryView) is not string)
+            throw new InvalidDataException("Prepared retry hid an unresolved same-context storage refusal.");
+        retry["validation_blocker"] = resourceResponse["jobs"]![0]!["validation_blocker"]!.DeepClone();
+        retry["validation_blocker"]!["job_id"] = retry["job_id"]!.GetValue<string>();
+        retry["validation_blocker"]!["active"] = false;
+        var clearedView = Call(viewType, null, "Parse", retryResponse, Repository, Context)!;
+        if (viewType.GetProperty("ResourceGuidance", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(clearedView) is not null)
+            throw new InvalidDataException("Successful validation did not clear an earlier same-context refusal.");
+        retry["validation_blocker"] = null; retry["retry_of"] = null;
+        var independentView = Call(viewType, null, "Parse", retryResponse, Repository, Context)!;
+        if (viewType.GetProperty("ResourceGuidance", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(independentView) is not null)
+            throw new InvalidDataException("Independent investigation inherited another job's storage warning.");
+        resourceResponse["jobs"]![0]!["validation_blocker"]!["context_digest"] = new string('f', 64);
+        var resourceRefused = false;
+        try { Call(viewType, null, "Parse", resourceResponse, Repository, Context); }
+        catch (InvalidDataException) { resourceRefused = true; }
+        if (!resourceRefused) throw new InvalidDataException("Storage blocker crossed its saved job context.");
         if (viewType.GetProperty("CurrentAssessmentSummary", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(view) is not null
             || (string?)viewType.GetProperty("CurrentAssessmentSummary", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(currentView) != "Saved answer")
             throw new InvalidDataException("Post-merge summary promoted historical context or lost accepted current assessment.");

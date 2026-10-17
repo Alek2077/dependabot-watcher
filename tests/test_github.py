@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from dependabot_watcher import github
-from dependabot_watcher.github import GhCliClient, GitHubError
+from dependabot_watcher.github import GhCliClient, GitHubError, GitHubRequestRejected
 
 
 def test_failed_cli_command_withholds_raw_output(
@@ -29,6 +29,18 @@ def test_failed_cli_command_withholds_raw_output(
 
     assert secret not in str(raised.value)
     assert "output was withheld" in str(raised.value)
+
+
+@pytest.mark.parametrize('status,definite', [(403, True), (404, True), (422, True), (500, False)])
+def test_http_failure_preserves_definite_rejection_without_leaking_output(
+    monkeypatch: pytest.MonkeyPatch, status: int, definite: bool,
+) -> None:
+    monkeypatch.setattr(github.subprocess, 'run', lambda *args, **kwargs: subprocess.CompletedProcess(
+        args[0], 1, stdout=f'HTTP/2.0 {status} Failed\n\nPRIVATE_RESPONSE', stderr='PRIVATE_ERROR'))
+    with pytest.raises(GitHubError) as raised:
+        github._run_command(['gh', 'api', '--include'], 30)
+    assert isinstance(raised.value, GitHubRequestRejected) is definite
+    assert 'PRIVATE' not in str(raised.value)
 
 
 def open_pr(number: int) -> dict[str, Any]:

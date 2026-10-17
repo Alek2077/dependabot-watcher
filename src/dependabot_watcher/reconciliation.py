@@ -570,8 +570,10 @@ def _collection_window(
     remains unchanged; configured supervisor launches require advice off.
     """
     with run_lock(state_path / "reconciliation"):
+        from .branch_refresh import branch_refresh_revision
         with run_lock(state_path, wait_seconds=2):
             before = load_run_state(state_path)
+            branch_before = branch_refresh_revision(state_path)
             execution_before = execution_observation(state_path, {})
         try:
             inspection = _sanitize_scheduled_inspection(inspect(config, client, clock=lambda: now))
@@ -579,7 +581,8 @@ def _collection_window(
             inspection = None
         with run_lock(state_path, wait_seconds=2):
             state = load_run_state(state_path)
-            if state != before or execution_observation(state_path, {}) != execution_before:
+            if (state != before or execution_observation(state_path, {}) != execution_before
+                    or branch_refresh_revision(state_path) != branch_before):
                 raise ReconciliationError("Run or execution state changed during collection; refresh before saving this evidence.")
             yield state, inspection
 
@@ -743,6 +746,7 @@ def reconcile(
             same_revision = (
                 previous.get("evidence_revision") == revision
                 and previous.get("advisory_policy_id") == advisory_policy_id
+                and previous_plan_data.get("revoked_reason") != "branch_update_hold_released"
             )
             retained_plan: dict[str, Any] | None = None
             retained_plan_path: Path | None = None

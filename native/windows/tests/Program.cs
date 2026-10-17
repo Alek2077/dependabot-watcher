@@ -19,6 +19,7 @@ AssemblyLoadContext.Default.Resolving += (_, name) => resolver.ResolveAssemblyTo
 var assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(assemblyFile);
 ConversationContracts.Run(assembly);
 UiStateContracts.Run(assembly);
+BranchRefreshContracts.Run(assembly);
 ScheduledContracts.Run(assembly);
 LocalSyncContracts.Run(assembly);
 CompletionContracts.Run(assembly);

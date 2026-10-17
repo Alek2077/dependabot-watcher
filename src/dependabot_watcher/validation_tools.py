@@ -130,14 +130,43 @@ class ValidationTools:
         self._ensure_current()
         try:
             result = future.result()
+            if result.get('exit_code') == 0:
+                self._save_resource_blocker(active=False)
         except ValidationRuntimeError as exc:
             result = {'status': 'blocked', 'reason': str(exc), 'job_id': self.job['job_id'],
                       'context_digest': self.job['context_digest'], **self._call_bindings.get(call_id, {})}
+            if any(marker in str(exc).lower() for marker in ('storage budget', 'storage headroom', 'storage reserve', 'volume reserve')):
+                result['resource_limits'] = {
+                    'maximum_bytes': self.limits.maximum_bytes,
+                    'minimum_free_bytes': self.limits.minimum_free_bytes,
+                }
+                result['next_step'] = (
+                    'Explain the storage blocker and these saved limits. Owned disposable cleanup may already have run; '
+                    'do not delete host data or retry the same expensive work unchanged. '
+                    'Propose a smaller validation scope or ask the operator to review storage and approve any budget change. '
+                    'A budget change does not authorize a remote branch update or merge.'
+                )
+                self._save_resource_blocker(active=True)
             if call_id in self._call_bindings:
                 save_private_json(self.root, Path('failure_' + call_id + '.json'),
                                   {key: value for key, value in result.items() if key != 'reason'})
         self._call_bindings.pop(call_id, None)
         return call_id, result
+
+    def _save_resource_blocker(self, *, active: bool) -> None:
+        self.ensure_authority()
+        try:
+            occupied = sum(allocated_bytes(path, ensure_current=self.ensure_authority)
+                           for path in self._storage_roots())
+            save_private_json(self.root, Path('resource-blocker.json'), {
+                'job_id': self.job['job_id'], 'context_digest': self.job['context_digest'], 'active': active,
+                'maximum_bytes': self.limits.maximum_bytes, 'minimum_free_bytes': self.limits.minimum_free_bytes,
+                'allocated_bytes_after_cleanup': occupied,
+            })
+        except (OSError, RuntimeStateError, ValidationRuntimeError):
+            # Display metadata must not erase a real execution receipt or the
+            # original refusal. Revocation still takes precedence over display.
+            self.ensure_authority()
 
     @property
     def pending(self) -> bool:

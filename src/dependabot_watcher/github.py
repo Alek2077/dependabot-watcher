@@ -15,6 +15,13 @@ class GitHubError(RuntimeError):
     """Raised when a read-only GitHub operation cannot be completed."""
 
 
+class GitHubRequestRejected(GitHubError):
+    """A trusted HTTP response explicitly refused a request, not an unknown result."""
+    def __init__(self, status: int) -> None:
+        super().__init__(f'GitHub rejected the request (HTTP {status}); response details were withheld.')
+        self.status = status
+
+
 def public_github_error_message(surface: str = "operation") -> str:
     """Return a stable public error without forwarding CLI or API response text."""
 
@@ -127,6 +134,9 @@ def _run_command(command: Sequence[str], timeout_seconds: int) -> str:
     except subprocess.TimeoutExpired as exc:
         raise GitHubError(f"GitHub command timed out after {timeout_seconds} seconds.") from exc
     if result.returncode != 0:
+        status = re.match(r'^HTTP/\d(?:\.\d)?\s+(\d{3})\b', result.stdout)
+        if status is not None and int(status[1]) in {400, 401, 403, 404, 405, 409, 422}:
+            raise GitHubRequestRejected(int(status[1]))
         raise GitHubError(
             f"GitHub CLI command failed with status {result.returncode}; "
             "command output was withheld."
@@ -135,7 +145,7 @@ def _run_command(command: Sequence[str], timeout_seconds: int) -> str:
 
 
 class GhCliClient:
-    """Read-only GitHub client implemented through an authenticated `gh` CLI."""
+    """GitHub transport; callers separately enforce mutation authority."""
 
     _MAX_ALERT_PAGES: int = 500
 
@@ -617,6 +627,29 @@ class GhCliClient:
         if validated["number"] != number:
             raise GitHubError(f"GitHub returned mismatched state for PR #{number}.")
         return validated
+
+    def fetch_branch_refresh_state(self, repository: str, number: int) -> dict[str, Any]:
+        value = self._json(["api", "--method", "GET", f"/repos/{repository}/pulls/{number}"])
+        if not isinstance(value, dict):
+            raise GitHubError("GitHub returned invalid branch-update state.")
+        return value
+
+    def compare_commits(self, repository: str, base: str, head: str) -> str:
+        if any(re.fullmatch(r"[a-fA-F0-9]{40}|[a-fA-F0-9]{64}", sha) is None for sha in (base, head)):
+            raise GitHubError("Commit comparison requires full commit identities.")
+        value = self._json(["api", "--method", "GET", f"/repos/{repository}/compare/{base}...{head}"])
+        status = value.get("status") if isinstance(value, dict) else None
+        if status not in {"ahead", "behind", "identical", "diverged"}:
+            raise GitHubError("GitHub returned invalid commit ancestry evidence.")
+        return str(status)
+
+    def update_pull_request_branch(self, repository: str, number: int, *, head_sha: str) -> None:
+        if re.fullmatch(r"[a-fA-F0-9]{40}|[a-fA-F0-9]{64}", head_sha) is None:
+            raise GitHubError("Branch update requires an exact expected head.")
+        value, _ = self._json_with_headers(["api", "--include", "--method", "PUT", f"/repos/{repository}/pulls/{number}/update-branch",
+                            "-f", f"expected_head_sha={head_sha}"])
+        if not isinstance(value, dict) or not isinstance(value.get("message"), str):
+            raise GitHubError("GitHub branch update acknowledgement was invalid; check the outcome before retrying.")
 
     def merge_pull_request(
         self,

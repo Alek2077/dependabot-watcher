@@ -86,11 +86,12 @@ internal sealed class BackendClient
             or "prepare_action" or "confirm_action" or "check_action" or "check_completion" or "action_history" or "collect_queue" or "supervisor_status"
             or "supervisor_permissions" or "supervisor_permission_decide" or "notification_attention"
             or "local_sync_targets" or "prepare_local_sync" or "confirm_local_sync" or "recover_local_sync"
-            or "scheduled_supervisor_claim"))
+            or "scheduled_supervisor_claim" or "prepare_branch_refresh" or "confirm_branch_refresh" or "check_branch_refresh" or "continue_branch_refresh" or "release_branch_refresh"))
             throw new InvalidOperationException("Unsupported backend operation.");
-        var mutating = operation is "confirm_action" or "confirm_local_sync";
+        var mutating = operation is "confirm_action" or "confirm_local_sync" or "confirm_branch_refresh";
         var liveOperation = operation is "prepare_action" or "confirm_action" or "check_action" or "check_completion" or "collect_queue"
-            or "prepare_local_sync" or "confirm_local_sync" or "recover_local_sync";
+            or "prepare_local_sync" or "confirm_local_sync" or "recover_local_sync"
+            or "prepare_branch_refresh" or "confirm_branch_refresh" or "check_branch_refresh" or "continue_branch_refresh";
         var requestId = request["request_id"]?.GetValue<string>()
             ?? throw new InvalidDataException("Request ID is required.");
         var payload = JsonSerializer.SerializeToUtf8Bytes(request);

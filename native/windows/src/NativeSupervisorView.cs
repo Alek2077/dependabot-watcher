@@ -14,6 +14,33 @@ internal sealed class NativeSupervisorView
 {
     private readonly List<JsonObject> _jobs;
     internal NativeLaunchPolicy? LaunchPolicy { get; }
+    internal string? ResourceGuidance {
+        get {
+            // A same-context retry must not hide an unresolved prior refusal.
+            // A later explicit cleared marker ends that historical warning.
+            var job = _jobs.LastOrDefault(value => value["current_context"]?.GetValue<bool>() == true);
+            var seen = new HashSet<string>();
+            while (job is not null && job["validation_blocker"] is not JsonObject) {
+                if (!seen.Add(job["job_id"]!.GetValue<string>())
+                    || job["retry_of"] is not JsonValue retry || !retry.TryGetValue<string>(out var parent))
+                    return null;
+                job = _jobs.LastOrDefault(value => value["job_id"]?.GetValue<string>() == parent
+                    && value["current_context"]?.GetValue<bool>() == true);
+            }
+            if (job?["validation_blocker"] is not JsonObject blocker || blocker["active"]?.GetValue<bool>() != true)
+                return null;
+            var used = blocker["allocated_bytes_after_cleanup"]!.GetValue<long>();
+            var limit = blocker["maximum_bytes"]!.GetValue<long>();
+            var reserve = blocker["minimum_free_bytes"]!.GetValue<long>();
+            return $"Saved allocation after cleanup: {StorageSize(used)}\nBudget: {StorageSize(limit)} · Free-space reserve: {StorageSize(reserve)}\n"
+                + "Choose a smaller validation scope or review storage before an explicitly approved budget change. "
+                + "This is saved evidence, not a live disk reading. No files or limits change automatically.\n"
+                + $"Source investigation: {job["job_id"]}";
+        }
+    }
+    private static string StorageSize(long bytes) => bytes >= 1073741824L ? $"{bytes / 1073741824d:0.##} GiB"
+        : bytes >= 1048576L ? $"{bytes / 1048576d:0.##} MiB"
+        : bytes >= 1024L ? $"{bytes / 1024d:0.##} KiB" : $"{bytes} bytes";
     internal bool HasActiveInvestigation {
         get {
             // Ownership survives context changes; freshness only controls
@@ -72,6 +99,20 @@ internal sealed class NativeSupervisorView
                 || job["messages"] is not JsonArray messages || messages.Count > 2000)
                 throw new InvalidDataException("Invalid agent job identity or completion.");
             var observationOnly = ObservationOnly(job);
+            if (job["validation_blocker"] is JsonNode resource)
+            {
+                if (resource is not JsonObject blocker || blocker.Count != 6
+                    || blocker["job_id"]?.GetValue<string>() != id
+                    || blocker["context_digest"]?.GetValue<string>() != job["context_digest"]!.GetValue<string>()
+                    || blocker["active"] is not JsonValue active || !active.TryGetValue<bool>(out _))
+                    throw new InvalidDataException("Validation storage evidence is not bound to this job.");
+                foreach (var name in new[] { "maximum_bytes", "minimum_free_bytes", "allocated_bytes_after_cleanup" })
+                    if (blocker[name] is not JsonValue number || !number.TryGetValue<long>(out var amount) || amount < 0)
+                        throw new InvalidDataException("Invalid validation storage amount.");
+                if (blocker["maximum_bytes"]!.GetValue<long>() is < 1 or > 17179869184L
+                    || blocker["minimum_free_bytes"]!.GetValue<long>() is < 1 or > 68719476736L)
+                    throw new InvalidDataException("Invalid saved validation storage limits.");
+            }
             if (job["observed_result"] is not null && (!hasCompletion || !observationOnly
                 || status is not ("running" or "failed" or "interrupted")))
                 throw new InvalidDataException("Observation-only data contradicts job acceptance or provider evidence.");

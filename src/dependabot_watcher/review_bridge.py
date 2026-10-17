@@ -13,6 +13,7 @@ from .github import GhCliClient, GitHubClient, GitHubError, public_github_error_
 from .reconciliation import ReconciliationError
 from .notifications import _content
 from .review_actions import ActionReviews
+from .branch_refresh import BranchRefreshClient, BranchRefreshReviews
 from .review_queue import ReviewQueue, ReviewQueueError
 from .runtime_state import RuntimeStateError, load_private_json, load_run_state, run_lock
 from .supervisor_status import supervision_status
@@ -103,6 +104,10 @@ def exchange(queue: ReviewQueue | None, incoming: BinaryIO, outgoing: BinaryIO, 
             return launch_exchange(queue, cast(GitHubClient, actions.client) if actions is not None else None, request, outgoing)
         if request.get("operation") == "notification_attention":
             response = notification_attention(queue, request)
+        elif request.get('operation') in {'prepare_branch_refresh', 'confirm_branch_refresh', 'check_branch_refresh', 'continue_branch_refresh', 'release_branch_refresh'}:
+            if actions is None:
+                raise ReviewQueueError('PR branch update is not connected to this backend.')
+            response = BranchRefreshReviews(queue, cast(BranchRefreshClient, actions.client), actions.config_path).handle(request)
         elif request.get("operation") in {"local_sync_targets", "prepare_local_sync", "confirm_local_sync", "recover_local_sync"}:
             observing = request["operation"] in {"local_sync_targets", "recover_local_sync"}
             if actions is None and not observing:
@@ -132,10 +137,10 @@ def exchange(queue: ReviewQueue | None, incoming: BinaryIO, outgoing: BinaryIO, 
             response = actions.handle(request)
         else:
             response = queue.handle(request)
-            if actions is not None:
-                response["reviews"] = actions.snapshot()
-                response["execution_enabled"] = (
-                    queue.config.operation.autonomy == "approval_required" and queue.config.operation.mutation_enabled)
+        if actions is not None and 'proposals' in response:
+            response['branch_refresh_reviews'] = BranchRefreshReviews(queue, cast(BranchRefreshClient, actions.client), actions.config_path).snapshot()
+            response['reviews'] = actions.snapshot()
+            response['execution_enabled'] = queue.config.operation.autonomy == 'approval_required' and queue.config.operation.mutation_enabled
         exit_code = 0
     except (ValueError, UnicodeError, RecursionError):
         response = {"schema_version": 1, "request_id": request_id, "status": "error",

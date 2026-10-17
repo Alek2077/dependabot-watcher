@@ -348,6 +348,13 @@ class CodexAppServerSupervisor:
             ("Outside the authorized disposable validation copies, do not edit or install. " if preparation
              else "Do not edit or install. ") +
             "Do not commit, push, merge, deploy or change remote state. Do not read secrets or credentials. "
+            "If a candidate PR needs its branch updated, identify the PR and reason, preserve useful evidence and "
+            "direct the operator to Watcher's 'Update a candidate PR branch' / 'Review PR branch update' action. "
+            "That separate exact approval updates the branch and provides validation continuation; this investigation "
+            "cannot perform the remote write. Do not request a chat approval as if it expanded this job's authority, "
+            "or repeat investigation merely to ask the same question. Reuse prior work when continuation returns. "
+            "For resource limits, explain the measured evidence and saved limit, propose a bounded remedy and identify "
+            "any operator decision; never silently raise limits or treat a limit change as remote-write authority. "
             "Inspect affected repository usage and relevant upstream changes, distinguish security urgency from compatibility, "
             "reuse substantive prior decisions when still applicable, and verify checks against the current base. "
             "Account for overlapping updates and repository-specific release policy; after any authorized action, refresh "

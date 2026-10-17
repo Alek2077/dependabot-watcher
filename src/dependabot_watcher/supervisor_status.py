@@ -10,6 +10,7 @@ from .runtime_state import load_private_json, run_lock
 from .supervision import SupervisorJobs, _digest
 from .supervisor_runner import validate_observation
 from .supervisor_launch import configured_launch_summary
+from .validation_blockers import read_validation_blocker
 
 
 def _message_receipts(job: Mapping[str, Any], result: Mapping[str, Any], *, current: bool) -> list[dict[str, Any]]:
@@ -91,6 +92,7 @@ def supervision_status(queue: ReviewQueue, request: Mapping[str, Any]) -> dict[s
                 "observed_result": display_result if observed and job["result"] is None else None,
                 "failure": job["failure"], "retry_of": job.get("retry_of"),
                 "retry_available": job["job_id"] == retry,
+                "validation_blocker": read_validation_blocker(queue.directory, job, include_cleared=True),
                 "provider_completion_observed": observed is not None,
                 "provenance": {key: observed.get(key) for key in
                                ("provider", "model", "reasoning_effort", "profile", "session_id", "usage")}

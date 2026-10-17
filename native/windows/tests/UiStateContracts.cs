@@ -17,6 +17,32 @@ internal static class UiStateContracts
                 var window = Activator.CreateInstance(type, BindingFlags.Instance | BindingFlags.NonPublic,
                     null, new object[] { client }, null)!;
                 object Field(string name) => type.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+                var showConversation = type.GetMethod("ShowConversation", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                showConversation.Invoke(window, new object?[] { ("Saved question", "Saved answer", "Fixture", "Verified saved reply"), true });
+                if (((System.Windows.UIElement)Field("_latestAnswer")).Visibility != System.Windows.Visibility.Visible
+                    || ((System.Windows.Controls.TextBlock)Field("_latestReply")).Text != "Saved answer"
+                    || !((System.Windows.Controls.TextBlock)Field("_replyFreshness")).Text.Contains("not its result"))
+                    throw new InvalidDataException("Active investigation hides saved conversation or mislabels it as current.");
+                var resetGuidance = type.GetMethod("ResetAgentGuidance", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                resetGuidance.Invoke(window, new object[] { "Investigation running", true });
+                if (((System.Windows.UIElement)Field("_latestAnswer")).Visibility != System.Windows.Visibility.Visible
+                    || ((System.Windows.Controls.TextBlock)Field("_latestReply")).Text != "Saved answer")
+                    throw new InvalidDataException("Investigation guidance reset erased historical conversation.");
+                resetGuidance.Invoke(window, new object[] { "Checking a different item", false });
+                if (((System.Windows.Controls.TextBlock)Field("_latestReply")).Text != "")
+                    throw new InvalidDataException("New-item guidance retained another item's conversation.");
+                showConversation.Invoke(window, new object?[] { null, true });
+                if (((System.Windows.UIElement)Field("_latestAnswer")).Visibility != System.Windows.Visibility.Collapsed
+                    || ((System.Windows.Controls.TextBlock)Field("_latestReply")).Text != "")
+                    throw new InvalidDataException("Absent selected conversation retained another item's saved answer.");
+                var permissions = (System.Windows.Controls.StackPanel)Field("_permissions");
+                permissions.Children.Add(new System.Windows.Controls.TextBlock { Text = "Decision pending" });
+                type.GetField("_permissionDecisionInFlight", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, true);
+                var permissionRefresh = (System.Threading.Tasks.Task)type.GetMethod("ReadPermissionsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null)!;
+                if (!permissionRefresh.IsCompletedSuccessfully || permissions.Children.Count != 1)
+                    throw new InvalidDataException("Polling rebuilt permission controls while a decision was in flight.");
+                type.GetField("_permissionDecisionInFlight", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
+                permissions.Children.Clear();
                 var emptyFrame = System.Text.Json.Nodes.JsonNode.Parse("{\"capabilities\":{\"github_mutations\":false,\"model_calls\":false},\"next_request_sequence\":1,\"proposals\":[],\"plan_id\":null,\"evidence_status\":\"complete\",\"supervisor_context_digests\":{},\"reviews\":[],\"history\":[]}")!;
                 type.GetMethod("Apply", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, new object[] { emptyFrame });
                 if (((System.Windows.UIElement)Field("_actions")).Visibility != System.Windows.Visibility.Collapsed

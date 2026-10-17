@@ -461,6 +461,8 @@ class SupervisorJobs:
 
     def prepare(self, repository: str, *, retry_job_id: str | None = None) -> dict[str, Any]:
         with run_lock(self.queue.directory, wait_seconds=2):
+            from .branch_refresh import require_no_pending_refresh
+            require_no_pending_refresh(self.queue.directory, repository)
             context = self.queue._supervision_context_under_lock(repository)
             _validate_context(context)
             repository = context["repository"]
@@ -505,6 +507,8 @@ class SupervisorJobs:
         with run_lock(self.queue.directory, wait_seconds=2):
             state = self._load()
             job = self._job(state, job_id)
+            from .branch_refresh import require_no_pending_refresh
+            require_no_pending_refresh(self.queue.directory, job['repository'])
             self._recover_under_lock(state, job["repository"])
             if job["status"] != "prepared":
                 raise ReviewQueueError("Supervisor job was already started; inspect its recorded outcome.")
