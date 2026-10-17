@@ -604,6 +604,8 @@ def test_post_merge_generation_requires_an_exact_action_verdict_without_changing
     return_template = runtime._prompt(job).split("Return only JSON", 1)[1].split("Job context/evidence", 1)[0]
     assert "maintenance_assessment: {action_id, conclusion, explanation}" in return_template
     guidance = runtime._prompt(job).split("Job context/evidence", 1)[0]
+    assert "Do not request a chat approval" in guidance
+    assert "never silently raise limits" in guidance
     assert "absent local integration receipts are expected at this stage" in guidance
     assert "watcher_validation_prepare accepts the exact obligation.action_id" in guidance
     assert "Prioritize this action's required follow-up" in guidance

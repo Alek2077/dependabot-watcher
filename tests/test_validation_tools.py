@@ -8,6 +8,7 @@ import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,6 +19,7 @@ from dependabot_watcher.runtime_state import RuntimeLockBusyError
 from dependabot_watcher.runtime_state import save_private_json
 from dependabot_watcher.validation_runtime import ValidationLimits, ValidationRuntimeError
 from dependabot_watcher.validation_tools import ValidationTools
+from dependabot_watcher.validation_blockers import read_validation_blocker
 from dependabot_watcher.validation_snapshot import prepare_validation_snapshot
 from dependabot_watcher.supervisor_workspace import _git as workspace_git
 from test_validation_snapshot import repository
@@ -60,6 +62,9 @@ def test_agent_selects_exact_proposal_runs_real_sandbox_and_receipts_survive_cle
             'command': 'node -e "console.log(2+2)"; printf disposable > probe.txt'})
         result = wait(tools)
         assert result['exit_code'] == 0 and result['output'] == '4\n'
+        cleared = read_validation_blocker(tools.root.parent.parent, job, include_cleared=True)
+        assert cleared is not None and cleared['active'] is False
+        assert read_validation_blocker(tools.root.parent.parent, job) is None
         assert result['proposal_id'] == prepared['proposal_id'] and result['head_sha'] == prepared['head_sha']
         assert result['tracked_source_changed'] is False
         assert (tools.root / (result['operation_id'] + '.json')).exists()
@@ -381,6 +386,12 @@ def test_storage_limit_returns_blocked_and_allows_smaller_followup(tmp_path: Pat
             'command': command})
         blocked = wait(tools)
         assert blocked['status'] == 'blocked' and 'budget' in blocked['reason']
+        assert blocked['resource_limits']['maximum_bytes'] == 1024 * 1024
+        assert 'do not delete host data' in blocked['next_step']
+        assert 'unchanged' in blocked['next_step']
+        assert 'does not authorize a remote branch update or merge' in blocked['next_step']
+        blocker = read_validation_blocker(tools.root.parent.parent, job)
+        assert blocker is not None and blocker['maximum_bytes'] == 1024 * 1024
         assert not (tools.root / first['validation_id']).exists()
         assert not (workspace / 'oversized').exists()
         tools.submit('prepare2', 'watcher_validation_prepare', {'proposal_id': proposal})
@@ -388,6 +399,30 @@ def test_storage_limit_returns_blocked_and_allows_smaller_followup(tmp_path: Pat
         tools.submit('run2', 'watcher_validation_run', {'validation_id': second['validation_id'],
                      'command': 'printf smaller'})
         assert wait(tools)['output'] == 'smaller'
+        assert read_validation_blocker(tools.root.parent.parent, job) is None
+    finally:
+        tools.close()
+
+
+@pytest.mark.parametrize('stage', ['prepare', 'run'])
+def test_storage_reserve_refusal_has_saved_limits_and_remedy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str) -> None:
+    tools, job, _workspace = case(tmp_path)
+    try:
+        prepared = None
+        if stage == 'run':
+            tools.submit('prepare1', 'watcher_validation_prepare', {'proposal_id': job['context']['proposals'][0]['proposal_id']})
+            prepared = wait(tools)
+        monkeypatch.setattr(shutil, 'disk_usage', lambda _path: SimpleNamespace(free=0))
+        if prepared is None:
+            tools.submit('blocked', 'watcher_validation_prepare', {'proposal_id': job['context']['proposals'][0]['proposal_id']})
+        else:
+            tools.submit('blocked', 'watcher_validation_run', {'validation_id': prepared['validation_id'], 'command': 'true'})
+        result = wait(tools)
+        assert result['status'] == 'blocked' and 'storage reserve' in result['reason']
+        assert result['resource_limits']['minimum_free_bytes'] == tools.limits.minimum_free_bytes
+        assert 'approve any budget change' in result['next_step']
+        blocker = read_validation_blocker(tools.root.parent.parent, job)
+        assert blocker is not None and blocker['active'] is True
     finally:
         tools.close()
 

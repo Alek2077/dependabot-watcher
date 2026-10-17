@@ -36,7 +36,7 @@ internal sealed partial class BackendQueueWindow
         _completionActions.Children.Clear();
         _completionRows.Clear();
         var pending = _reviews.Where(review => review.HasPendingCompletion).ToList();
-        _maintenanceWorkspace.Header = pending.Count == 0 ? "Maintenance" : $"Maintenance · {pending.Count} pending";
+        UpdateMaintenanceHeader();
         _completionPanel.Visibility = pending.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         if (pending.Count == 0) return;
         _completionStatus.Text = "Saved follow-up status. A completed merge is not repeated; checking status does not update your checkout.";

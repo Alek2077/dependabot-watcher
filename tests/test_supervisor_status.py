@@ -14,7 +14,7 @@ import pytest
 from dependabot_watcher.config import PathPolicyOverrides, parse_config
 from dependabot_watcher.review_bridge import exchange
 from dependabot_watcher.review_queue import ReviewQueue, ReviewQueueError
-from dependabot_watcher.runtime_state import load_private_json, run_lock, save_private_json
+from dependabot_watcher.runtime_state import RuntimeStateError, load_private_json, run_lock, save_private_json
 from dependabot_watcher.supervision import SupervisorJobs
 from dependabot_watcher.supervisor_runner import SupervisorRunner
 from dependabot_watcher.supervisor_status import supervision_status
@@ -38,6 +38,22 @@ def status_case(tmp_path: Path) -> tuple[ReviewQueue, SupervisorJobs, dict[str, 
 def request() -> dict[str, Any]:
     return {"schema_version": 1, "request_id": "read_supervision", "operation": "supervisor_status",
             "repository": "example-org/example-app"}
+
+
+def test_status_projects_only_job_bound_storage_blocker(status_case: tuple[ReviewQueue, SupervisorJobs, dict[str, Any]]) -> None:
+    queue, _jobs, job = status_case
+    relative = Path('supervisor-validation') / job['job_id'] / 'resource-blocker.json'
+    record = {'job_id': job['job_id'], 'context_digest': job['context_digest'], 'active': True,
+              'maximum_bytes': 1024**3, 'minimum_free_bytes': 1024**3, 'allocated_bytes_after_cleanup': 4096}
+    save_private_json(queue.directory, relative, record)
+    assert supervision_status(queue, request())['jobs'][0]['validation_blocker'] == record
+    record['active'] = False
+    save_private_json(queue.directory, relative, record)
+    assert supervision_status(queue, request())['jobs'][0]['validation_blocker'] == record
+    record['context_digest'] = 'f' * 64
+    save_private_json(queue.directory, relative, record)
+    with pytest.raises(RuntimeStateError, match='does not match'):
+        supervision_status(queue, request())
 
 
 def test_retry_after_clock_rollback_remains_latest_current_result(

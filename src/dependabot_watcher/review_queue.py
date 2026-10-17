@@ -568,6 +568,11 @@ class ReviewQueue:
 
     def handle(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Apply one versioned local request under the existing operation lock."""
+        with run_lock(self.directory, wait_seconds=2):
+            return self._handle_under_lock(request)
+
+    def _handle_under_lock(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Same validated contract for callers already owning the journal lock."""
         self.require_current_configuration()
         request_id = request.get("request_id")
         operation = request.get("operation")
@@ -601,61 +606,57 @@ class ReviewQueue:
         now = self.clock()
         if now.utcoffset() is None:
             raise ReviewQueueError("Queue clock must include a time zone.")
-        # Local queue reads/handling share short journal transactions with the
-        # supervisor. Bounded contention is not an action or scheduler retry.
-        with run_lock(self.directory, wait_seconds=2):
-            self.require_current_configuration()
-            state = _load_queue(self.directory)
-            plan_id, evidence_status = self._synchronize(state, now)
-            replayed = False
-            receipt = next((item for item in state["receipts"] if item.get("request_id") == request_id), None)
-            if receipt is not None:
-                if receipt.get("digest") != digest:
-                    raise ReviewQueueError("Request ID was already used for a different operation.")
-                replayed = True
-            elif operation != "snapshot":
-                sequence = int(request_id.split("_", 2)[1])
-                # The durable monotonic counter rejects evicted/reused IDs
-                # without retaining an unbounded tombstone for every request.
-                if sequence != state["next_request_sequence"]:
-                    raise ReviewQueueError("Request sequence is retired or stale; refresh the queue.")
-                if sequence >= 2**63 - 1:
-                    raise ReviewQueueError("Queue request sequence reached its safety ceiling.")
-                proposal_id = request.get("proposal_id")
-                if not isinstance(proposal_id, str) or proposal_id not in state["proposals"]:
-                    raise ReviewQueueError("Proposal is absent or superseded; refresh the queue.")
-                item = state["proposals"][proposal_id]
-                if type(request.get("version")) is not int or request["version"] != item["version"]:
-                    raise ReviewQueueError("Proposal handling changed; refresh before deciding.")
-                if operation == "feedback":
-                    if len(item["feedback"]) >= _MAX_FEEDBACK:
-                        raise ReviewQueueError("Proposal feedback is full; existing messages were preserved.")
-                    item["feedback"].append({
-                        "request_id": request_id, "message": request["message"],
-                        "created_at": _timestamp(now), "status": "saved_not_submitted",
-                    })
-                else:
-                    item["handling"] = {"reject": "rejected", "defer": "deferred", "resume": "pending"}[str(operation)]
-                    item["resume_at"] = _timestamp(now + timedelta(seconds=request["seconds"])) if operation == "defer" else None
-                item["version"] += 1
-                state["receipts"].append({"request_id": request_id, "digest": digest})
-                state["receipts"] = state["receipts"][-_MAX_RECEIPTS:]
-                state["next_request_sequence"] += 1
-            # Persistence must succeed before acknowledging a local decision.
-            save_private_json(self.directory, _QUEUE_PATH, state, maximum_bytes=_MAX_BYTES)
-            plan = self._current_plan()
-            contexts = [self._supervision_context_from_state(repository.name, state, plan)
-                        for repository in self.config.repositories]
-            return {
-                "schema_version": 1, "request_id": request_id, "status": "ok", "replayed": replayed,
-                "plan_id": plan_id, "evidence_status": evidence_status,
-                "next_request_sequence": state["next_request_sequence"],
-                "proposals": copy.deepcopy(list(state["proposals"].values())),
-                "history": copy.deepcopy(state["history"]),
-                "supervisor_context_digests": {
-                    context["repository"]: supervisor_context_digest(context)
-                    for context in contexts
-                },
-                "capabilities": {"github_mutations": False, "model_calls": False},
-                "feedback_delivery": "saved_only_no_investigator_connected",
-            }
+        state = _load_queue(self.directory)
+        plan_id, evidence_status = self._synchronize(state, now)
+        replayed = False
+        receipt = next((item for item in state["receipts"] if item.get("request_id") == request_id), None)
+        if receipt is not None:
+            if receipt.get("digest") != digest:
+                raise ReviewQueueError("Request ID was already used for a different operation.")
+            replayed = True
+        elif operation != "snapshot":
+            sequence = int(request_id.split("_", 2)[1])
+            # The durable monotonic counter rejects evicted/reused IDs
+            # without retaining an unbounded tombstone for every request.
+            if sequence != state["next_request_sequence"]:
+                raise ReviewQueueError("Request sequence is retired or stale; refresh the queue.")
+            if sequence >= 2**63 - 1:
+                raise ReviewQueueError("Queue request sequence reached its safety ceiling.")
+            proposal_id = request.get("proposal_id")
+            if not isinstance(proposal_id, str) or proposal_id not in state["proposals"]:
+                raise ReviewQueueError("Proposal is absent or superseded; refresh the queue.")
+            item = state["proposals"][proposal_id]
+            if type(request.get("version")) is not int or request["version"] != item["version"]:
+                raise ReviewQueueError("Proposal handling changed; refresh before deciding.")
+            if operation == "feedback":
+                if len(item["feedback"]) >= _MAX_FEEDBACK:
+                    raise ReviewQueueError("Proposal feedback is full; existing messages were preserved.")
+                item["feedback"].append({
+                    "request_id": request_id, "message": request["message"],
+                    "created_at": _timestamp(now), "status": "saved_not_submitted",
+                })
+            else:
+                item["handling"] = {"reject": "rejected", "defer": "deferred", "resume": "pending"}[str(operation)]
+                item["resume_at"] = _timestamp(now + timedelta(seconds=request["seconds"])) if operation == "defer" else None
+            item["version"] += 1
+            state["receipts"].append({"request_id": request_id, "digest": digest})
+            state["receipts"] = state["receipts"][-_MAX_RECEIPTS:]
+            state["next_request_sequence"] += 1
+        # Persistence must succeed before acknowledging a local decision.
+        save_private_json(self.directory, _QUEUE_PATH, state, maximum_bytes=_MAX_BYTES)
+        plan = self._current_plan()
+        contexts = [self._supervision_context_from_state(repository.name, state, plan)
+                    for repository in self.config.repositories]
+        return {
+            "schema_version": 1, "request_id": request_id, "status": "ok", "replayed": replayed,
+            "plan_id": plan_id, "evidence_status": evidence_status,
+            "next_request_sequence": state["next_request_sequence"],
+            "proposals": copy.deepcopy(list(state["proposals"].values())),
+            "history": copy.deepcopy(state["history"]),
+            "supervisor_context_digests": {
+                context["repository"]: supervisor_context_digest(context)
+                for context in contexts
+            },
+            "capabilities": {"github_mutations": False, "model_calls": False},
+            "feedback_delivery": "saved_only_no_investigator_connected",
+        }
