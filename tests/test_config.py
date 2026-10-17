@@ -240,6 +240,20 @@ def test_load_config_reads_toml(tmp_path: Path) -> None:
     assert config.repositories[0].default_branch == "develop"
 
 
+def test_missing_config_points_to_installed_setup_without_creating_state(tmp_path: Path) -> None:
+    path = tmp_path / "not-created.toml"
+
+    with pytest.raises(ConfigError) as caught:
+        load_config(path)
+
+    message = str(caught.value)
+    assert str(path) in message
+    assert "dependabot-watcher setup --help" in message
+    assert "--config" in message
+    assert "config.example.toml" not in message
+    assert not path.exists()
+
+
 def test_load_config_rejects_replaceable_parent_and_symlink(
     tmp_path: Path,
 ) -> None:

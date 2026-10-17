@@ -2,6 +2,8 @@
 
 This document records reproducible product-level validation without exposing private repository identities, workstation paths, credentials, approval tokens, or private reviewer artifacts. It complements the deterministic test suite; it is not a substitute for functioning hosted CI or independent user adoption.
 
+For instructions, use the [validation workflow](validation-workflow.md); for delivery and persistent user trials, use [development, release and dogfooding](development-and-release.md). The dated entries below are historical evidence, not a runbook or a claim that every earlier limitation remains current. Add significant acceptance summaries rather than routine command logs; this record does not need to be read end-to-end for each change.
+
 ## Natural onboarding findings — private checkpoint, 2026-10-12
 
 ### Windowless scheduler launch — development check, 2026-10-13

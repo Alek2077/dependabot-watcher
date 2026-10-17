@@ -15,6 +15,8 @@ Thank you for considering a contribution to Dependabot Watcher.
 
 ## Development setup
 
+For ordinary contributions, use the local setup below and validate the changed behavior. Apply the [installed-path validation workflow](docs/validation-workflow.md) proportionately to material user-facing changes. Maintainers preparing delivery or operating a continuing user trial should also follow [development, release and dogfooding](docs/development-and-release.md); that process is not a prerequisite for submitting a contribution.
+
 Dependabot Watcher requires Python 3.11 or newer.
 
 ```bash

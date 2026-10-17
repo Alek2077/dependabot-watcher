@@ -891,7 +891,9 @@ def load_config(path: Path) -> WatcherConfig:
             raw = tomllib.load(handle)
     except FileNotFoundError as exc:
         raise ConfigError(
-            f"Configuration file not found: {expanded}. Copy config.example.toml and edit it."
+            f"Configuration file not found: {expanded}. "
+            "Run 'dependabot-watcher setup --help' for profile creation options; "
+            "use --config to select the intended profile path."
         ) from exc
     except RuntimeStateError as exc:
         raise ConfigError(str(exc)) from exc

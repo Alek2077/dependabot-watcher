@@ -6,6 +6,19 @@ Historical phase requirements remain as design records. Record verified delivery
 
 The original read-only position was “a local-first, provider-neutral control plane for inspecting and safely triaging Dependabot activity across multiple repositories.” The intended mature position is safe automation of the Dependabot maintenance loop, not full repository maintenance: collect evidence, recommend an order, recheck live state, execute only policy-authorized actions, and retain a concise human summary plus complete structured audit evidence.
 
+## Reading guide
+
+Use the sections relevant to the task; this roadmap does not need to be read end-to-end for every change. The navigation below groups existing material without replacing its status labels, dated evidence or design constraints. A phase's design contract is not, by itself, a claim that all of it is implemented.
+
+| Looking for | Start here |
+| --- | --- |
+| Current acceptance work | [Approval-first background maintenance](#current-acceptance-priority-approval-first-background-maintenance), [agreed supervisor architecture](#agreed-supervisor-architecture--development-path-operating-acceptance-open), [feedback and operating proof](#feedback-working-copies-and-operating-proof) |
+| Overall direction and sequencing | [Phase entry gate](#phase-entry-gate), [phase map](#phase-map), [initial user and quality target](#initial-user-and-quality-target), [future phase delivery boundaries](#future-phase-delivery-boundaries) |
+| Foundation and phase-specific design/status records | [Delivered foundation](#delivered-foundation), [Phase 4](#phase-4-design-contract-and-delivery-status), [Phase 5](#phase-5-design-contract-and-delivery-status), [Phase 6](#phase-6-design-contract-gated-execution-and-autonomy), [Phase 7 status](#phase-7-delivery-status), [Phase 9 status](#phase-9-delivery-status) |
+| Remaining platform and publication gates | [Later platform and product gates](#later-platform-and-product-gates) |
+
+For test instructions, use the [validation workflow](validation-workflow.md). For historical acceptance evidence, consult the relevant entries in the [validation record](validation.md), not its entire history by default.
+
 ## Phase entry gate
 
 Before committing to a new phase or material feature, briefly revalidate its premise against the current product, user evidence, dependencies, safety boundary, and relevant external ecosystem. Ask whether the work is still needed, whether its intended outcome remains justified, and whether the planned approach is still the best proportionate option.
@@ -29,7 +42,7 @@ This is a high-level decision gate, not an invitation to repeatedly reopen settl
 11. **Tool-capable supervision and resumable maintenance — implemented development path, operating acceptance open.** The opt-in supervisor supports investigation, ordering, validation, feedback and continuation through private jobs/workspaces and guarded approval/action boundaries. Finish the focused approval-first acceptance below and bounded selected clean-fast-forward synchronization before the first versioned release. Generalized dependency-repair publication remains subsequent work under its own capability contract, not unrestricted Git access.
 12. **Expanded autonomy and provider ecosystem.** Reassess bounded unattended policy from dogfood evidence, add high-assurance multi-role review where it proves useful, deepen selected ecosystem adapters, and expand providers and agent surfaces according to demand and testability.
 
-The preliminary private safety freeze was treated as the opening step of Phase 1 rather than a separate product phase. Cross-cutting tests, proportional independent review, documentation, live read-only checks, and founder checkpoints apply throughout rather than being deferred to Phase 10.
+The preliminary private safety freeze was treated as the opening step of Phase 1 rather than a separate product phase. Cross-cutting tests, proportional independent review, documentation and live read-only checks apply throughout rather than being deferred to Phase 10. Hands-on maintainer checkpoints are reserved for material phase/publication gates or requested direct feedback, not required for every contribution; use the [validation workflow](validation-workflow.md) to scope them.
 
 ### Current acceptance priority: approval-first background maintenance
 

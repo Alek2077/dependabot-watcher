@@ -36,6 +36,8 @@ uv tool install --python 3.14 .
 
 The moving `main` branch is prerelease source, not a reproducible release target.
 
+For a pinned source installation, use this README and the `docs/` files from the same checkout for commands, contracts and support status. Web links below that contain `blob/main` show the latest development documentation, which may differ from your installed revision; use the corresponding local file or view it at your selected tag/commit instead.
+
 The example asks `uv` for stable Python 3.14; an existing stable Python 3.11 or
 newer also satisfies the runtime requirement. For a source install with `pipx`,
 select that installed interpreter explicitly: `pipx install --python /path/to/stable/python .`.
