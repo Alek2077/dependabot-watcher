@@ -90,6 +90,14 @@ def exchange(queue: ReviewQueue | None, incoming: BinaryIO, outgoing: BinaryIO, 
             request_id = candidate
         if not isinstance(request.get("operation"), str):
             raise ReviewQueueError("Review operation must be a string.")
+        # Defer the updater dependency to avoid native/queue import cycles.
+        # Existing windows must not admit new operations during replacement.
+        from .updating import require_no_update
+        from .update_coordination import UpdateError
+        try:
+            require_no_update(queue.directory if queue is not None else recovery_directory or Path("."))
+        except UpdateError as exc:
+            raise ReviewQueueError(str(exc)) from exc
         if queue is None:
             if recovery_directory is None or request["operation"] not in {"local_sync_targets", "recover_local_sync"}:
                 raise ReviewQueueError("Review configuration is unavailable; only saved local-update observation is supported.")

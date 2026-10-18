@@ -38,6 +38,8 @@ internal sealed partial class BackendQueueWindow
         _checkBranchRefresh.HorizontalAlignment = HorizontalAlignment.Left;
         panel.Children.Add(_checkBranchRefresh);
         _branchRefreshPanel.Content = panel;
+        _branchRefreshPanel.Margin = new Thickness(4, 12, 4, 4);
+        panel.Margin = new Thickness(16, 8, 0, 0);
         _actions.Children.Add(_branchRefreshPanel);
         _branchRefreshHistoryStatusSurface.Children.Add(_branchRefreshHistoryStatus);
         AddCopyIcon(_branchRefreshHistoryStatus);
@@ -159,7 +161,8 @@ internal sealed partial class BackendQueueWindow
         var unused = _branchRefreshRecords.Where(record => record["status"]?.GetValue<string>() is "awaiting_confirmation" or "expired" or "invalidated")
             .OrderByDescending(record => record["sequence"]!.GetValue<long>()).ToList();
         if (records.Count == 0 && unused.Count == 0) return;
-        _branchRefreshHistory.Children.Add(new TextBlock { Text = "PR branch updates", FontSize = 16, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 14, 0, 6) });
+        _branchRefreshHistory.Children.Add(SectionDivider());
+        _branchRefreshHistory.Children.Add(new TextBlock { Text = "PR branch updates", FontSize = 16, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) });
         _branchRefreshHistory.Children.Add(_branchRefreshHistoryStatusSurface);
         foreach (var record in records) {
             var status = record["status"]!.GetValue<string>();
@@ -172,7 +175,10 @@ internal sealed partial class BackendQueueWindow
                 "released" => "Uncertain outcome retained; workflow hold released by you. GitHub may still finish the request. Fresh evidence is required for further actions.",
                 _ => "Update outcome needs checking. No update will be replayed."
             };
-            var text = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
+            var historical = status == "closed"
+                || (status == "updated" && record["base_current"]?.GetValue<bool>() == true);
+            var text = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 4),
+                Foreground = historical ? SystemColors.GrayTextBrush : SystemColors.WindowTextBrush,
                 Text = NativeDisplayText.Escape($"{record["binding"]!["repository"]} · PR #{record["binding"]!["number"]}\n{description}") };
             _branchRefreshHistory.Children.Add(text); AddCopyIcon(text);
             if (pending) {

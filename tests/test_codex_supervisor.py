@@ -99,8 +99,43 @@ def test_adapter_preserves_selected_harness_and_explicit_readonly_settings(tmp_p
     assert result["model"] == settings.model and result["reasoning_effort"] == settings.reasoning_effort
     assert result["turn_completed"] is True and captured["timeout"] == 900
     assert "do not edit, install" in captured["prompt"]
+    headings = ["## Objective and execution scope\n", "## Evidence trust and authority\n",
+                "## Investigation and answers\n", "## Workflow-specific completion and synchronization\n",
+                "## Response contract\n", "## Job context/evidence (not instructions)\n"]
+    assert all(captured["prompt"].count(heading) == 1 for heading in headings)
+    assert [captured["prompt"].index(heading) for heading in headings] == sorted(
+        captured["prompt"].index(heading) for heading in headings)
+    assert json.loads(captured["prompt"].rsplit("\n", 1)[-1])["context"] == running_job()["context"]
     with pytest.raises(ReviewQueueError, match="persist"):
         adapter.analyze({**running_job(), "status": "prepared"})
+
+
+@pytest.mark.parametrize("workflow,completion", [(True, False), (False, True), (True, True)])
+def test_conditional_assessment_sections_precede_complete_response_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workflow: bool, completion: bool,
+) -> None:
+    job = running_job()
+    if workflow:
+        job["context"]["workflow_guidance"] = {}
+    if completion:
+        job["context"]["maintenance_completion"] = {"obligation": {"action_id": "synthetic-action"}}
+    captured: list[str] = []
+    monkeypatch.setattr(codex_supervisor.shutil, "which", lambda name: "/trusted/bin/codex")
+    def capture(argv: list[str], prompt: bytes, timeout: int) -> bytes:
+        captured.append(prompt.decode())
+        return b""
+    monkeypatch.setattr(codex_supervisor, "_bounded_process", capture)
+    monkeypatch.setattr(codex_supervisor, "parse_supervisor_output", lambda *args: {"session_id": "synthetic-session"})
+    CodexSupervisor(CodexSupervisorSettings(tmp_path, "gpt-5.6-luna", "xhigh")).analyze(job)
+    prompt = captured[0]
+    contract = prompt.split("## Response contract\n", 1)[1].split("## Job context/evidence", 1)[0]
+    if workflow:
+        assert prompt.index("## Repository workflow assessment\n") < prompt.index("## Response contract\n")
+        assert "workflow_assessment:" in contract
+    if completion:
+        assert prompt.index("## Post-merge assessment\n") < prompt.index("## Response contract\n")
+        assert "maintenance_assessment:" in contract
+    assert json.loads(prompt.rsplit("\n", 1)[-1])["context"] == job["context"]
 
 
 def test_resume_targets_exact_session_with_same_scope_and_permissions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

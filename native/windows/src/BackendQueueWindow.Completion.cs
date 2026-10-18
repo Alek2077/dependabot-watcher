@@ -14,13 +14,14 @@ namespace WatcherNativeProof;
 internal sealed partial class BackendQueueWindow
 {
     private readonly StackPanel _completionPanel = new() { Visibility = Visibility.Collapsed,
-        Margin = new Thickness(0, 0, 0, 12) };
+        Margin = new Thickness(0, 0, 0, 4) };
     private readonly TextBlock _completionStatus = new() { TextWrapping = TextWrapping.Wrap };
     private readonly StackPanel _completionActions = new();
     private readonly Dictionary<string, (TextBlock Status, StackPanel Actions)> _completionRows = new();
 
     private void InitializeCompletion(StackPanel inspector)
     {
+        _completionPanel.Children.Add(SectionDivider());
         var description = new StackPanel();
         description.Children.Add(new TextBlock { Text = "Post-merge verification", FontSize = 16, FontWeight = FontWeights.SemiBold,
             Margin = new Thickness(0, 0, 0, 6), TextWrapping = TextWrapping.Wrap });
@@ -53,7 +54,7 @@ internal sealed partial class BackendQueueWindow
             };
             var status = new TextBlock { Text = $"{review.Binding["repository"]} · PR #{review.Binding["pull_request"]}\n{reason}",
                 TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 4) };
-            var row = new StackPanel();
+            var row = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
             row.Children.Add(status);
             AddCopyIcon(status);
             var actions = new StackPanel();

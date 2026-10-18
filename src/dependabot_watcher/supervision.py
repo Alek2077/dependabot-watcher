@@ -50,6 +50,8 @@ def _validate_result(result: object, context: Mapping[str, Any]) -> None:
 def _validate_result_contract(result: object, context: Mapping[str, Any]) -> None:
     """Agent statements remain advice; they cannot supply executable commands."""
     fields = {"summary", "recommendations", "replies"}
+    if "workflow_guidance" in context:
+        fields.add("workflow_assessment")
     completion = context.get("maintenance_completion")
     if completion is not None:
         fields.add("maintenance_assessment")
@@ -59,6 +61,9 @@ def _validate_result_contract(result: object, context: Mapping[str, Any]) -> Non
             or not isinstance(result["recommendations"], list) or len(result["recommendations"]) > 1000
             or not isinstance(result["replies"], list) or len(result["replies"]) > 2000):
         raise ReviewQueueError("Supervisor result has an invalid bounded schema.")
+    if "workflow_guidance" in context:
+        from .workflow_assessment import validate_assessment
+        validate_assessment(result["workflow_assessment"], context)
     if completion is not None:
         assessment = result["maintenance_assessment"]
         if (not isinstance(assessment, dict) or set(assessment) != {"action_id", "conclusion", "explanation"}
@@ -103,7 +108,7 @@ def _validate_context(context: Mapping[str, Any]) -> None:
               "repository_plan", "evidence_status", "proposals", "retired_proposals", "mutation_authorized"}
     # Preserve existing development journals; new jobs bind the configured
     # supervisor policy as well. Missing legacy policy is never launch consent.
-    if (not fields <= set(context) or set(context) - fields - {"supervisor", "workspace_evidence", "recent_actions", "previous_assessment", "local_sync_observations", "maintenance_completion", "validation_capability_revision"}
+    if (not fields <= set(context) or set(context) - fields - {"supervisor", "workspace_evidence", "recent_actions", "previous_assessment", "local_sync_observations", "maintenance_completion", "validation_capability_revision", "workflow_guidance"}
             or ("supervisor" in context and not isinstance(context["supervisor"], dict))
             or type(context["schema_version"]) is not int or context["schema_version"] != 1
             or not isinstance(context["repository"], str)
@@ -117,6 +122,9 @@ def _validate_context(context: Mapping[str, Any]) -> None:
             or not isinstance(context["proposals"], list) or len(context["proposals"]) > 1000
             or not isinstance(context["retired_proposals"], list) or len(context["retired_proposals"]) > 100):
         raise ReviewQueueError("Supervisor context has an invalid bounded schema.")
+    if "workflow_guidance" in context:
+        from .workflow_assessment import validate_guidance
+        validate_guidance(context["workflow_guidance"])
     if ("validation_capability_revision" in context
             and context["validation_capability_revision"] not in ("merged_action_v1", "tree_cache_history_v2")):
         raise ReviewQueueError("Supervisor validation capability revision is invalid.")
@@ -354,11 +362,11 @@ class SupervisorJobs:
             value = max(value, _time(not_before) + timedelta(microseconds=1))
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    def _load(self) -> dict[str, Any]:
+    def _load(self, *, read_only: bool = False) -> dict[str, Any]:
         path = self.queue.directory / _PATH
         if not (path.exists() or path.is_symlink()):
             return {"schema_version": 1, "jobs": {}}
-        state = load_private_json(self.queue.directory, _PATH, maximum_bytes=_MAX_BYTES)
+        state = load_private_json(self.queue.directory, _PATH, maximum_bytes=_MAX_BYTES, read_only=read_only)
         if (set(state) != {"schema_version", "jobs"} or type(state["schema_version"]) is not int
                 or state["schema_version"] != 1 or not isinstance(state["jobs"], dict)
                 or len(state["jobs"]) > _MAX_JOBS):

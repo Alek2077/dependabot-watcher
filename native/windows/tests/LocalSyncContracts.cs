@@ -39,6 +39,16 @@ internal static class LocalSyncContracts
         var target = new JsonObject { ["repository"] = "example-org/example-app", ["directory"] = "/owned/checkout",
             ["branch"] = "integration", ["target_id"] = new string('a', 32) };
         var binding = (JsonObject)target.DeepClone();
+        var workflow = new JsonObject { ["state"] = "ready", ["method"] = "fast_forward",
+            ["message"] = "The assessed workflow permits a separately approved clean fast-forward." };
+        Call("WorkflowState", workflow);
+        var incompatible = (JsonObject)workflow.DeepClone(); incompatible["method"] = "rebase";
+        Refused("WorkflowState", incompatible);
+        incompatible["state"] = "unsupported";
+        if ((string)Call("WorkflowState", incompatible)! != "unsupported")
+            throw new InvalidDataException("A different integration method was relabelled as fast-forward readiness.");
+        var unknownWorkflow = new JsonObject { ["state"] = "assessment_needed", ["message"] = "Relevant guidance conflicts." };
+        Call("WorkflowState", unknownWorkflow);
         var observation = new JsonObject { ["target_id"] = target["target_id"]!.GetValue<string>(),
             ["status"] = "current", ["mutation_performed"] = false, ["checked_at"] = "2026-10-17T20:00:00Z",
             ["message"] = "Local branch matched the checked remote commit.",

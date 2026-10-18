@@ -28,6 +28,7 @@ from .github import GitHubError
 from .review_queue import ReviewQueueError
 from .runtime_state import RuntimeStateError, _read_private_json_object, ensure_private_directory, load_private_json, run_lock, save_private_json, validate_user_owned_directory
 from .supervisor_workspace import _git as _workspace_git, _github_repository
+from .workflow_assessment import checkout_workflow, require_checkout_workflow
 
 
 class LocalSyncError(ReviewQueueError):
@@ -118,8 +119,15 @@ def _fetch_credential_overrides(directory: Path, gh: str) -> tuple[str, ...]:
 
 def _validate_binding(binding: Any) -> None:
     fields = _LOCAL_FIELDS | {"target_id", "target_sha", "commits"}
-    if not isinstance(binding, dict) or set(binding) not in (fields, fields | {"tracking_refresh"}):
+    if (not isinstance(binding, dict) or not fields <= set(binding)
+            or set(binding) - fields - {"tracking_refresh", "workflow"}):
         raise LocalSyncError("Synchronization checkout binding is malformed.")
+    workflow = binding.get("workflow")
+    if workflow is not None and (not isinstance(workflow, dict)
+            or workflow.get("state") not in {"ready", "operator_review"} or workflow.get("method") != "fast_forward"
+            or not isinstance(workflow.get("message"), str) or not workflow["message"].strip()
+            or len(workflow["message"].encode()) > 8192):
+        raise LocalSyncError("Synchronization workflow assessment is malformed.")
     for key in ("repository", "directory", "branch", "git_directory", "common_directory"):
         if not isinstance(binding[key], str) or not binding[key] or any(ord(char) < 32 for char in binding[key]):
             raise LocalSyncError("Synchronization checkout identity is malformed.")
@@ -384,6 +392,7 @@ def observe_checkout(config: WatcherConfig, config_path: Path, target: dict[str,
     try:
         _current_config(config, config_path)
         repository, checkout = _target(config, target["target_id"])
+        observed["workflow"] = checkout_workflow(config, directory, repository, checkout.directory, checkout.branch)
         local = _local_state(repository, checkout)
         _separate_control_paths(local, config_path, directory)
         observed["head_sha"] = local["head_sha"]
@@ -417,6 +426,7 @@ def prepare_sync(config: WatcherConfig, config_path: Path, directory: Path, clie
     """Read live state and acquire missing objects, without integrating a branch."""
     _current_config(config, config_path)
     repository, target = _target(config, target_id)
+    workflow = require_checkout_workflow(config, directory, repository, target.directory, target.branch)
     local = _local_state(repository, target)
     _separate_control_paths(local, config_path, directory)
     path = Path(target.directory)
@@ -463,8 +473,11 @@ def prepare_sync(config: WatcherConfig, config_path: Path, directory: Path, clie
     _check_collisions(path, local["head_sha"], target_sha)
     # Native two-tree safety additionally checks tracked/untracked changes.
     _git(path, "read-tree", "--dry-run", "-m", "-u", local["head_sha"], target_sha)
+    if require_checkout_workflow(config, directory, repository, target.directory, target.branch) != workflow:
+        raise LocalSyncError("Workflow guidance changed during preflight; ask the agent to reassess before approving an update.")
     binding = {**local, "target_id": target_id, "target_sha": target_sha,
-               "commits": int(_git(path, "rev-list", "--count", local["head_sha"] + ".." + target_sha))}
+               "commits": int(_git(path, "rev-list", "--count", local["head_sha"] + ".." + target_sha)),
+               "workflow": workflow}
     if refresh_tracking:
         binding["tracking_refresh"] = tracking
     with run_lock(directory):
@@ -592,8 +605,13 @@ def confirm_sync(config: WatcherConfig, config_path: Path, directory: Path, clie
                 or not secrets.compare_digest(token, _token(review_id, binding))):
             raise LocalSyncError("Synchronization approval expired or changed; review the exact checkout again.")
         repository, target = _target(config, binding["target_id"])
+        if binding.get("workflow") != require_checkout_workflow(config, directory, repository, target.directory, target.branch):
+            raise LocalSyncError("Workflow assessment changed or this legacy review lacks it; review the local update again.")
         def check() -> None:
             _current_config(config, config_path)
+            workflow = require_checkout_workflow(config, directory, repository, target.directory, target.branch)
+            if binding.get("workflow") != workflow:
+                raise LocalSyncError("Workflow assessment changed or this legacy review lacks it; review the local update again.")
             actual = _local_state(repository, target)
             if actual != {key: binding[key] for key in _LOCAL_FIELDS}:
                 raise LocalSyncError("Local checkout identity, branch or files changed; nothing will be overwritten.")

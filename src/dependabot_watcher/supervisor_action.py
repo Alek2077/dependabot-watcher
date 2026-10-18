@@ -12,6 +12,7 @@ from .runtime_state import load_private_json, validate_user_owned_directory
 from .supervision import SupervisorJobs
 from .supervisor_runner import validate_observation
 from .supervisor_workspace import verify_supervisor_runtime_binding, verify_supervisor_workspace
+from .workflow_assessment import verify_workflow_for_action
 
 
 def require_supervisor_recommendation(
@@ -73,6 +74,7 @@ def require_supervisor_recommendation(
         raise ReviewQueueError("Supervised action has no matching provider-completion receipt.")
     observation = {key: value for key, value in observed.items() if key not in {"job_id", "context_digest"}}
     validate_observation(observation, job)
+    verify_workflow_for_action(job["context"], job["result"])
     recommendation = next((item for item in job["result"]["recommendations"]
                            if item["proposal_id"] == matches[0]["proposal_id"]), None)
     if (recommendation is None or recommendation["conclusion"] != "recommend"

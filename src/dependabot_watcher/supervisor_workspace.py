@@ -109,8 +109,8 @@ def _github_repository(remote: str) -> str:
     return normalize_repository_name(path.removesuffix(".git"), "supervisor workspace origin")
 
 
-def _instruction_fingerprint(path: Path) -> str:
-    """Hash selected trusted instructions, never journal their contents.
+def _instruction_payload(path: Path) -> bytes:
+    """Read bounded trusted instructions without journalling their contents.
 
     An explicitly selected AGENTS symlink is supported; its owned regular
     target is verified and the link must still resolve to that target afterward.
@@ -144,12 +144,16 @@ def _instruction_fingerprint(path: Path) -> str:
                 != (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)):
             raise ReviewQueueError("Supervisor instruction source changed during verification.")
         bytes(payload).decode("utf-8")
-        return hashlib.sha256(payload).hexdigest()
+        return bytes(payload)
     except (OSError, UnicodeError, RuntimeStateError) as exc:
         raise ReviewQueueError("Supervisor instruction source is unavailable or untrusted.") from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _instruction_fingerprint(path: Path) -> str:
+    return hashlib.sha256(_instruction_payload(path)).hexdigest()
 
 
 @dataclass(frozen=True)

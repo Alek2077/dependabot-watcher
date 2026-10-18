@@ -7,6 +7,17 @@ namespace WatcherNativeProof;
 
 internal static class NativeLocalSyncReview
 {
+    internal static string WorkflowState(JsonObject? workflow) {
+        if (workflow is null) return "not_reported"; // Older read-only backends; executor still owns admission.
+        var state = workflow["state"]?.GetValue<string>();
+        if (state is not ("ready" or "operator_review" or "assessment_needed" or "unsupported"))
+            throw new InvalidDataException("Checkout workflow state is invalid.");
+        Text(workflow, "message", "\\A[\\s\\S]{1,8192}\\z");
+        if (state is "ready" or "operator_review" && workflow["method"]?.GetValue<string>() != "fast_forward")
+            throw new InvalidDataException("Checkout workflow does not match the supported integration capability.");
+        return state;
+    }
+
     private static string Text(JsonNode value, string key, string pattern) {
         var text = value[key]?.GetValue<string>() ?? throw new InvalidDataException("Local update identity is missing.");
         if (!Regex.IsMatch(text, pattern, RegexOptions.CultureInvariant))

@@ -81,10 +81,16 @@ def verify_native_component(state_directory: Path) -> tuple[Path, str, str]:
 
 def _prepare_native_review(
     config_path: Path, state_directory: Path, *, component: Path | None = None,
-    existing_only: bool = False,
+    existing_only: bool = False, backend_python: Path | None = None, updating: bool = False,
 ) -> tuple[Path, Path, str]:
     """Bind the same immutable installed command for review and notification."""
     distribution, user = _wsl_identity()
+    if not updating:
+        from .updating import require_no_update
+        require_no_update(state_directory.expanduser().absolute())
+    interpreter = backend_python or Path(sys.executable).absolute()
+    if not interpreter.is_absolute() or not interpreter.is_file():
+        raise NativeReviewError("The installed backend interpreter is unavailable.")
     config_path = Path(os.path.abspath(config_path.expanduser()))
     load_config(config_path)  # Fail before creating launch state for invalid policy.
     if existing_only and (component is not None
@@ -105,7 +111,7 @@ def _prepare_native_review(
             "-u", "PYTHONPATH",
             "PATH=" + ":".join((str(Path.home() / ".local/bin"), str(Path.home() / ".npm-global/bin"),
                                   "/usr/local/bin", "/usr/bin", "/bin")),
-            str(Path(sys.executable).absolute()), "-I", "-m", "dependabot_watcher.review_bridge",
+            str(interpreter), "-I", "-m", "dependabot_watcher.review_bridge",
             "--config", str(config_path), "--state-dir", str(state)],
     }
     # Never overwrite a launch profile under an existing window. Distinct
@@ -162,6 +168,19 @@ def submit_scheduled_supervisor(
 
 
 def _submit_native_owner(
+    config_path: Path, state_directory: Path, *, component: Path | None = None,
+    scheduled_run_id: str | None = None, notification_mode: str = "off",
+) -> dict[str, Any]:
+    # The same lock covers the final update fence, profile selection and actual
+    # process submission. A prechecked old profile cannot launch after an
+    # updater's owner scan and then outlive fence removal.
+    _wsl_identity()  # Unsupported hosts must refuse before creating lock/state directories.
+    with run_lock(state_directory.expanduser().absolute(), wait_seconds=2):
+        return _submit_native_owner_under_lock(config_path, state_directory, component=component,
+            scheduled_run_id=scheduled_run_id, notification_mode=notification_mode)
+
+
+def _submit_native_owner_under_lock(
     config_path: Path, state_directory: Path, *, component: Path | None = None,
     scheduled_run_id: str | None = None, notification_mode: str = "off",
 ) -> dict[str, Any]:
@@ -234,6 +253,22 @@ def native_notification(
     config_path: Path, state_directory: Path, *, operation: str,
     run_id: str | None = None, component: Path | None = None,
 ) -> dict[str, Any]:
+    """Serialize profile selection and sender admission with replacement."""
+    _wsl_identity()
+    if operation in {"status", "remove"} and (component is not None
+            or not (state_directory.expanduser() / "native-review/component.json").is_file()):
+        raise NativeReviewError("Notification status/removal requires an existing registered component.")
+    # Hold admission through the sender, but not the root journal lock: the
+    # notification child asks that backend for its current attention summary.
+    with run_lock(state_directory.expanduser().absolute() / "native-notifications", wait_seconds=2):
+        return _native_notification_under_lock(config_path, state_directory,
+            operation=operation, run_id=run_id, component=component)
+
+
+def _native_notification_under_lock(
+    config_path: Path, state_directory: Path, *, operation: str,
+    run_id: str | None = None, component: Path | None = None,
+) -> dict[str, Any]:
     """Use the selected component without opening a window or granting authority.
 
     Test deliberately bypasses reminder deduplication but changes no run/queue
@@ -247,10 +282,11 @@ def native_notification(
     if operation != "run" and run_id is not None:
         raise NativeReviewError("Notification diagnostics cannot select a run.")
     try:
-        candidate, profile, distribution = _prepare_native_review(
-            config_path, state_directory, component=component, existing_only=operation in {"status", "remove"},
-        )
-        executable = windows_host_path(candidate)
+        with run_lock(state_directory.expanduser().absolute(), wait_seconds=2):
+            candidate, profile, distribution = _prepare_native_review(
+                config_path, state_directory, component=component, existing_only=operation in {"status", "remove"},
+            )
+            executable = windows_host_path(candidate)
     except WindowsHelperError as exc:
         raise NativeReviewError("Windows path helpers are unavailable; notification was not submitted.") from exc
     arguments = ["--launch-file", _unc_path(profile / "backend-launch.json", distribution), flags[operation]]

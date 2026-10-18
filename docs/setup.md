@@ -23,6 +23,25 @@ dependabot-watcher doctor --config PROFILE --state-dir STATE
 
 Selection can open the saved review queue but starts no model call. `doctor` checks the selected launcher/assembly fingerprints without starting the component; it does not prove runtime instruction loading, model completion or every packaged dependency. An updated component must be extracted separately and deliberately reselected, not overwritten in place. A development build found on a maintainer's machine is pre-existing test infrastructure, not evidence that fresh-user package acquisition works.
 
+### Coordinated WSL/uv update (development)
+
+For an existing uv-owned WSL installation with a selected Windows component, the development `update` command coordinates replacement. Acquire a clean checkout of the exact reviewed GitHub commit and a matching supplied Windows package first; verify package provenance/checksums and extract it into a distinct stable directory. Do not use the active development checkout or overwrite the selected component. Other installers/platforms retain their separate update procedures; this command does not migrate them silently.
+
+Run the new updater from that acquired source, so an older installed CLI need not already contain it. `uv run --no-project --with SOURCE` selects a temporary runner without replacing the installed tool. Replace all placeholders with the actual discovered installation/profile paths:
+
+```bash
+uv run --no-project --with SOURCE dependabot-watcher update \
+  --config PROFILE --state-dir STATE \
+  --source SOURCE --source-commit FULL_COMMIT \
+  --native-component NEW_COMPONENT_EXE --installed-command INSTALLED_COMMAND
+```
+
+This previews effects without applying them. After installation approval, repeat with `--apply`. The updater stages and probes the backend before interruption, verifies the exact installed tool and matching component, invokes Exit on matching Watcher owners, and waits for graceful shutdown. A hidden queue may briefly reopen through its existing private activation profile so its own Exit control is available; this can bring it forward. Agents should use this supported coordination rather than asking the user to close the window or writing process-kill scripts. Active investigations or unverified owners block replacement; no process is force-killed.
+
+The existing task is temporarily paused by its enabled bit only, then restored with the same definition, triggers and previous enabled/disabled state. No task is removed or recreated, and absence of a task does not create one. Settings and history are retained. Readback verifies restoration; it is not proof of a newly fired scheduled run and does not require the user to watch for another notification.
+
+Preparation also checks candidate readers against disposable copies of the saved journals; unreadable history blocks replacement instead of being reset. An interrupted partial installation retains an update ID, private receipt and new-work fence. Use the same acquired-source runner with `update --config PROFILE --state-dir STATE --recover UPDATE_ID` to finish that exact saved installation; recovery does not merge, investigate or replay a repository action. Valid settings edited since interruption are preserved and revalidated. Changed or missing package files must be restored from the exact verified delivery before recovery; they are not silently trusted. Do not remove the fence or reinstall blindly. A crash after recorded completion uses verification/cleanup-only recovery, not another installation. A completed update whose window could not reopen is reported separately; reopen through the normal `review` command rather than repeating installation. This development mechanism still requires isolated platform acceptance before a release claim.
+
 ## GitHub access and authentication
 
 GitHub authorization is unavoidable for private repositories and Dependabot security alerts. The current implementation uses GitHub CLI as its first GitHub transport and credential broker: the adapter issues bounded `gh pr`, `gh repo`, and `gh api` reads while the core depends on a transport-neutral `GitHubClient` protocol.
@@ -372,4 +391,4 @@ Credentials, tokens, cookies, raw auth responses, environment-file contents, and
 
 Run `dependabot-watcher schedule inventory` before uninstalling the executable in every host context where scheduling was used. Native Windows PowerShell and WSL select separate scheduler contexts and must each be checked when both were configured. Remove each verified registration with its listed `recovery_command`, then repeat inventory in every applicable context and confirm that no verified registrations remain. A name-matching candidate that inventory reports as untrusted requires manual investigation and must not be removed by name alone. Then uninstall with `uv tool uninstall dependabot-watcher` or `pipx uninstall dependabot-watcher`, matching the installer originally used. Uninstalling leaves configuration, run history, plans, and execution audit evidence in place and has no GitHub effect. Delete local configuration or state only after confirming the exact paths and any retention requirement; deleting an audit log is not a recovery mechanism and does not undo a merge.
 
-Prefer exact published versions for updates and rollbacks. Source-based recovery should use an explicitly reviewed tag or commit, never a moving branch; reinstall that checkout with `uv tool install --force .` or `pipx install --force .`, then rerun `doctor`, `inspect`, and `plan` before enabling execution.
+Prefer exact published versions for updates and rollbacks. Source-based recovery should use an explicitly reviewed tag or commit, never a moving branch. For an existing WSL/uv installation with the Windows interface, use the [coordinated procedure](#coordinated-wsluv-update-development) when available in that selected revision. For other supported installer paths, establish that active work has finished before reinstalling the acquired checkout with `uv tool install --force .` or `pipx install --force .`, then rerun `doctor`, `inspect`, and `plan` before enabling execution. A rollback also requires checking that the older backend can read the retained state; do not discard history to force compatibility.

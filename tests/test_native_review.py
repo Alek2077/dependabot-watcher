@@ -11,7 +11,7 @@ import pytest
 
 from dependabot_watcher import cli, native_review
 from dependabot_watcher.native_review import NativeReviewError, native_notification, open_native_review, submit_scheduled_supervisor
-from dependabot_watcher.runtime_state import RuntimeStateError, load_private_json, load_run_state, save_run_state
+from dependabot_watcher.runtime_state import RuntimeStateError, load_private_json, load_run_state, save_run_state, run_lock
 from dependabot_watcher.windows_helpers import WindowsHelperError
 from dependabot_watcher.diagnostics import doctor
 
@@ -416,6 +416,20 @@ def test_notification_test_uses_hidden_bound_component_without_run_state(
     assert "$start.CreateNoWindow = $true" in native_case["calls"][0]["argv"][-1]
     assert not (native_case["state"] / "run-state.json").exists()
     assert not (native_case["state"] / "review-queue.json").exists()
+
+
+def test_notification_sender_can_reenter_backend_state_lock(native_case, monkeypatch):
+    case = native_case
+    notification_submit(case, monkeypatch)
+    submitted = native_review.subprocess.run
+    def child(arguments, **kwargs):
+        # The real notification-run child asks Python for notification_attention.
+        # Holding the root lock while waiting for it would deadlock that request.
+        with run_lock(case["state"]):
+            return submitted(arguments, **kwargs)
+    monkeypatch.setattr(native_review.subprocess, "run", child)
+    receipt = native_notification(case["config"], case["state"], operation="test", component=case["component"])
+    assert receipt["status"] == "accepted"
 
 
 @pytest.mark.parametrize("overrides", [{"notification_id": True}, {"notification_id": 0},

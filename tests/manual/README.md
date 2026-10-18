@@ -1,0 +1,21 @@
+# Opt-in supervisor context acceptance
+
+These tests make real provider calls and are intentionally outside pytest discovery. They supplement deterministic contracts; they do not replace them or authorize changes to a real repository. Obtain approval for the model, reasoning, account, transmitted fixture data and bounded usage before running.
+
+`supervisor_context.py` exercises the configured launcher, actual app-server transport, provider adapter, job lifecycle and structured result validation against synthetic Git repositories and collected evidence. It observes the exact submitted job/context, runtime instruction-source readback and completed policy-file reads rather than trusting an agent's claim that it read instructions. A policy identifier absent from the initial submitted evidence must appear in the accepted result. The fixture covers fresh investigation, launcher-selected same-session continuation and post-merge assessment, followed by local-update prepare/confirm using the real accepted assessment and refusal when guidance changes after preview. Collection and merge transports remain synthetic and never contact GitHub.
+
+Run preview first with the selected Python environment:
+
+```bash
+python tests/manual/supervisor_context.py --output /absolute/new/evidence-directory
+```
+
+For provider acceptance, append `--run-live --model MODEL_ID --reasoning REASONING --account chatgpt` (or explicitly approved `apiKey`). This permits at most three supervisor turns, each bounded to 600 seconds; a turn can contain multiple model requests. It consumes account allowance. Keep ordinary inherited runtime settings; the helper does not change global configuration, silently enable full access or approve arbitrary shell commands. Unexpected permission requests are cancelled unless they are the helper's narrowly recognized reads of its synthetic files.
+
+The referenced policy changes between the initial and resumed turns. The old assessment must become unusable, and the resumed result must incorporate the new policy revision without that revision being supplied in the prompt. This tests current-context delivery rather than only recalling a previous answer. Source hashes are reverified against the accepted response. During local preview/confirmation, guards on the provider entry points detect attempted model calls; the recorded count is observed, not a fixed success label.
+
+Use a wheel built from the candidate and installed in an isolated environment, with pytest available for the reused synthetic state builders. Do not inject the development `src/` directory for installed-path acceptance. The helper refuses the development source import and records the imported Watcher location; verify it resolves to the selected installed artifact. Source-import diagnostics must not be labelled installed acceptance. Retain the first failed attempt and choose a new output directory after a verified correction.
+
+Inspect the saved prompt, readback, command evidence, complete result and remaining decisions—not only the exit code. A passing synthetic run proves those exercised handoffs, not every possible harness, comprehension, live GitHub operation, scheduling or native-window launch. Thread resume is not by itself proof of the product's branch-refresh continuation trigger. Use an applicable additional exercise when changing that trigger or another critical boundary. Missing, stale or conflicting context must preserve user work and refuse dependent action, not be repaired by weakening validation. Negative cases and their exact enforcement should also remain covered by deterministic tests.
+
+`branch_context.py` is the bounded branch-trigger supplement, with the same preview, explicit provider arguments and installed-artifact requirement. It makes one real supervisor turn after the actual branch-update controller's exact review/confirmation, observed update and saved continuation. GitHub transport is synthetic and applies a merge only inside a newly created fixture repository. The test verifies that the exact continuation reaches the supervisor context and a repeated continuation cannot grant a second start or repeat the synthetic update. It does not exercise a live GitHub write or the native button click.

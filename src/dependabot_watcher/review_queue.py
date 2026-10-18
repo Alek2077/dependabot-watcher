@@ -462,6 +462,9 @@ class ReviewQueue:
             "proposals": proposals, "retired_proposals": retired,
             "mutation_authorized": False,
         }
+        if workspace is not None and self.config.supervisor.mode != "off":
+            from .workflow_assessment import guidance_snapshot
+            context["workflow_guidance"] = guidance_snapshot(self.config, repository)
         if (self.config.supervisor.validation_authorized
                 and self.config.supervisor.validation.preparation_authorized):
             # An assessment made before this validation contract cannot
@@ -647,12 +650,18 @@ class ReviewQueue:
         plan = self._current_plan()
         contexts = [self._supervision_context_from_state(repository.name, state, plan)
                     for repository in self.config.repositories]
+        # Shared read-only repository knowledge, separate from supervisor job
+        # context/digest so completing an assessment cannot invalidate itself.
+        from .workflow_assessment import repository_workflow
+        workflows = {repository.name: repository_workflow(self.config, self.directory, repository.name)
+                     for repository in self.config.repositories}
         return {
             "schema_version": 1, "request_id": request_id, "status": "ok", "replayed": replayed,
             "plan_id": plan_id, "evidence_status": evidence_status,
             "next_request_sequence": state["next_request_sequence"],
             "proposals": copy.deepcopy(list(state["proposals"].values())),
             "history": copy.deepcopy(state["history"]),
+            "repository_workflows": workflows,
             "supervisor_context_digests": {
                 context["repository"]: supervisor_context_digest(context)
                 for context in contexts

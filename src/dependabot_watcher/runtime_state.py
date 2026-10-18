@@ -517,7 +517,7 @@ def append_run_record(
 
 
 @contextmanager
-def run_lock(state_directory: Path, *, wait_seconds: float = 0) -> Iterator[Path]:
+def run_lock(state_directory: Path, *, wait_seconds: float = 0, allow_update: bool = False) -> Iterator[Path]:
     """Exclusive state lock; scheduled/action callers remain fail-fast by default.
 
     Small interactive journal exchanges may explicitly wait a bounded interval
@@ -589,6 +589,11 @@ def run_lock(state_directory: Path, *, wait_seconds: float = 0) -> Iterator[Path
                     if time.monotonic() >= deadline:
                         raise RuntimeLockBusyError("Saved state is busy; another operation holds its lock.") from exc
                     time.sleep(min(.01, max(0, deadline - time.monotonic())))
+        # Check after acquiring, not only at entry points: a previously admitted
+        # operation may have waited while an updater left a recovery fence.
+        # Only the updater's own state transaction may explicitly bypass it.
+        if not allow_update and _path_exists(directory / "update-active.json"):
+            raise RuntimeStateError("Watcher update recovery is required before new saved-state work.")
         metadata = json.dumps(
             {"pid": os.getpid(), "host": socket.gethostname()},
             sort_keys=True,

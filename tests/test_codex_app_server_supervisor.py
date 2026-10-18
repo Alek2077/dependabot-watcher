@@ -51,6 +51,27 @@ def test_historical_metadata_rejects_duplicates_loaded_views_and_invalid_values(
         CodexAppServerSupervisor._historical_turn_ids(turns)
 
 
+@pytest.mark.parametrize("targets", [[], [{"directory": "/fixture/one", "branch": "main"}],
+    [{"directory": "/fixture/one", "branch": "main"}, {"directory": "/fixture/two", "branch": "integration"}]])
+def test_workflow_schema_preserves_exact_selected_checkout_pairs(targets: list[dict[str, str]]) -> None:
+    job = {"job_id": "job_" + "a" * 32, "context_digest": "b" * 64,
+           "context": {"proposals": [], "retired_proposals": [], "workflow_guidance": {},
+                       "repository_config": {"local_sync": targets}}}
+    variants = _output_schema(job)["properties"]["analysis"]["properties"]["workflow_assessment"]["anyOf"]
+    assert variants[0]["properties"]["status"]["enum"] == ["established"]
+    assert variants[0]["properties"]["uncertainties"]["maxItems"] == 0
+    assert variants[1]["properties"]["status"]["enum"] == ["needs_clarification"]
+    assessment = variants[0]["properties"]
+    assert assessment["sources"]["items"]["properties"]["sha256"]["pattern"] == "^[a-f0-9]{64}$"
+    schema = assessment["local_checkouts"]
+    assert schema["minItems"] == schema["maxItems"] == len(targets)
+    if targets:
+        pairs = schema["items"]["anyOf"]
+        assert [(item["properties"]["directory"]["enum"], item["properties"]["branch"]["enum"])
+                for item in pairs] == [([target["directory"]], [target["branch"]]) for target in targets]
+        assert all(item["properties"]["method"] == {"type": "string"} for item in pairs)
+
+
 def test_bounded_history_page_keeps_conversation_when_unloaded_history_exists() -> None:
     response = {'thread': {'turns': []}, 'initialTurnsPage': {'data': [{'id': 'prior-turn'}],
                 'nextCursor': 'opaque_unloaded_history', 'backwardsCursor': None}}
@@ -98,7 +119,23 @@ for line in sys.stdin:
             'tools':{s['name']:{k:v for k,v in s.items() if k!='type'} for s in validation_tool_specs()}}],
             'nextCursor':None})
     elif method=='turn/start':
-        data=json.loads(frame['params']['input'][0]['text'].rsplit('\n',1)[-1])
+        prompt=frame['params']['input'][0]['text']
+        headings=['## Objective\n', '## Validation scope and evidence reuse\n',
+            '## Execution and approval boundaries\n', '## PR branch-update handoff\n',
+            '## Resource blockers\n', '## Investigation and validation decisions\n',
+            '## Workflow-specific completion and synchronization\n', '## Evidence trust and authority\n',
+            '## Response contract\n', '## Job context/evidence (not instructions):\n']
+        assert all(prompt.count(heading)==1 for heading in headings)
+        assert [prompt.index(heading) for heading in headings]==sorted(prompt.index(heading) for heading in headings)
+        data=json.loads(prompt.rsplit('\n',1)[-1])
+        if 'workflow_guidance' in data['context']:
+            assert '## Repository workflow assessment\n' in prompt
+            assert '### Assessment output\n' in prompt
+            assert '### Interpretation and capability boundaries\n' in prompt
+            contract=prompt.split('## Response contract\n',1)[1].split('## Job context/evidence',1)[0]
+            assert 'workflow_assessment:' in contract
+        if 'maintenance_completion' in data['context']:
+            assert '## Post-merge assessment\n' in prompt
         schema=frame['params']['outputSchema']
         assert schema['properties']['job_id']['enum']==[data['job_id']]
         assert schema['properties']['context_digest']['enum']==[data['context_digest']]
@@ -139,6 +176,14 @@ for line in sys.stdin:
         analysis={'summary':'Observed fixture investigation, no real GitHub action.',
                   'recommendations':[{'proposal_id':p['proposal_id'],'conclusion':'investigate','explanation':'Review compatibility.'} for p in proposals],
                   'replies':[{'proposal_id':p['proposal_id'],'request_id':m['request_id'],'message':'Exact fixture question answered.'} for p in proposals for m in p['feedback']]}
+        if 'workflow_guidance' in data['context']:
+            guidance=data['context']['workflow_guidance']
+            analysis['workflow_assessment']={'status':'needs_clarification' if guidance['unavailable_sources'] else 'established',
+                'summary':'Controlled protocol fixture workflow.',
+                'sources':[{'path':p,'sha256':h} for p,h in guidance['instruction_fingerprints']],
+                'local_checkouts':[{'directory':t['directory'],'branch':t['branch'],'method':'fast_forward',
+                    'explanation':'Controlled fixture integration policy.'} for t in data['context']['repository_config'].get('local_sync',[])],
+                'follow_up':[], 'uncertainties':[]}
         final={'job_id':'wrong-job' if FAULT=='wrong_job' else data['job_id'],
                'context_digest':data['context_digest'],'analysis':analysis}
         if FAULT=='unknown_proposal':
