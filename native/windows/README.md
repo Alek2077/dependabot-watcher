@@ -1,10 +1,6 @@
 # Windows review component
 
-This directory brings the native review source into the repository. It is a
-development integration, not yet an ordinary installed companion or a public
-platform-support claim. Python remains the portable evidence, job, permission,
-execution and recovery engine. This component supplies one aggregate window,
-tray access and Windows notifications; it does not implement GitHub policy.
+This directory contains the native review source. The self-contained Windows x64 companion is available in the [0.4.0a1 experimental alpha](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a1); publication does not establish broader platform acceptance. Python remains the portable evidence, job, permission, execution and recovery engine. This component supplies one aggregate window, tray access and Windows notifications; it does not implement GitHub policy.
 
 The current sources preserve the tested development assembly name and
 diagnostics. The development CLI can select an existing component with
@@ -39,7 +35,7 @@ this component or the Python distribution.
 
 The project uses C#/WPF on .NET 10 and Windows App SDK 2.5.1, with self-contained
 Windows x64 deployment. Contributors need the Windows build tools; end users
-will receive a built component rather than install an SDK. The basic Python
+download the built component rather than install an SDK. The basic Python
 CLI remains usable without its runtime; the current WSL scheduled AI supervisor
 requires the component, although the review window need not stay visible.
 
@@ -63,7 +59,7 @@ python native/windows/package.py --published-directory PUBLISH_DIRECTORY --asset
 
 The assets file is the build's resolved `obj/project.assets.json`; when packaging a Windows build from WSL, `--package-cache` selects that build's mounted NuGet cache. The packager includes runtime dependencies, project license, resolved dependency notices and a per-file SHA-256 manifest. It excludes debug symbols and refuses recognized private state, logs and linked files. Keep the selected build and cache immutable during packaging; identity/change checks are not isolation against a concurrent same-user writer. The source commit is supplied by the maintainer: packaging does not independently prove build provenance, sign the executable, register it or publish a release. Integrity hashes are not publisher authentication.
 
-The release workflow builds and checks this component on Windows alongside the Python distributions. A manual workflow run rehearses the builds without publishing; a version-tag push can proceed to publication only after both builds succeed. The GitHub release receives the Windows x64 ZIP and `SHA256SUMS`, with build provenance attestations available through GitHub; the ZIP stays separate from the Python package. This workflow still requires a successful hosted release rehearsal before it is accepted for publication. It produces an unsigned archive, and extraction and component selection remain explicit user steps.
+The release workflow is configured to build and check this component on Windows alongside the Python distributions. A manual workflow run rehearses the builds without publishing; a version-tag push can proceed to publication only after both builds succeed. That hosted path includes the Windows x64 ZIP, checksums and build attestations, but still requires a successful hosted release rehearsal before it is accepted. The published 0.4.0a1 alpha instead uses locally built packages under an explicitly approved exception and has no GitHub-hosted build attestation; see the [release validation record](../../docs/validation.md#public-alpha-release--2026-10-18). The archive is unsigned, and extraction and component selection remain explicit user steps.
 
 For a supplied package, extract the complete ZIP into a stable user-owned directory and retain the runtime files beside `WatcherNativeProof.exe`. From WSL, select that executable with `dependabot-watcher review --native-component PATH`, using the intended configuration and state. Do not replace a registered build in place: extract an update into a new versioned directory and deliberately reselect it. The basic Python CLI does not require this ZIP; the current WSL scheduled AI supervisor does, even when its window remains hidden. A complete guided install/update path and signed release distribution remain separate acceptance work; users must not install build tools merely to run a packaged component.
 
