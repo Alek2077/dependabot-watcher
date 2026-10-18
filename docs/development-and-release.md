@@ -32,9 +32,9 @@ After changing the window, personally inspect the rendered result at representat
 
 ## The installation/update channel must actually exist
 
-### Current private prerelease: reviewed GitHub source
+### Reviewed GitHub source before packaged releases
 
-The [README installation](../README.md#install-and-set-up) and [update instructions](../README.md#update-reset-uninstall-or-roll-back) currently support a clean checkout of an exact reviewed GitHub tag or commit, installed by `uv` or `pipx`. “Pinned source” means selecting that exact revision, not following moving `main` and not using the active development checkout. Acquire it independently from GitHub; verify the revision and clean state before installation. Existing private repository access remains a prerequisite until publication.
+The [README installation](../README.md#install-and-set-up) and [update instructions](../README.md#update-reset-uninstall-or-roll-back) support a clean checkout of an exact reviewed GitHub tag or commit, installed by `uv` or `pipx`. “Pinned source” means selecting that exact revision, not following moving `main` and not using the active development checkout. Acquire it independently from GitHub; verify the revision and clean state before installation. Private source requires repository access; making the source public removes that prerequisite, but does not create downloadable releases or remove authentication requirements for Dependabot evidence.
 
 Use the README's source reinstall/update instructions from that clean, pinned acquisition with the installer that owns the existing tool. This is a supported source update, not a PyPI release. The README's Python 3.14 command is an example with an explicit interpreter selection, not an instruction to silently migrate an installation using another supported interpreter. Establish the current installer and interpreter first; preserve them or obtain approval for a deliberate migration rather than assuming a reinstall preserves them automatically.
 
@@ -62,7 +62,9 @@ Hosted build/startup failure is not a successful release. Permission to merge de
 
 Before package publication, maintainers must verify functioning hosted CI and a successful hosted release rehearsal for the selected candidate. This is an acceptance requirement, not an additional automatic gate enforced by the tag-triggered workflow; retain the run identity and source revision with release evidence.
 
-## Updating without losing the ongoing trial
+When hosted CI cannot start, keep a dated explanation and revision-bound local results in the [validation record](validation.md), with a short README status link while the restriction is active. PRs should summarize the checks actually completed and disclose skipped hosted checks; commit messages describe the change rather than repeating the incident. Local checks are not a green hosted status. Preserve a representative failure or its exact diagnostic as evidence. Repeatedly deleting failed runs is not a maintenance strategy: if every push or PR creates the same known startup failure, the maintainer may deliberately suspend the affected workflow until account access changes, retain the workflow definition, and disclose the suspension. Re-enable it and verify the intended revision before claiming recovery. Remove the current README notice after recovery while retaining the dated historical record.
+
+## Updating without losing ongoing use
 
 Before updating, locate the actual installed command, native component selection, configuration, state and scheduler registration. Record the current and intended commit/version and check for active investigation or action work. Defer replacement of either backend or native binaries until active work has reached a verified terminal state; use supported recovery if it cannot finish normally, never kill an approved action to replace binaries. For the supported WSL/uv combination, use the [coordinated updater](setup.md#coordinated-wsluv-update-development): stage first, gracefully exit verified owners automatically, pause/restore the same task without rewriting its definition, and verify replacement before resuming. Do not make manual window closure or task removal/reinstallation routine user homework. Other paths must establish equivalent coordination or report the update as blocked rather than replacing a running installation.
 
@@ -70,7 +72,7 @@ Keep settings, selected targets, saved decisions, conversations, audit history a
 
 After updating, verify that the command resolves to the intended installed tool rather than the development import path; version alone may be insufficient while several source revisions share a prerelease version. Verify the selected native component, saved-profile loading, queue/outcome visibility and native scheduler readback. Do not approve a new merge, invoke paid inference or synchronize a checkout merely to prove the update; those keep their own scope and consent requirements.
 
-An unchanged normal-use trial continues from its saved state. This does not waive applicable fresh-install or fresh-session milestone checkpoints in the validation workflow: run those separately with isolated profiles, preserving the continuing trial. Fresh acquisition, update preservation and ongoing usability are separate evidence claims; label which were exercised. Developer assistance does not erase the usefulness of later usability observations, but it must not be counted as an unassisted update.
+Continuing normal use resumes from its saved state. This does not waive applicable fresh-install or fresh-session milestone checkpoints in the validation workflow: run those separately with isolated profiles, preserving the continuing installation. Fresh acquisition, update preservation and ongoing usability are separate evidence claims; label which were exercised. Developer assistance does not erase the usefulness of later usability observations, but it must not be counted as an unassisted update.
 
 ## Storage and cleanup
 
