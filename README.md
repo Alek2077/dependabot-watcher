@@ -18,14 +18,13 @@ We recommend an agent that can investigate and test updates—your own or Watche
 
 We are working toward [complete agent-led maintenance](#direction-complete-agent-led-maintenance): investigate, validate, handle approved changes, update selected working copies and report the results. That full loop is not finished yet.
 
+**Validation status (2026-10-18):** Hosted CI is temporarily suspended after GitHub refused to start jobs because of an account-level authorization restriction. The latest full local Python 3.14 regression passed **1,821 tests with two skips**, with additional local type, packaging and Windows checks. Hosted CI has not verified the current revision. See the [dated validation evidence and limitations](docs/validation.md#local-alpha-delivery-and-hosted-ci-restriction--2026-10-18).
+
 ## Install and set up
 
-During the private prerelease, install a reviewed source revision with `uv`
-(recommended) or `pipx`. No published Python release is claimed here.
-Homebrew and standalone installers remain later distribution options.
+During development, install a reviewed source revision with `uv` (recommended) or `pipx`. No published Python release is claimed here. Homebrew and standalone installers remain later distribution options.
 
-Install an explicitly reviewed tag or commit from a source checkout; private
-source access is required until the repository becomes public:
+Install an explicitly reviewed tag or commit from a source checkout. Cloning a private repository requires access; public source can be acquired without private repository membership. Collecting Dependabot evidence still requires the GitHub authentication described below:
 
 ```bash
 gh repo clone Alek2077/dependabot-watcher
@@ -38,9 +37,7 @@ The moving `main` branch is prerelease source, not a reproducible release target
 
 For a pinned source installation, use this README and the `docs/` files from the same checkout for commands, contracts and support status. Web links below that contain `blob/main` show the latest development documentation, which may differ from your installed revision; use the corresponding local file or view it at your selected tag/commit instead.
 
-The example asks `uv` for stable Python 3.14; an existing stable Python 3.11 or
-newer also satisfies the runtime requirement. For a source install with `pipx`,
-select that installed interpreter explicitly: `pipx install --python /path/to/stable/python .`.
+The example asks `uv` for stable Python 3.14; an existing stable Python 3.11 or newer also satisfies the runtime requirement. For a source install with `pipx`, select that installed interpreter explicitly: `pipx install --python /path/to/stable/python .`.
 
 Prerequisites:
 
@@ -58,15 +55,13 @@ gh auth status
 gh auth login # only if no suitable account is authenticated
 ```
 
-After the first published PyPI release, install an explicitly selected release
-version with `uv` (replace `VERSION` with that release):
+After the first published PyPI release, install an explicitly selected release version with `uv` (replace `VERSION` with that release):
 
 ```bash
 uv tool install --python 3.14 'dependabot-watcher==VERSION'
 ```
 
-`uv` installs Watcher in an isolated user-level tool environment and exposes
-the `dependabot-watcher` command without modifying the system Python.
+`uv` installs Watcher in an isolated user-level tool environment and exposes the `dependabot-watcher` command without modifying the system Python.
 
 Alternatively, install with `pipx`:
 
@@ -105,21 +100,9 @@ dependabot-watcher plan
 
 ## Agent operation
 
-Dependabot Watcher is designed to remain usable directly while also giving
-agents a stable CLI and versioned JSON contract. The
-[agent operator guide](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/agent-operator-guide.md) defines the portable
-workflow and authority boundaries. The
-[agent support matrix](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/agent-support-matrix.md) distinguishes an agent
-being able to operate the CLI, availability of a packaged skill/plugin, and the
-watcher's own optional advisory-provider support.
+Dependabot Watcher is designed to remain usable directly while also giving agents a stable CLI and versioned JSON contract. The [agent operator guide](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/agent-operator-guide.md) defines the portable workflow and authority boundaries. The [agent support matrix](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/agent-support-matrix.md) distinguishes an agent being able to operate the CLI, availability of a packaged skill/plugin, and the watcher's own optional advisory-provider support.
 
-The repository also contains a Phase 8 skills-only plugin prototype with
-OpenAI and Claude Code compatibility manifests. It adds no MCP server, hooks,
-scheduler, credentials, or mutation code; it teaches a supported agent to
-invoke the same installed CLI. The prototype is for local validation and is not
-yet published to a public plugin directory. Source-checkout installation and
-current client evidence are documented in the
-[agent operator guide](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/agent-operator-guide.md#optional-agent-package).
+The repository also contains a Phase 8 skills-only plugin prototype with OpenAI and Claude Code compatibility manifests. It adds no MCP server, hooks, scheduler, credentials, or mutation code; it teaches a supported agent to invoke the same installed CLI. The prototype is for local validation and is not yet published to a public plugin directory. Source-checkout installation and current client evidence are documented in the [agent operator guide](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/agent-operator-guide.md#optional-agent-package).
 
 ### Why use Watcher with an agent?
 
@@ -269,17 +252,9 @@ dependabot-watcher schedule preview --interval-minutes CADENCE_MINUTES --notify 
 dependabot-watcher schedule install --interval-minutes CADENCE_MINUTES --notify NOTIFICATION_MODE
 ```
 
-Replace the placeholders only after confirming the cadence and notification
-mode. Use the exact install arguments for status. For disable or removal,
-prefer the exact `recovery_command` returned by `schedule inventory` rather
-than reconstructing profile and cadence arguments from memory.
+Replace the placeholders only after confirming the cadence and notification mode. Use the exact install arguments for status. For disable or removal, prefer the exact `recovery_command` returned by `schedule inventory` rather than reconstructing profile and cadence arguments from memory.
 
-`schedule inventory` does not load a profile or require its configuration file to
-still exist. It scans only the current user's native scheduler, validates the
-Watcher ownership marker, embedded command, current-user authority, and
-configuration-derived job ID, then prints an exact recovery command. A matching
-name without that evidence is reported as untrusted and is never removal
-authority.
+`schedule inventory` does not load a profile or require its configuration file to still exist. It scans only the current user's native scheduler, validates the Watcher ownership marker, embedded command, current-user authority, and configuration-derived job ID, then prints an exact recovery command. A matching name without that evidence is reported as untrusted and is never removal authority.
 
 WSL2 scheduling uses Windows Task Scheduler to start the exact distribution, originating Linux user, and Watcher console executable, so an open WSL terminal is unnecessary. Preview shows the actual trusted System32 WSL wrapper and its arguments. If the computer is asleep or powered off, no local process can run; the next available invocation performs one current-state catch-up rather than replaying every missed interval. `--notify desktop` sends bounded attention information without exposing the full private queue or embedding execution authority. The development WSL route now requires the deliberately selected optional Windows component described below; a click opens the saved review queue. Other platform adapters retain their informational notification behavior. Submission confirms adapter acceptance, not visibility. Model calls still follow the profile's explicit advisory mode, model, reasoning, and workload budget.
 
@@ -329,25 +304,18 @@ The JSON output is versioned with `schema_version: 1`. See [the architecture](ht
 
 Read the selected version's [GitHub release notes](https://github.com/Alek2077/dependabot-watcher/releases) and update requirements first. Python and the Windows companion share one version and source revision. Experimental versions use an alpha/beta/release-candidate suffix and GitHub prerelease status; an unreleased source version is not proof that downloadable artifacts exist. Maintainers follow the [version and release procedure](docs/development-and-release.md#versions-and-release-notes).
 
-During the prerelease, update or roll back by selecting a reviewed source commit
-and reinstalling it with the installer that owns the tool. For example, from
-that clean pinned checkout: `uv tool install --force --python 3.14 .`.
-Use the GitHub CLI acquisition path above rather than assuming successful API
-access proves a separate plain HTTPS Git clone is configured. Never copy a token
-into a Git remote URL; resolve authentication through supported GitHub CLI flows.
+Before a packaged release is available, update or roll back by selecting a reviewed source commit and reinstalling it with the installer that owns the tool. For example, from that clean pinned checkout: `uv tool install --force --python 3.14 .`. Use the GitHub CLI acquisition path above rather than assuming successful API access proves a separate plain HTTPS Git clone is configured. Never copy a token into a Git remote URL; resolve authentication through supported GitHub CLI flows.
 
 For an existing WSL/uv installation using the Windows interface, use the development [coordinated update procedure](docs/setup.md#coordinated-wsluv-update-development) when the selected source revision provides it. It stages both components, closes verified Watcher owners gracefully and preserves the existing task rather than asking you to close windows or recreate scheduling. Do not replace a running backend with the simple reinstall command above.
 
-After the first PyPI release, upgrade to the latest published release with the
-installer that owns the tool:
+After the first PyPI release, upgrade to the latest published release with the installer that owns the tool:
 
 ```bash
 uv tool upgrade dependabot-watcher
 # or: pipx upgrade dependabot-watcher
 ```
 
-To pin or roll back after publication, replace `VERSION` with an exact published
-version (the source's current version string is not proof that it is published):
+To pin or roll back after publication, replace `VERSION` with an exact published version (the source's current version string is not proof that it is published):
 
 ```bash
 uv tool install --force 'dependabot-watcher==VERSION'
@@ -398,7 +366,7 @@ See the [review-window guide](docs/review-window.md) for the two tabs, refresh c
 
 Unreleased source adds a tool-capable Codex supervisor and one optional aggregate Windows review window. Python owns the saved context, messages, attempts, permissions and exact-action recovery; the window is an interaction channel, not a browser page or a second policy engine. AI-supervised maintenance is the intended primary automation path; the existing deterministic/manual and bounded metadata-advice modes remain available.
 
-The basic CLI works without the Windows component. The current WSL scheduled AI supervisor requires it installed, although the window can stay hidden. Use the [separate packaged component](docs/setup.md#windows-component-for-wsl-supervision), not an SDK build, for end-user setup. During private prerelease testing, a package must be explicitly supplied; a public release archive is not available yet. Component-free AI operation is post-release work; optional window visibility does not mean the current component is optional for that route.
+The basic CLI works without the Windows component. The current WSL scheduled AI supervisor requires it installed, although the window can stay hidden. Use the [separate packaged component](docs/setup.md#windows-component-for-wsl-supervision), not an SDK build, for end-user setup. Before a public release archive is available, the matching package must be explicitly supplied. Component-free AI operation is post-release work; optional window visibility does not mean the current component is optional for that route.
 
 The development WSL entry can open an already built, deliberately selected component:
 
@@ -409,22 +377,16 @@ dependabot-watcher review
 
 Opening it makes no model call or GitHub change. Its receipt confirms process submission only, not visible UI. Saved messages do not themselves launch an agent; the explicit investigation control uses the separately acknowledged [supervisor configuration](docs/configuration.md#development-supervisor-configuration). Failed investigations have a deliberate, context-checked retry; previous attempts and outcomes remain saved. Tool access does not grant an exact merge, and broad agent access cannot claim isolation from ambient credentials or direct remote operations.
 
-The development `notification test` command tests the normal selected component
-without resetting reminder suppression or changing GitHub. `notification status`
-reads Windows notification settings/history; `notification remove` clears only
-that profile's link/notices. Supply the same `--config` and `--state-dir` as
-`review`. The toast has one action—open this saved queue—not approve a merge.
-See the [native component guide](native/windows/README.md#notification-link-and-diagnostics).
+The development `notification test` command tests the normal selected component without resetting reminder suppression or changing GitHub. `notification status` reads Windows notification settings/history; `notification remove` clears only that profile's link/notices. Supply the same `--config` and `--state-dir` as `review`. The toast has one action—open this saved queue—not approve a merge. See the [native component guide](native/windows/README.md#notification-link-and-diagnostics).
 
-The development queue, feedback, permissions and installed entry have Windows/WSL evidence, including one founder-confirmed supervised merge, agent-directed isolated validation and owned maintenance-worktree refresh. Ordinary setup saves supervisor policy; the WSL `run` route can submit the registered native owner quietly for configured investigations. Compatible runs retain one repository conversation rather than discarding history after a commit or merge. Supervised merge readiness requires current verified affirmative agent reasoning as well as separate exact approval and fresh GitHub checks. Maintenance-copy provisioning and packaged entry/lifecycle have installed evidence. One installed automatic post-merge assessment and selected-local-completion run passed. Guided install/update, broader crash recovery, reliable foreground activation and other publication gates remain open. This is a private development checkpoint, not an unattended-maintenance release. See [architecture](docs/architecture.md#planned-supervisor-access-and-approval-boundary), [validation evidence](docs/validation.md#subsequent-uninterrupted-automatic-run) and [native component source](native/windows/README.md).
+The development queue, feedback, permissions and installed entry have Windows/WSL evidence, including one founder-confirmed supervised merge, agent-directed isolated validation and owned maintenance-worktree refresh. Ordinary setup saves supervisor policy; the WSL `run` route can submit the registered native owner quietly for configured investigations. Compatible runs retain one repository conversation rather than discarding history after a commit or merge. Supervised merge readiness requires current verified affirmative agent reasoning as well as separate exact approval and fresh GitHub checks. Maintenance-copy provisioning and packaged entry/lifecycle have installed evidence. One installed automatic post-merge assessment and selected-local-completion run passed. Guided install/update, broader crash recovery, reliable foreground activation and other publication gates remain open. This is a development checkpoint, not an unattended-maintenance release. See [architecture](docs/architecture.md#planned-supervisor-access-and-approval-boundary), [validation evidence](docs/validation.md#subsequent-uninterrupted-automatic-run) and [native component source](native/windows/README.md).
 
 ```bash
 python -m pip install -e '.[dev]'
 pytest
 ```
 
-Material features and onboarding changes should also pass the documented
-[installed-path validation workflow](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/validation-workflow.md).
+Material features and onboarding changes should also pass the documented [installed-path validation workflow](https://github.com/Alek2077/dependabot-watcher/blob/main/docs/validation-workflow.md).
 
 This repository intentionally contains only synthetic examples and fixtures. Private repository identities, workstation paths, schedules, notification settings, and historical runtime artifacts belong outside the product source.
 
