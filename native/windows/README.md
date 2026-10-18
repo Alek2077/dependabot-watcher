@@ -52,7 +52,7 @@ After self-contained publishing, run `complete-publish.ps1 -PublishedDirectory P
 
 ### Package a verified build
 
-Build and package from a complete repository checkout. The Python source distribution includes only selected optional native sources, not the full native build scripts or test suite; it is not a standalone Windows build workspace.
+Build and package from a complete repository checkout. The Python source distribution includes only selected native sources, not the full native build scripts or test suite; it is not a standalone Windows build workspace. The packaged Windows component is required for the current WSL supervisor even when its window stays hidden; basic CLI use does not require it.
 
 Maintainers can create the separate Windows x64 ZIP without copying SDKs or caches into it:
 

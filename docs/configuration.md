@@ -178,72 +178,17 @@ max_jobs_per_run = 1
 workspaces = [{ repository = "example-org/example-app", directory = "/absolute/isolated/worktree", instruction_sources = ["/absolute/isolated/worktree/AGENTS.md"] }]
 ```
 
-The registered repository must already be in `[[repositories]]`. This launcher
-requires metadata advice off and an owned POSIX/WSL linked worktree at the
-freshly collected base. Existing worktrees can still be registered explicitly.
-Ordinary setup can also opt into provisioning from an explicitly supplied local
-checkout; the saved configuration remains an explicit ordered
-instruction-source expectation. Model acknowledgement permits transmitting
-repository evidence and saved questions to the selected provider; turns consume
-subscription or API usage. Configuration parsing is not live account, harness,
-isolation or spend-enforcement evidence.
+The registered repository must already be in `[[repositories]]`. This launcher requires metadata advice off and an owned POSIX/WSL linked worktree at the freshly collected base. Existing worktrees can still be registered explicitly. Ordinary setup can also opt into provisioning from an explicitly supplied local checkout; the saved configuration remains an explicit ordered instruction-source expectation. Model acknowledgement permits transmitting repository evidence and saved questions to the selected provider; turns consume subscription or API usage. Configuration parsing is not live account, harness, isolation or spend-enforcement evidence.
 
-Provisioning creates a private clone and detached linked maintenance copy under
-the Watcher state directory's `supervisor-workspaces/` path, outside the source
-checkout. The source is read-only and may be dirty; only committed Git objects
-are copied, with no source branch, checkout, index, files or Git configuration
-changed, and hooks/filters are disabled during provisioning. Online setup pins
-the exact configured-branch SHA already collected from GitHub. If that object
-is absent from the supplied checkout, provisioning fails before creating paths;
-this version does not fetch missing commits. Offline setup pins only local
-`HEAD` and labels it unverified, without claiming network or GitHub-base
-verification.
+Provisioning creates a private clone and detached linked maintenance copy under the Watcher state directory's `supervisor-workspaces/` path, outside the source checkout. The source is read-only and may be dirty; only committed Git objects are copied, with no source branch, checkout, index, files or Git configuration changed, and hooks/filters are disabled during provisioning. Online setup pins the exact configured-branch SHA already collected from GitHub. If that object is absent from the supplied checkout, provisioning fails before creating paths; this version does not fetch missing commits. Offline setup pins only local `HEAD` and labels it unverified, without claiming network or GitHub-base verification.
 
-The default setup-wide estimated-size ceiling is 1 GiB across all new copies'
-object stores, materialized checkouts and bounded metadata allowances; each
-copy must also fit within that ceiling. Setup accepts a higher explicit limit
-up to 16 GiB. A free-space reserve is checked before creation
-using the same `supervisor.validation.minimum_free_bytes` value (default
-512 MiB) and configured `storage_reserve_paths`. On WSL, provisioning requires
-an explicit physical-volume reserve path such as `/mnt/c`; Linux guest free
-space alone does not establish host capacity. Reserve paths are checked read-only
-and mount permissions are never changed. Estimates round files to the target
-allocation unit, include per-file/directory, Git-object and loose/packed-ref
-metadata reserves,
-allow up to twofold line-ending expansion, and refuse pinned `ident` or
-`working-tree-encoding` rules rather than guess their output size. These are
-preflight estimates, not kernel quotas. Reference metadata is bounded to
-100,000 entries and a 256 MiB estimate; non-files Git ref storage is
-unsupported. The configuration output and private root must remain outside
-selected source checkouts and their common Git metadata directories; the
-configuration output must also remain outside persistent workspace storage.
-Copies and ownership receipts persist by default for session
-continuity and setup never deletes them. The setup report gives the exact path,
-estimated size, ceiling, reserve, and retention behavior. Exact-PR validation
-copies are separate disposable paths and are cleaned after each job.
+The default setup-wide estimated-size ceiling is 1 GiB across all new copies' object stores, materialized checkouts and bounded metadata allowances; each copy must also fit within that ceiling. Setup accepts a higher explicit limit up to 16 GiB. A free-space reserve is checked before creation using the same `supervisor.validation.minimum_free_bytes` value (default 512 MiB) and configured `storage_reserve_paths`. On WSL, provisioning requires an explicit physical-volume reserve path such as `/mnt/c`; Linux guest free space alone does not establish host capacity. Reserve paths are checked read-only and mount permissions are never changed. Estimates round files to the target allocation unit, include per-file/directory, Git-object and loose/packed-ref metadata reserves, allow up to twofold line-ending expansion, and refuse pinned `ident` or `working-tree-encoding` rules rather than guess their output size. These are preflight estimates, not kernel quotas. Reference metadata is bounded to 100,000 entries and a 256 MiB estimate; non-files Git ref storage is unsupported. The configuration output and private root must remain outside selected source checkouts and their common Git metadata directories; the configuration output must also remain outside persistent workspace storage. Copies and ownership receipts persist by default for session continuity and setup never deletes them. The setup report gives the exact path, estimated size, ceiling, reserve, and retention behavior. Exact-PR validation copies are separate disposable paths and are cleaned after each job.
 
-Setup records the actual repository-root and maintenance-path ancestor
-`AGENTS.md` sources it can discover; it does not create an instruction file.
-An absolute root symlink remains unchanged. Relative symlinks must resolve to an
-in-repository target after relocation; a relative external target is refused
-before writes. Explicit `--supervisor-instruction` values for a provisioned
-repository replace the discovered expected list in the supplied order. Setup
-does not establish the later Codex global/runtime instruction list, even when
-the discovered list is empty; launch still compares the exact runtime list
-with the saved expectation before a turn. The setup report shows source and
-maintenance-path ancestor instructions when they differ. A local workspace
-check does not verify model/account selection or runtime instruction discovery.
+Setup records the actual repository-root and maintenance-path ancestor `AGENTS.md` sources it can discover; it does not create an instruction file. An absolute root symlink remains unchanged. Relative symlinks must resolve to an in-repository target after relocation; a relative external target is refused before writes. Explicit `--supervisor-instruction` values for a provisioned repository replace the discovered expected list in the supplied order. Setup does not establish the later Codex global/runtime instruction list, even when the discovered list is empty; launch still compares the exact runtime list with the saved expectation before a turn. The setup report shows source and maintenance-path ancestor instructions when they differ. A local workspace check does not verify model/account selection or runtime instruction discovery.
 
 With `validation_authorized = true`, `[supervisor.validation]` can additionally select `preparation_authorized = true`, `network_authorized` (default false), `maximum_bytes` (default 268435456), `minimum_free_bytes` (default 536870912), `command_timeout_seconds` (default 120), and `storage_reserve_paths = []`. Watcher validation-tool commands use private exact-revision copies and existing Linux/WSL Bubblewrap, with no host-execution fallback; other Codex tools follow the chosen agent access policy, not this sandbox. Dependencies/probes stay in disposable copies; private caches scoped to repository and identical source tree, hashed receipts and bounded historical execution metadata are retained. History is not a fresh execution or proof that the environment remains equivalent. Recognized credential paths are excluded and reported, but unknown embedded secrets are not scanned. Storage is monitored, not a hard kernel quota; network-enabled code can reach the host network and local services. On WSL, explicitly include the physical volume backing the virtual disk (for example `/mnt/c`) in reserve paths; virtual Linux free space alone does not establish host capacity. Network/preparation choices never authorize a merge or developer-checkout change. The validation record distinguishes installed operating evidence from acceptance still pending for new increments.
 
-Per-workspace `refresh_authorized = true` optionally permits advancing an owned
-detached maintenance copy after its initial clean-base registration. It defaults
-false and does not authorize edits, developer-checkout synchronization, pushes or
-merges. Dirty files, untracked work, attached branches or unexpected commits are
-preserved and block this refresh. An interrupted checkout is reconciled only from
-a verified clean detached prior or intended head; it is never forcibly retried.
-This development capability remains subject to its
-own operating acceptance.
+Per-workspace `refresh_authorized = true` optionally permits advancing an owned detached maintenance copy after its initial clean-base registration. It defaults false and does not authorize edits, developer-checkout synchronization, pushes or merges. Dirty files, untracked work, attached branches or unexpected commits are preserved and block this refresh. An interrupted checkout is reconciled only from a verified clean detached prior or intended head; it is never forcibly retried. This development capability remains subject to its own operating acceptance.
 
 | Choice | Accepted values / effect |
 |---|---|
@@ -280,21 +225,6 @@ Supported adapter values are `wsl`, `windows`, `systemd`, and `launchd`; `auto` 
 
 Schedule identity is derived from the exact configuration path. Use the same configuration, state, platform, cadence, notification, and WSL distribution arguments for ordinary lifecycle commands. If a profile moves, is deleted, or its arguments are forgotten, `schedule inventory` scans the current user's selected native scheduler without loading a profile, validates Watcher's ownership marker, embedded command, current-user authority, and configuration-derived job ID, and returns an exact recovery command. Inventory must be run separately in every host context where scheduling was used; native Windows PowerShell and WSL are separate contexts when both were configured. Candidates that match only by name are reported as untrusted and are never removal authority.
 
-`--notify desktop` is optional and sparse. It sends a bounded action message,
-queue counts and AI-use information; it never includes full evidence, private
-paths or an execution command. In the development WSL route, select the optional
-Windows component through `review --native-component PATH` or
-`notification test --native-component PATH` with the same configuration/state.
-Its toast opens that saved aggregate queue through an opaque profile key. A
-missing, changed or unavailable component fails visibly rather than reverting
-to the short-lived balloon. macOS `osascript`, Linux `notify-send` and the legacy
-native-Windows adapter remain informational routes without this review action.
+`--notify desktop` is optional and sparse. It sends a bounded action message, queue counts and AI-use information; it never includes full evidence, private paths or an execution command. The development WSL review-notification route requires the Windows component, selected through `review --native-component PATH` or `notification test --native-component PATH` with the same configuration/state. The current WSL supervisor requires that component independently of notification settings, even when the window stays hidden. Its toast opens the saved aggregate queue through an opaque profile key. A missing, changed or unavailable component fails visibly rather than reverting to the short-lived balloon. macOS `osascript`, Linux `notify-send` and the legacy native-Windows adapter remain informational routes without this review action.
 
-A successful adapter return proves submission acceptance, not that the user saw
-it. Failed submission remains in the durable report and produces a
-notification-specific nonzero exit without changing the completed reconciliation
-result. The separate `notification test` bypasses reminder suppression without
-altering it; `notification status` reads Windows settings/history; removal clears
-only this profile's lookup and notices, not configuration, queues or schedules.
-Later desktop-enabled delivery can register again. These development controls
-do not establish cold/warm or scheduled supervisor operating acceptance.
+A successful adapter return proves submission acceptance, not that the user saw it. Failed submission remains in the durable report and produces a notification-specific nonzero exit without changing the completed reconciliation result. The separate `notification test` bypasses reminder suppression without altering it; `notification status` reads Windows settings/history; removal clears only this profile's lookup and notices, not configuration, queues or schedules. Later desktop-enabled delivery can register again. These development controls do not establish cold/warm or scheduled supervisor operating acceptance.
