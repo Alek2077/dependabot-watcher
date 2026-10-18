@@ -17,6 +17,31 @@ internal static class UiStateContracts
                 var window = Activator.CreateInstance(type, BindingFlags.Instance | BindingFlags.NonPublic,
                     null, new object[] { client }, null)!;
                 object Field(string name) => type.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+                var investigate = (System.Windows.Controls.Button)Field("_investigate");
+                var actionGroup = investigate.Parent as System.Windows.Controls.StackPanel;
+                if (actionGroup?.Parent is not System.Windows.Controls.Border actionSurface
+                    || actionSurface.Padding.Left < 16
+                    || !actionGroup.Children.Contains((System.Windows.UIElement)Field("_decisions"))
+                    || !actionGroup.Children.Contains((System.Windows.UIElement)Field("_confirmation"))
+                    || investigate.HorizontalAlignment != System.Windows.HorizontalAlignment.Left)
+                    throw new InvalidDataException("Assessment and its actions must share a padded group with compact primary action.");
+                var message = (System.Windows.FrameworkElement)Field("_message");
+                if (message.Parent is not System.Windows.Controls.StackPanel conversation
+                    || conversation.Parent is not System.Windows.Controls.Border conversationSurface
+                    || ReferenceEquals(actionSurface, conversationSurface)
+                    || !conversation.Children.Contains((System.Windows.UIElement)Field("_latestAnswer")))
+                    throw new InvalidDataException("Conversation must have its own group containing composer and latest exchange.");
+                var divider = (System.Windows.Controls.Border)type.GetMethod("SectionDivider", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null)!;
+                if (divider.Height != 1 || divider.Margin.Top < 12 || divider.Margin.Bottom < 8
+                    || divider.Focusable || divider.IsHitTestVisible)
+                    throw new InvalidDataException("Section grouping must remain lightweight and noninteractive.");
+                var collect = (System.Windows.Controls.Button)Field("_collect");
+                if (collect.ToolTip is not System.Windows.Controls.ToolTip tip
+                    || tip.Content is not System.Windows.Controls.TextBlock collectHelp
+                    || collectHelp.MaxWidth > 320 || collectHelp.TextWrapping != System.Windows.TextWrapping.Wrap
+                    || !collectHelp.Text.Contains("GitHub") || !collectHelp.Text.Contains("Does not start an agent")
+                    || System.Windows.Automation.AutomationProperties.GetHelpText(collect) != collectHelp.Text)
+                    throw new InvalidDataException("Fresh collection help must distinguish collection from investigation.");
                 type.GetField("_activityBaseline", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, TimeSpan.FromMinutes(8));
                 type.GetField("_activityJobId", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, "old_attempt");
                 var elapsed = (System.Diagnostics.Stopwatch)Field("_activityElapsed"); elapsed.Start();

@@ -23,6 +23,10 @@ For a material capability that does not yet exist on remote `main`, use two dist
 
 The post-merge fresh-clone exercise is part of development validation, not a task that must be assigned to the user. A real mutation still requires separate authorization for the exact repository, PR, and head SHA.
 
+## Critical supervisor context handoffs
+
+When changing supervisor prompts, context construction, conversation reuse, action continuation or completion handoffs, run an applicable real-provider acceptance exercise as well as deterministic tests. Verify the actual submitted context and instruction sections, effective instruction-source readback, relevant referenced-file reads, accepted structured result and downstream decision at the affected stage. Cover fresh and resumed work, changed/missing guidance and recipient/revision binding where relevant; do not infer delivery or comprehension from a mocked provider, generated prompt string or model self-report alone. Preserve failed attempts and distinguish transport delivery, observed interpretation and deterministic enforcement. Start with the [opt-in synthetic context exercise](../tests/manual/README.md); add a bounded scenario for critical paths it does not exercise rather than generalizing its pass to the entire workflow. Real intelligence reduces errors only when supplied appropriate current context; it does not remove the need for exact-action safeguards.
+
 ## Safety boundary
 
 - Use a temporary clean checkout or built distribution, not the active development import path.

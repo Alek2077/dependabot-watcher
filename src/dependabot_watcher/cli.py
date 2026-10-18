@@ -27,13 +27,17 @@ from .reconciliation import (
 )
 from .reconciliation_output import render_reconciliation
 from .native_review import NativeReviewError, native_notification, open_native_review, submit_scheduled_supervisor
-from .runtime_state import default_state_directory
+from .runtime_state import RuntimeStateError, default_state_directory
+from .review_queue import ReviewQueueError
+from .windows_helpers import WindowsHelperError
 from .schedulers.common import ScheduleError
 from .scheduling import inventory_schedules, manage_schedule, recurring_profile_summary
 from .scheduling_output import render_schedule
 from .setup import SetupError, SetupRequest, setup
 from .supervisor_workspace_provisioning import DEFAULT_WORKSPACE_MAX_BYTES
 from .local_sync import LocalSyncError, confirm_sync, prepare_sync, recover_sync, selected_checkouts, validate_control_locations
+from .updating import recover_update, require_no_update, update
+from .update_coordination import UpdateError
 from .terminal import (
     ProgressMode,
     TerminalPresentation,
@@ -183,6 +187,16 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--approval-token", help="Exact token after separate user approval of that local update.")
     sync_parser.add_argument("--recover", action="store_true", help="Observe the saved review without replaying integration.")
     sync_parser.add_argument("--format", choices=("text", "json"), default="text", dest="output_format")
+    update_parser = commands.add_parser("update", help="Preview or apply a coordinated pinned-source WSL/uv and Windows component update.")
+    update_parser.add_argument("--config", type=Path, default=default_config_path())
+    update_parser.add_argument("--state-dir", type=Path, default=default_state_directory())
+    update_parser.add_argument("--source", type=Path, help="Independently acquired clean pinned Watcher source checkout.")
+    update_parser.add_argument("--source-commit", help="Full reviewed source commit matching both components.")
+    update_parser.add_argument("--native-component", type=Path, help="Verified matching executable in a separately extracted component directory.")
+    update_parser.add_argument("--installed-command", type=Path, help="Existing uv-owned Watcher command; never the temporary source runner.")
+    update_parser.add_argument("--apply", action="store_true", help="Authorize the displayed local installation effects, including graceful Exit and temporary pause of the same schedule.")
+    update_parser.add_argument("--recover", metavar="UPDATE_ID", help="Explicitly finish one saved interrupted update without replaying repository actions.")
+    update_parser.add_argument("--format", choices=("text", "json"), default="text", dest="output_format")
     review_parser = commands.add_parser(
         "review",
         help="Open the optional aggregate Windows review window (WSL).",
@@ -238,6 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
         setup_parser,
         execute_parser,
         sync_parser,
+        update_parser,
         review_parser,
         notification_parser,
         run_parser,
@@ -840,6 +855,49 @@ def _run_local_sync(args: argparse.Namespace, presentation: TerminalPresentation
     return ExitCode.EXECUTION_ERROR if (report.get("result") or {}).get("status") == "manual_repair_required" else ExitCode.SUCCESS
 
 
+def _update_request(args: argparse.Namespace) -> dict:
+    if args.recover:
+        if args.apply or any((args.source, args.source_commit, args.native_component, args.installed_command)):
+            raise UpdateError("Recovery uses only the exact saved update ID and profile/state selectors.")
+        return recover_update(args.config, args.state_dir, args.recover)
+    else:
+        if not all((args.source, args.source_commit, args.native_component, args.installed_command)):
+            raise UpdateError("Select source, full source commit, matching native component and existing installed command; omit --apply to preview.")
+        return update(args.config, args.state_dir, source=args.source, revision=args.source_commit,
+            component=args.native_component, installed_command=args.installed_command, apply=args.apply)
+
+
+def _update_command(args: argparse.Namespace, presentation: TerminalPresentation) -> int:
+    try:
+        report = _update_request(args)
+    except (OSError, ValueError, RuntimeStateError, ReviewQueueError, WindowsHelperError, NativeReviewError, ScheduleError, ExecutionError, LocalSyncError) as exc:
+        raise UpdateError("Update prerequisites or saved artifacts could not be verified: " + str(exc)) from exc
+    if args.output_format == "json":
+        rendered = json.dumps(report, indent=2)
+    else:
+        rendered = f"Watcher update: {report['status']}\nSource: {report['source_commit']}\n"
+        if report["status"] == "preview":
+            rendered += report["effects"] + f"\nVerified windows to close: {report['owners_to_close']}\nNo changes applied; use --apply after approval."
+        else:
+            rendered += "Settings and history preserved. "
+            rendered += ("Existing schedule definition and prior enabled state restored. "
+                         if report.get("schedule_status") == "restored" else "No schedule was present; none was created. ")
+            rendered += "No model or GitHub action started."
+        if report.get("window_launch_submitted") is False:
+            rendered += "\nThe update is complete, but the window could not be reopened. Run Watcher's normal review command; do not reinstall."
+        elif report.get("window_launch_submitted") is True:
+            rendered += "\nWindows accepted the review-window launch; visibility has not been verified."
+    _write_report(rendered, presentation)
+    return ExitCode.SUCCESS
+
+
+def _guard_update_entry(args: argparse.Namespace) -> None:
+    if args.command in {"run", "review", "execute", "sync"}:
+        require_no_update(args.state_dir.expanduser().absolute())
+    elif args.command == "schedule" and args.schedule_action in {"install", "disable", "remove"}:
+        require_no_update(args.state_dir.expanduser().absolute())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -850,6 +908,9 @@ def main(argv: list[str] | None = None) -> int:
         plain=args.plain,
     )
     try:
+        _guard_update_entry(args)
+        if args.command == "update":
+            return _update_command(args, presentation)
         if args.command == "doctor":
             doctor_message = (
                 "Checking the local environment..."
@@ -1029,6 +1090,9 @@ def main(argv: list[str] | None = None) -> int:
                 rendered = render_plan(report, args.output_format, verbosity=verbosity)
             else:  # pragma: no cover - protected by argparse
                 parser.error("A command is required.")
+    except UpdateError as exc:
+        _write_error("Update", exc, presentation)
+        return ExitCode.EXECUTION_ERROR
     except ConfigError as exc:
         _write_error("Configuration", exc, presentation)
         return ExitCode.CONFIGURATION_ERROR
@@ -1052,7 +1116,7 @@ def main(argv: list[str] | None = None) -> int:
     except SetupError as exc:
         _write_error("Setup", exc, presentation)
         return ExitCode.CONFIGURATION_ERROR
-    except ExecutionError as exc:
+    except (ExecutionError, RuntimeStateError) as exc:
         _write_error("Execution", exc, presentation)
         return ExitCode.EXECUTION_ERROR
     except LocalSyncError as exc:

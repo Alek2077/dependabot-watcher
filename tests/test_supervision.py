@@ -29,13 +29,24 @@ def jobs_case(tmp_path: Path) -> tuple[SupervisorJobs, dict[str, Any]]:
 
 
 def result_for(job: dict[str, Any]) -> dict[str, Any]:
-    return {"summary": "Further investigation is needed before any action.",
+    result: dict[str, Any] = {"summary": "Further investigation is needed before any action.",
             "recommendations": [{"proposal_id": item["proposal_id"], "conclusion": "investigate",
                                  "explanation": "Inspect the exact dependency change and validate it."}
                                 for item in job["context"]["proposals"]],
             "replies": [{"proposal_id": item["proposal_id"], "request_id": message["request_id"],
                          "message": "This question belongs to this saved revision."}
                         for item in job["context"]["proposals"] for message in item["feedback"]]}
+    guidance = job["context"].get("workflow_guidance")
+    if guidance is not None:
+        result["workflow_assessment"] = {
+            "status": "needs_clarification" if guidance["unavailable_sources"] else "established",
+            "summary": "Controlled fixture workflow assessment; no live model inference.",
+            "sources": [{"path": path, "sha256": digest} for path, digest in guidance["instruction_fingerprints"]],
+            "local_checkouts": [{"directory": item["directory"], "branch": item["branch"],
+                "method": "fast_forward", "explanation": "Fixture policy selects clean fast-forward with separate consent."}
+                for item in job["context"]["repository_config"].get("local_sync", [])],
+            "follow_up": [], "uncertainties": []}
+    return result
 
 
 @pytest.mark.parametrize("terminal", ["completed", "failed", "interrupted", "orphaned"])

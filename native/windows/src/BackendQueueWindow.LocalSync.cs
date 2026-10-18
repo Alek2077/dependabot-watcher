@@ -12,7 +12,7 @@ namespace WatcherNativeProof;
 internal sealed partial class BackendQueueWindow
 {
     private readonly StackPanel _localSyncPanel = new() { Visibility = Visibility.Collapsed,
-        Margin = new Thickness(0, 0, 0, 12) };
+        Margin = new Thickness(0, 0, 0, 4) };
     private readonly StackPanel _localSyncTargets = new();
     private readonly TextBlock _localSyncStatus = new() { TextWrapping = TextWrapping.Wrap };
     private long _localSyncReadGeneration;
@@ -21,9 +21,10 @@ internal sealed partial class BackendQueueWindow
 
     private void InitializeLocalSync(StackPanel inspector)
     {
+        _localSyncPanel.Children.Add(SectionDivider());
         var description = new StackPanel();
         description.Children.Add(new TextBlock { Text = "Local checkouts", FontSize = 16, FontWeight = FontWeights.SemiBold,
-            Margin = new Thickness(0, 8, 0, 6) });
+            Margin = new Thickness(0, 0, 0, 6) });
         description.Children.Add(_localSyncStatus);
         _localSyncPanel.Children.Add(description);
         AddCopyIcon(_localSyncStatus, description);
@@ -93,6 +94,11 @@ internal sealed partial class BackendQueueWindow
                 var id = target["target_id"]!.GetValue<string>();
                 var label = NativeDisplayText.Escape($"{target["repository"]} · {target["branch"]}\n{target["directory"]}");
                 var row = new StackPanel();
+                void AddAction(Button action) {
+                    action.Margin = new Thickness(action.Margin.Left, action.Margin.Top, action.Margin.Right, 12);
+                    var details = row.Children.OfType<Expander>().FirstOrDefault();
+                    row.Children.Insert(details is null ? row.Children.Count : row.Children.IndexOf(details), action);
+                }
                 row.Children.Add(new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap,
                     Foreground = SystemColors.GrayTextBrush, Margin = new Thickness(0, 0, 0, 10) });
                 JsonObject? observation = null;
@@ -124,8 +130,35 @@ internal sealed partial class BackendQueueWindow
                     TextWrapping = TextWrapping.Wrap, FontSize = 16, FontWeight = FontWeights.SemiBold,
                     Margin = new Thickness(0, 0, 0, 5) };
                 row.Children.Add(statusText);
-                row.Children.Add(new TextBlock { Text = NativeDisplayText.Escape(message),
-                    TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10) });
+                var comparisonMessage = new TextBlock { Text = NativeDisplayText.Escape(message),
+                    TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10) };
+                row.Children.Add(comparisonMessage);
+                var workflow = observation?["workflow"] as JsonObject;
+                var workflowState = "not_reported";
+                try { workflowState = NativeLocalSyncReview.WorkflowState(workflow); }
+                catch (Exception) { workflowState = "assessment_needed"; workflow = null; }
+                if (!current && workflowState == "unsupported") {
+                    statusText.Text = "Repository workflow needs attention";
+                    comparisonMessage.Text = "Resolve the workflow issue below before updating. Your checkout is unchanged.";
+                }
+                else if (!current && workflowState == "assessment_needed") {
+                    statusText.Text = "Check repository workflow before updating";
+                    if (needsReview) comparisonMessage.Text = "Local branch or cached origin differs from GitHub. No files were changed.";
+                }
+                if (workflow is not null) {
+                    var workflowText = new TextBlock { Text = NativeDisplayText.Escape(workflow["message"]!.GetValue<string>()),
+                        TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
+                    if (workflowState != "assessment_needed") row.Children.Add(workflowText);
+                    if (workflow["follow_up"] is JsonArray followUp && followUp.Count > 0) {
+                        var steps = new TextBlock { Text = NativeDisplayText.Escape(
+                            "Agent assessment, not fresh execution evidence. Recheck after actions or guidance changes.\n\n" +
+                            string.Join("\n\n", followUp.OfType<JsonObject>().Select(step =>
+                                $"{step["stage"]} · {step["status"]}\n{step["explanation"]}"))), TextWrapping = TextWrapping.Wrap };
+                        row.Children.Add(new Expander { Header = "Repository workflow and remaining steps", Content = steps,
+                            Margin = new Thickness(0, 0, 0, 8) });
+                        AddCopyIcon(steps);
+                    }
+                }
                 var evidence = new TextBlock { Text = NativeDisplayText.Escape(detail), TextWrapping = TextWrapping.Wrap };
                 row.Children.Add(new Expander { Header = "Comparison details and checked time", Content = evidence,
                     Margin = new Thickness(0, 0, 0, 6) });
@@ -163,18 +196,27 @@ internal sealed partial class BackendQueueWindow
                     var reviewId = pending["review_id"]!.GetValue<string>();
                     var binding = pending["binding"]?.DeepClone() as JsonObject
                         ?? throw new InvalidDataException("Saved local update binding is missing.");
-                    row.Children.Add(Button("Check saved local update outcome", () => RecoverLocalSyncAsync(reviewId, binding)));
+                    AddAction(Button("Check saved local update outcome", () => RecoverLocalSyncAsync(reviewId, binding)));
                 }
                 else
                 {
-                    var update = Button(current ? "Recheck local checkout" : "Review local update",
-                        () => current ? ReadLocalSyncTargetsAsync() : PrepareLocalSyncAsync((JsonObject)target.DeepClone()));
+                    var needsAssessment = !current && workflowState == "assessment_needed";
+                    var unsupported = !current && workflowState == "unsupported";
+                    var update = Button(current ? "Recheck local checkout" : needsAssessment ? "Check how this repository should be updated"
+                            : unsupported ? "Different integration method required" : "Review local update",
+                        () => current ? ReadLocalSyncTargetsAsync() : needsAssessment
+                            ? AssessCheckoutWorkflowAsync(target) : PrepareLocalSyncAsync((JsonObject)target.DeepClone()));
                     update.HorizontalAlignment = HorizontalAlignment.Left;
                     update.Margin = new Thickness(0, 8, 0, 0);
-                    update.IsEnabled = !_refreshRequired && !observing;
+                    update.IsEnabled = !_refreshRequired && !observing && !unsupported;
+                    if (unsupported) update.ToolTip = "The agent's recommended method is not supported by this executor. No fast-forward was substituted and your checkout is unchanged.";
                     if (_refreshRequired) update.ToolTip = "Refresh saved queue before reviewing a checkout update.";
                     if (!current) { update.Background = PrimaryBrush; update.Foreground = SystemColors.HighlightTextBrush; }
-                    row.Children.Add(update);
+                    AddAction(update);
+                    if (needsAssessment) row.Children.Insert(row.Children.IndexOf(update),
+                        new TextBlock { Text = "Your agent will read repository instructions to identify the right update process. This starts an investigation, not a file update or merge.",
+                            TextWrapping = TextWrapping.Wrap, Foreground = SystemColors.GrayTextBrush,
+                            Margin = new Thickness(0, 0, 0, 6) });
                 }
                 foreach (var text in row.Children.OfType<TextBlock>().ToArray()) AddCopyIcon(text);
                 _localSyncTargets.Children.Add(new Border { Child = row, Padding = new Thickness(16, 14, 16, 14),
@@ -190,6 +232,18 @@ internal sealed partial class BackendQueueWindow
                 ? "Selected updates are part of your configured maintenance completion. Each update is separately approved; no automatic integration."
                 : "Optional and separately approved. Remote merges do not update these checkouts automatically.";
             _localSyncPanel.Visibility = targets.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private async Task AssessCheckoutWorkflowAsync(JsonObject target)
+    {
+        if (MaintenanceOperationBlocked || _refreshRequired) return;
+        var repository = target["repository"]?.GetValue<string>();
+        if (repository is null || !_supervisorDigests.TryGetValue(repository, out var digest)) {
+            ShowActionNotice("Workflow assessment unavailable", "Refresh saved queue to load this repository's configured agent context. No checkout update was attempted.");
+            return;
+        }
+        await RunInvestigationAsync(repository, digest, null, null, null);
+        await ReadLocalSyncTargetsAsync();
     }
 
     private static JsonObject? LatestLocalSyncOutcome(JsonArray reviews, string targetId) => reviews.OfType<JsonObject>()
@@ -219,7 +273,8 @@ internal sealed partial class BackendQueueWindow
             }
             if (review["status"]?.GetValue<string>() != "ready" || review["binding"] is not JsonObject binding)
                 throw new InvalidDataException("Local update is not ready for confirmation.");
-            var description = NativeDisplayText.Escape($"{binding["repository"]} · {binding["branch"]}\n{binding["directory"]}\n\n{binding["head_sha"]} → {binding["target_sha"]}\n{binding["commits"]} commits\n\nUpdates this clean local branch, its index and tracked files. {NativeLocalSyncReview.TrackingDescription(binding)} No tests, push, remote merge, stash, reset, branch switch, dependency installation or deployment.\n\nUpdate this checkout now?");
+            var workflow = binding["workflow"] as JsonObject;
+            var description = NativeDisplayText.Escape($"{binding["repository"]} · {binding["branch"]}\n{binding["directory"]}\n\n{binding["head_sha"]} → {binding["target_sha"]}\n{binding["commits"]} commits\n\nMethod: clean fast-forward.\n{workflow?["message"]}\n\nUpdates this clean local branch, its index and tracked files. {NativeLocalSyncReview.TrackingDescription(binding)} No tests, push, remote merge, stash, reset, branch switch, dependency installation or deployment. Other workflow steps are not performed by this update.\n\nUpdate this checkout now?");
             if (!NativeConfirmationDialog.Confirm(this, "Confirm selected local update", description, "Update this checkout"))
             {
                 ShowActionNotice("Local update cancelled", "Nothing was integrated. The selected checkout remains unchanged.");

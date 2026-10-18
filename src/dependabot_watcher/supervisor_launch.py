@@ -116,6 +116,8 @@ def run_configured_supervisor(
     This initial route requires metadata advice off so fresh collection cannot
     silently spend a second provider's budget. It does not provision worktrees.
     """
+    from .updating import require_no_update
+    require_no_update(queue.directory)
     policy, _registration = _configured_registration(queue, repository)
     assert queue.config_path is not None
     assert policy.model is not None and policy.reasoning_effort is not None and policy.expected_account_type is not None

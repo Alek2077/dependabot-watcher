@@ -77,6 +77,30 @@ internal sealed class QueueProposal
 // choices are acknowledged by a fresh Python controller process after saving.
 internal sealed partial class BackendQueueWindow : Window
 {
+    // Separate tasks without introducing another container or heading level.
+    private static Border SectionDivider() => new() {
+        Height = 1, Margin = new Thickness(0, 16, 0, 12), SnapsToDevicePixels = true,
+        Background = SystemParameters.HighContrast ? SystemColors.GrayTextBrush
+            : new SolidColorBrush(Color.FromRgb(210, 218, 226)),
+        IsHitTestVisible = false, Focusable = false
+    };
+
+    private static void SetActionHelp(Button button, string text)
+    {
+        button.ToolTip = new ToolTip { Content = new TextBlock {
+            Text = text, TextWrapping = TextWrapping.Wrap, MaxWidth = 320
+        } };
+        System.Windows.Automation.AutomationProperties.SetHelpText(button, text);
+    }
+
+    private static Border TaskSurface(Panel content) => new() {
+        Child = content, Padding = new Thickness(16), Margin = new Thickness(0, 12, 0, 0),
+        CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1),
+        BorderBrush = SystemParameters.HighContrast ? SystemColors.WindowTextBrush
+            : new SolidColorBrush(Color.FromRgb(210, 218, 226)),
+        Background = SystemParameters.HighContrast ? SystemColors.WindowBrush : Brushes.White
+    };
+
     private readonly BackendClient _client;
     private readonly DataGrid _queue = new();
     private readonly TextBlock _summary = new() { TextWrapping = TextWrapping.Wrap };
@@ -239,8 +263,11 @@ internal sealed partial class BackendQueueWindow : Window
         header.Children.Add(_permissionAttention);
         DockPanel.SetDock(header, Dock.Top); root.Children.Add(header);
         var footer = new WrapPanel { Margin = new Thickness(0, 15, 0, 0) };
-        footer.Children.Add(Button("Refresh saved queue", async () => await RefreshAsync()));
+        var refreshQueue = Button("Refresh saved queue", async () => await RefreshAsync());
+        SetActionHelp(refreshQueue, "Reload the saved queue and recheck checkout/follow-up status. Does not rebuild recommendations, start an agent or merge.");
+        footer.Children.Add(refreshQueue);
         _collect = Button("Collect fresh recommendations", CollectAsync);
+        SetActionHelp(_collect, "Check GitHub for current PRs, alerts and checks, then rebuild recommendations. Does not start an agent or merge anything.");
         footer.Children.Add(_collect);
         footer.Children.Add(Button("Hide to tray", () => { Hide(); return Task.CompletedTask; }));
         footer.Children.Add(Button("Exit", () => { RequestQuit(); return Task.CompletedTask; }));
@@ -283,24 +310,30 @@ internal sealed partial class BackendQueueWindow : Window
         System.Windows.Automation.AutomationProperties.SetName(divider, "Resize queue and workspace");
         Grid.SetColumn(divider, 1); split.Children.Add(divider);
         var selectedSummary = new StackPanel();
+        selectedSummary.Margin = new Thickness(4, 4, 4, 4);
         selectedSummary.Children.Add(_recommendation);
         selectedSummary.Children.Add(_handling);
         _actions.Children.Add(selectedSummary);
         AddCopyIcon(_handling, selectedSummary, () => _recommendation.Text + "\n" + _handling.Text);
         var assessment = new StackPanel();
-        _agentIdentity.Margin = new Thickness(0, 12, 0, 0);
+        _agentIdentity.Margin = new Thickness(0, 0, 0, 6);
+        _agentRecommendation.Margin = new Thickness(0, 0, 0, 8);
         assessment.Children.Add(_agentIdentity);
         assessment.Children.Add(_agentRecommendation);
         assessment.Children.Add(new Expander { Header = "Details and evidence", Content = _agentReason,
             Margin = new Thickness(0, 4, 0, 0), IsExpanded = false });
         assessment.Children.Add(_resourceBlocker);
         assessment.Children.Add(_nextStep);
-        _actions.Children.Add(assessment);
+        var assessmentActions = new StackPanel();
+        assessmentActions.Children.Add(assessment);
+        _actions.Children.Add(TaskSurface(assessmentActions));
         AddCopyIcon(_nextStep, assessment, () => string.Join("\n", new[] {
             _agentIdentity.Text, _agentRecommendation.Text, _resourceBlocker.Text, _nextStep.Text }.Where(value => !string.IsNullOrWhiteSpace(value))));
         _investigate = Button("Start investigation", StartItemInvestigationAsync);
         _investigate.IsEnabled = false;
-        _actions.Children.Add(_investigate);
+        _investigate.HorizontalAlignment = HorizontalAlignment.Left;
+        _investigate.Padding = new Thickness(18, 9, 18, 9);
+        assessmentActions.Children.Add(_investigate);
         var choices = _decisions;
         _prepare = Button("Review proposed merge", PrepareAsync);
         _prepare.ToolTip = "Opens the exact repository, PR, commit and merge details. Nothing merges unless you separately confirm on the next screen.";
@@ -309,7 +342,7 @@ internal sealed partial class BackendQueueWindow : Window
         choices.Children.Add(Button("Reject locally", async () => await DecideAsync("reject")));
         _resume = Button("Undo rejection or deferral", async () => await DecideAsync("resume"));
         choices.Children.Add(_resume);
-        _actions.Children.Add(choices);
+        assessmentActions.Children.Add(choices);
         InitializeBranchRefresh();
         _confirmation.Children.Add(new TextBlock { Text = "Confirm this one exact merge", FontSize = 17, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 12, 0, 8) });
         _confirmation.Children.Add(_confirmationText);
@@ -327,29 +360,31 @@ internal sealed partial class BackendQueueWindow : Window
                 new Action(() => { _detailsScroll.UpdateLayout(); _detailsScroll.ScrollToTop(); }));
             return Task.CompletedTask;
         }));
-        _actions.Children.Add(_confirmation);
+        assessmentActions.Children.Add(_confirmation);
         _check = Button("Check saved action outcome", CheckOutcomeAsync);
-        _check.Visibility = Visibility.Collapsed; _actions.Children.Add(_check);
-        _outcomeSurface.Background = SystemParameters.HighContrast ? SystemColors.ControlBrush
-            : new SolidColorBrush(Color.FromRgb(226, 232, 240));
+        _check.Visibility = Visibility.Collapsed; assessmentActions.Children.Add(_check);
+        _outcomeSurface.Background = Brushes.Transparent;
+        _outcomeSurface.Padding = new Thickness(4, 8, 4, 0);
         _outcomeSurface.Child = _outcome;
         _actions.Children.Add(_outcomeSurface);
         var outcomeDescriptor = System.ComponentModel.DependencyPropertyDescriptor.FromProperty(TextBlock.TextProperty, typeof(TextBlock));
         outcomeDescriptor.AddValueChanged(_outcome, (_, _) => {
             _outcomeSurface.Visibility = string.IsNullOrWhiteSpace(_outcome.Text) ? Visibility.Collapsed : Visibility.Visible;
         });
-        _actions.Children.Add(new TextBlock { Text = "Conversation", FontSize = 16,
-            Margin = new Thickness(0, 18, 0, 8) });
+        var conversation = new StackPanel();
+        _actions.Children.Add(TaskSurface(conversation));
+        conversation.Children.Add(new TextBlock { Text = "Conversation", FontSize = 16, FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 0, 8) });
         var accessDetails = new StackPanel();
         accessDetails.Children.Add(_agentUsage);
         accessDetails.Children.Add(_launchPolicy);
-        _actions.Children.Add(new Expander { Header = "Agent access and usage", Content = accessDetails,
+        conversation.Children.Add(new Expander { Header = "Agent access and usage", Content = accessDetails,
             Margin = new Thickness(0, 0, 0, 8) });
         AddCopyIcon(_launchPolicy, accessDetails, () => string.Join("\n\n", new[] {
             _agentUsage.Text, _launchPolicy.Text }.Where(value => !string.IsNullOrWhiteSpace(value))));
-        _actions.Children.Add(_messageStatus);
-        _actions.Children.Add(new TextBlock { Text = "Your message to the agent", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) });
-        _actions.Children.Add(_message);
+        conversation.Children.Add(_messageStatus);
+        conversation.Children.Add(new TextBlock { Text = "Your message to the agent", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) });
+        conversation.Children.Add(_message);
         var conversationActions = new WrapPanel();
         _send = Button("Send to agent", SendToAgentAsync);
         _send.FontWeight = FontWeights.SemiBold;
@@ -359,8 +394,8 @@ internal sealed partial class BackendQueueWindow : Window
         conversationActions.Children.Add(_send);
         _saveMessage = Button("Save without sending", async () => await DecideAsync("feedback"));
         conversationActions.Children.Add(_saveMessage);
-        _actions.Children.Add(conversationActions);
-        _actions.Children.Add(new Expander {
+        conversation.Children.Add(conversationActions);
+        conversation.Children.Add(new Expander {
             Header = "Saved messages for this item", Content = _savedMessages,
             Margin = new Thickness(0, 8, 0, 0)
         });
@@ -377,16 +412,17 @@ internal sealed partial class BackendQueueWindow : Window
             Padding = new Thickness(12, 8, 0, 8), Child = replyPanel });
         AddCopyIcon(_latestReply, replyPanel);
         _latestAnswer.Children.Add(_replyFreshness);
-        _actions.Children.Add(_latestAnswer);
+        conversation.Children.Add(_latestAnswer);
         _stopInvestigation = Button("Stop this investigation", StopInvestigationAsync);
         _stopInvestigation.HorizontalAlignment = HorizontalAlignment.Left;
         _stopInvestigation.Visibility = Visibility.Collapsed;
         header.Children.Add(_stopInvestigation);
         agentPanel.Children.Add(_agentReplies);
         agentPanel.Children.Add(Button("Refresh saved agent replies", ReadAgentRepliesAsync));
+        _actions.Children.Add(SectionDivider());
         _actions.Children.Add(new Expander {
             Header = "All agent answers and recommendation history", Content = agentPanel,
-            IsExpanded = false, Margin = new Thickness(0, 12, 0, 0)
+            IsExpanded = false, Margin = new Thickness(0)
         });
         _actions.Children.Add(new Expander {
             Header = "Technical evidence", Content = _detail,

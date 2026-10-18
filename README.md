@@ -334,6 +334,8 @@ Use the GitHub CLI acquisition path above rather than assuming successful API
 access proves a separate plain HTTPS Git clone is configured. Never copy a token
 into a Git remote URL; resolve authentication through supported GitHub CLI flows.
 
+For an existing WSL/uv installation using the Windows interface, use the development [coordinated update procedure](docs/setup.md#coordinated-wsluv-update-development) when the selected source revision provides it. It stages both components, closes verified Watcher owners gracefully and preserves the existing task rather than asking you to close windows or recreate scheduling. Do not replace a running backend with the simple reinstall command above.
+
 After the first PyPI release, upgrade to the latest published release with the
 installer that owns the tool:
 
@@ -389,6 +391,8 @@ An unreleased [selected-checkout update increment](docs/setup.md#selected-local-
 ## Development
 
 ### Development supervisor and optional Windows review
+
+See the [review-window guide](docs/review-window.md) for the two tabs, refresh controls, conversations and separate approval steps.
 
 Unreleased source adds a tool-capable Codex supervisor and one optional aggregate Windows review window. Python owns the saved context, messages, attempts, permissions and exact-action recovery; the window is an interaction channel, not a browser page or a second policy engine. AI-supervised maintenance is the intended primary automation path; the existing deterministic/manual and bounded metadata-advice modes remain available.
 

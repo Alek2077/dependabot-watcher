@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import WatcherConfig
+from .runtime_state import RuntimeStateError, run_lock
 from .schedulers.common import (
     CommandRunner,
     ScheduleError,
@@ -182,7 +183,19 @@ def manage_schedule(
     )
     adapter = scheduler_adapter(platform, runner=runner)
     operation = getattr(adapter, action)
-    report = operation(spec)
+    if action in {"install", "disable", "remove"}:
+        # Defer updater imports: the updater uses scheduler adapters, but
+        # ordinary read-only schedule inspection must not depend on updating.
+        from .updating import require_no_update
+        from .update_coordination import UpdateError
+        try:
+            with run_lock(state_directory.expanduser().absolute()):
+                require_no_update(state_directory.expanduser().absolute())
+                report = operation(spec)
+        except (RuntimeStateError, UpdateError) as exc:
+            raise ScheduleError("Schedule change was not applied: " + str(exc)) from exc
+    else:
+        report = operation(spec)
     if action == "install":
         report["verification"] = {
             "argv": _manual_verification_argv(spec),
