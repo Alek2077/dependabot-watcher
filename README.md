@@ -327,6 +327,8 @@ The JSON output is versioned with `schema_version: 1`. See [the architecture](ht
 
 ## Update, reset, uninstall, or roll back
 
+Read the selected version's [GitHub release notes](https://github.com/Alek2077/dependabot-watcher/releases) and update requirements first. Python and the Windows companion share one version and source revision. Experimental versions use an alpha/beta/release-candidate suffix and GitHub prerelease status; an unreleased source version is not proof that downloadable artifacts exist. Maintainers follow the [version and release procedure](docs/development-and-release.md#versions-and-release-notes).
+
 During the prerelease, update or roll back by selecting a reviewed source commit
 and reinstalling it with the installer that owns the tool. For example, from
 that clean pinned checkout: `uv tool install --force --python 3.14 .`.

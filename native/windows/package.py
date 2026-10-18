@@ -143,7 +143,7 @@ def dependency_notices(assets_file: Path, package_cache: Path | None = None) -> 
 
 def package_component(published: Path, assets: Path, output: Path, version: str,
                       commit: str, *, preview: bool, package_cache: Path | None = None) -> dict[str, object]:
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?", version):
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:(?:a|b|rc)[1-9][0-9]*)?(?:[-+][A-Za-z0-9.-]+)?", version):
         raise ValueError("Use an explicit package version.")
     if not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", commit):
         raise ValueError("Use the full verified source commit.")
