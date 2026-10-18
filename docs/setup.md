@@ -23,6 +23,8 @@ dependabot-watcher doctor --config PROFILE --state-dir STATE
 
 Selection can open the saved review queue but starts no model call. `doctor` checks the selected launcher/assembly fingerprints without starting the component; it does not prove runtime instruction loading, model completion or every packaged dependency. An updated component must be extracted separately and deliberately reselected, not overwritten in place. A development build found on a maintainer's machine is pre-existing test infrastructure, not evidence that fresh-user package acquisition works.
 
+After selection, reopen the queue with `dependabot-watcher review --config PROFILE --state-dir STATE`, using the same profile and state selectors. For the default profile and state, use `dependabot-watcher review`.
+
 ### Coordinated WSL/uv update (development)
 
 For an existing uv-owned WSL installation with a selected Windows component, the development `update` command coordinates replacement. Acquire a clean checkout of the exact reviewed GitHub commit and a matching supplied Windows package first; verify package provenance/checksums and extract it into a distinct stable directory. Do not use the active development checkout or overwrite the selected component. Other installers/platforms retain their separate update procedures; this command does not migrate them silently.
@@ -50,7 +52,7 @@ GitHub CLI does not require an IDE. Its browser login, credential store, and sup
 
 Before installation, use `gh auth status` to confirm the active account and `gh auth login` only when authentication is absent or unsuitable. Access to the Watcher source repository, access to each configured target repository, and permission to read Dependabot alerts are distinct. A successful `gh repo clone` proves only the first; setup verifies repository/branch access, doctor probes alert readiness, and a complete inspection remains the operational proof that the required read surfaces work.
 
-The default product path issues read-only GitHub requests. The sole mutating edge is the explicitly enabled exact-head PR merge in `execute`; a user's existing `gh` credential may carry broader authority than either path needs. Before public release, document and validate least-privilege credential profiles for the selected repositories, required read surfaces, and the optional merge capability. Future GitHub adapters may support a directly supplied fine-grained token, OAuth/device flow, or a GitHub App when their added complexity is justified. These adapters can remove the hard GitHub CLI dependency, but not the underlying authorization requirement.
+The default product path issues read-only GitHub requests. Exact-head PR merges through `execute` and development review-window PR branch updates are separate explicitly enabled and approved mutation paths; see the [execution contract](execution-contract.md). A user's existing `gh` credential may carry broader authority than either path needs. Before a supported public package release, document and validate least-privilege credential profiles for the selected repositories, required read surfaces and optional mutation capabilities. Future GitHub adapters may support a directly supplied fine-grained token, OAuth/device flow, or a GitHub App when their added complexity is justified. These adapters can remove the hard GitHub CLI dependency, but not the underlying authorization requirement.
 
 ### Restricted GitHub access
 
@@ -91,13 +93,13 @@ The generated profile is deliberately conservative: advisory mode `off`, autonom
 
 Subsequent commands load this profile automatically from the platform configuration path. Setup flags are initial choices, not arguments users or agents must repeat for every run.
 
+The default configuration is `$XDG_CONFIG_HOME/dependabot-watcher/config.toml` or `~/.config/dependabot-watcher/config.toml` on Linux, and under `%APPDATA%` on native Windows. `DEPENDABOT_WATCHER_CONFIG` overrides the default; `--config` selects a profile explicitly.
+
 Setup publishes the complete file atomically and refuses to overwrite an existing path. Move or edit an existing configuration deliberately rather than relying on a destructive force flag.
 
 For an environment where GitHub cannot be reached during setup, `--offline` creates an explicitly unverified profile. Supply branch overrides as `--branch owner/repository=branch`; otherwise offline setup uses `main` as an assumption that `doctor` must later verify.
 
-## Advanced model setup
-
-### Selected local checkout updates (development)
+## Selected local checkout updates (development)
 
 Remote-only operation remains the default. In an unreleased development build supporting `sync`, users may register exact checkouts and branches during setup:
 
@@ -126,7 +128,7 @@ This initial backend requires POSIX/WSL and refuses dirty, untracked, ahead/dive
 
 Intent and outcomes are saved. An interrupted or uncertain attempt is never automatically replayed or rolled back. Read-only recovery can confirm a clean exact old/new checkout and, for new tracking-aware reviews, the corresponding tracking-reference state. Dirty index/worktree state or inconsistent branch/tracking outcomes save `manual_repair_required`, preserve files/references and keep new integration blocked. This may be a partial write or subsequent user work; resolve it through a separately authorized normal workflow, then observe the saved attempt again. Changed ownership, branch or metadata remains a refusal, not permission to repair. Unresolved saved attempts remain discoverable when registrations change; CLI `sync --review-id … --recover` needs the same private state directory but can observe the saved binding even when its old configuration is unavailable. This grants no new integration authority. Connected completion verifies matching upstream tracking metadata as well as the clean local branch before finalization; stale metadata stays pending for exact review. Older native components retain branch-only previews because they cannot disclose the new effect; deliberately select the updated component for tracking-aware native updates. Saved results are historical evidence for the supervisor, not proof of current checkout readiness, dependency installation or production health. Neither a remote merge nor a local fast-forward alone establishes full workflow completion. See the [bounded validation record](validation.md#selected-local-checkout-synchronization--development-checkpoint-2026-10-09) for reviewed, installed and remaining live acceptance boundaries.
 
-### Bounded advice
+## Bounded advice
 
 Provider use is independent from GitHub action authority. Bounded advice uses ambient Codex CLI authentication, without the supervisor's expected-account-type check or an account-bound runtime acknowledgement. Confirm the effective account/usage boundary and exact model/reasoning before invocation; stop for a new decision if authentication changes or cannot be verified. See the [operator consent boundary](agent-operator-guide.md#bounded-model-advice). Enabling advice requires explicit mode, model, reasoning, and setup acknowledgement:
 
@@ -387,8 +389,14 @@ Credentials, tokens, cookies, raw auth responses, environment-file contents, and
 
 ## Profile lifecycle and removal
 
+Read the selected version's [release notes](https://github.com/Alek2077/dependabot-watcher/releases) and update requirements before replacing an installation. Python and the Windows companion share one version and source revision. A development version string does not establish that downloadable packages exist. For supplied development packages, use their accompanying notes and checksums.
+
 `doctor` reports the configuration path it resolved and, when execution is enabled, the audit-state location. Setup deliberately has no destructive overwrite flag. To replace a profile, move the existing file to a private backup, create and validate the replacement, then remove the backup only when it is no longer needed. `DEPENDABOT_WATCHER_CONFIG` is the safer choice for parallel experiments or a separate execution profile.
 
 Run `dependabot-watcher schedule inventory` before uninstalling the executable in every host context where scheduling was used. Native Windows PowerShell and WSL select separate scheduler contexts and must each be checked when both were configured. Remove each verified registration with its listed `recovery_command`, then repeat inventory in every applicable context and confirm that no verified registrations remain. A name-matching candidate that inventory reports as untrusted requires manual investigation and must not be removed by name alone. Then uninstall with `uv tool uninstall dependabot-watcher` or `pipx uninstall dependabot-watcher`, matching the installer originally used. Uninstalling leaves configuration, run history, plans, and execution audit evidence in place and has no GitHub effect. Delete local configuration or state only after confirming the exact paths and any retention requirement; deleting an audit log is not a recovery mechanism and does not undo a merge.
 
-Prefer exact published versions for updates and rollbacks. Source-based recovery should use an explicitly reviewed tag or commit, never a moving branch. For an existing WSL/uv installation with the Windows interface, use the [coordinated procedure](#coordinated-wsluv-update-development) when available in that selected revision. For other supported installer paths, establish that active work has finished before reinstalling the acquired checkout with `uv tool install --force .` or `pipx install --force .`, then rerun `doctor`, `inspect`, and `plan` before enabling execution. A rollback also requires checking that the older backend can read the retained state; do not discard history to force compatibility.
+Prefer exact published versions for updates and rollbacks. Source-based recovery should use an explicitly reviewed tag or commit, never a moving branch. For an existing WSL/uv installation with the Windows interface, use the [coordinated procedure](#coordinated-wsluv-update-development) when available in that selected revision. For other supported installer paths, establish that active work has finished and select a stable interpreter explicitly when reinstalling the acquired checkout, using the commands below. Then rerun `doctor`, `inspect`, and `plan` before enabling execution. A rollback also requires checking that the older backend can read the retained state; do not discard history to force compatibility.
+
+Acquire source through `gh repo clone Alek2077/dependabot-watcher`, then check out the exact reviewed tag or commit. Successful GitHub API access does not establish that a separate plain HTTPS Git clone has authentication configured. Never put a token in a Git remote URL; use supported GitHub CLI authentication flows. Select a stable Python interpreter explicitly for a source reinstall, for example `uv tool install --force --python 3.14 .` or `pipx install --force --python /path/to/stable/python .` from that pinned checkout. Do not use a simple reinstall to replace an active backend; use coordination where supported.
+
+After a PyPI release is available, an exact published version can be installed with `uv tool install --python 3.14 'dependabot-watcher==VERSION'` or `pipx install --python /path/to/stable/python 'dependabot-watcher==VERSION'`. Use `uv tool upgrade dependabot-watcher` or `pipx upgrade dependabot-watcher` for an intended upgrade, or reinstall the exact selected version with the owning installer's `--force` option to pin or roll back. Check that the requested version is actually published and compatible with the retained state and Windows component first.
