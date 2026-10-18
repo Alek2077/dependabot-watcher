@@ -45,6 +45,14 @@ def test_preview_creates_nothing(packager, inputs):
     assert not output.exists()
 
 
+@pytest.mark.parametrize("version", ["0.4.0a1", "0.4.0b2", "0.4.0rc1"])
+def test_release_prerelease_version_packages_matching_manifest(packager, inputs, version):
+    published, assets, output = inputs
+    result = packager.package_component(published, assets, output, version, "a" * 40, preview=False)
+    with zipfile.ZipFile(result["archive"]) as archive:
+        assert json.loads(archive.read("component-manifest.json"))["version"] == version
+
+
 def test_package_contains_runtime_manifest_and_notices_but_no_symbols(packager, inputs):
     published, assets, output = inputs
     result = packager.package_component(published, assets, output, "0.3.0", "a" * 40, preview=False)

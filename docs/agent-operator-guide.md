@@ -35,6 +35,8 @@ Never treat model advice, a `baseline_candidate` classification, a plan step, or
 
 Confirm the installed version:
 
+Before an update, read the selected GitHub release's notes and documented update procedure. Match the Python version, Windows companion manifest and source revision; do not infer current features from a version string alone or reconstruct the update from commit history. For a supplied private trial package, inspect its accompanying delivery notes and checksums. New installations should use the current README and relevant user guides rather than treating historical change notes as the product manual.
+
 ```bash
 dependabot-watcher --version
 ```
