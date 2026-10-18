@@ -1,6 +1,6 @@
 # Architecture
 
-Dependabot Watcher has a side-effect-free inspection core, an optional advisory layer, a deterministic planning layer, and one separately gated execution edge.
+Dependabot Watcher has a side-effect-free inspection core, an optional advisory layer, a deterministic planning layer, and separately gated merge and development PR branch-update surfaces.
 
 The documentation and command contracts are maintained for both human operators and capable automation agents. Future changes should preserve explicit scope and authority, structured evidence, and clear operational commands.
 
@@ -50,7 +50,7 @@ inspection + optional advice -> deterministic evidence graph -> Recommended Orde
                           freshness / hard priority      text / JSON / Markdown
 ```
 
-Execution never consumes model-selected identity or a free-form instruction:
+The merge execution path never consumes model-selected identity or a free-form instruction:
 
 ```text
 saved JSON plan -> live replan -> exact material-evidence match -> approval token
@@ -60,6 +60,8 @@ saved JSON plan -> live replan -> exact material-evidence match -> approval toke
                                             exact-head GitHub merge -> audit events
 ```
 
+The separate development branch-update path prepares an exact current PR/target binding, obtains single-use confirmation and rechecks it before GitHub's update-branch call. Its saved outcome requires observation and fresh validation; it grants no merge approval. See the [branch-update contract](execution-contract.md#separate-pr-branch-update).
+
 ## Ownership boundaries
 
 Validation cache reuse is scoped to one repository and an identical raw Git source tree, including tracked modes and dependency locks; commits with identical trees may share a private cache, but different trees do not. Disposable copies and execution receipts retain their exact commit/action bindings. `validation_evidence.py` maintains bounded controller-owned successful execution provenance outside the sandbox mounts, without raw commands or output. Preparation can disclose matching source/policy history, explicitly not fresh execution or established environment equivalence. The agent must assess environmental, external-input and policy validity before reusing a conclusion; commands are never silently skipped. This development increment does not introduce batch execution authority.
@@ -68,12 +70,12 @@ Validation cache reuse is scoped to one repository and an identical raw Git sour
 - `setup.py` owns validated setup choices and exclusive creation of one non-secret user profile. It does not overwrite existing configuration or invoke a model.
 - `diagnostics.py` owns bounded executable/auth/repository/configured-branch readiness checks and Dependabot ecosystem support reporting. Provider commands are adapter-owned rather than configuration-selected, repository YAML is safely bounded, and raw command output is not retained in reports.
 - `operational_output.py` renders setup and diagnostic reports without mixing them into inspection evidence.
-- `github.py` owns the GitHub transport. Collection methods remain read-only; the sole mutation method merges one named PR using an explicit expected head SHA and supported merge method.
+- `github.py` owns the GitHub transport. Collection methods remain read-only; mutation methods support an exact-head PR merge and a separately approved development PR branch update through GitHub's update-branch endpoint.
 - `policy.py` owns deterministic path categorization, check-state assessment, collector-owned candidate identity, recent-sensitive-change matching, and alert correlation.
 - `inspector.py` owns bounded multi-repository orchestration and explicit partial-result accounting.
 - `manifests.py` owns bounded, data-only Python requirements inclusion evidence.
 - `planning.py` owns stable plan identity, deterministic ordering, PR/alert relationship levels, freshness, and validation gates.
-- `execution.py` owns saved-plan validation, live material-evidence matching, exact approval tokens, execution eligibility, one-action locking, audit events, reconciliation, and the call to the sole GitHub mutation method.
+- `execution.py` owns saved-plan validation, live material-evidence matching, exact approval tokens, execution eligibility, one-action locking, audit events, reconciliation, and the exact-head GitHub merge call. `branch_refresh.py` separately owns PR branch-update preparation, single-use confirmation and outcome observation; its approval does not authorize a merge.
 - `output.py` owns the three stdout representations.
 - `cli.py` owns command parsing and stable process exit semantics.
 - `advisory.py` owns provider-neutral request/result contracts, deterministic candidate priority, budgets, batching, escalation, identity rebinding, and advisory orchestration.
@@ -98,7 +100,7 @@ User workflow instructions guide the desired operation but cannot override permi
 
 ## GitHub access boundary
 
-Authenticated access is a product requirement for private repositories and Dependabot security alerts; GitHub CLI is only the first implementation of that requirement. The current adapter delegates bounded repository, pull-request, and API reads to `gh`, plus the sole explicitly enabled exact-head PR merge call. GitHub CLI also supplies its supported browser, credential-store, or environment-token authentication. No IDE is required.
+Authenticated access is a product requirement for private repositories and Dependabot security alerts; GitHub CLI is only the first implementation of that requirement. The current adapter delegates bounded repository, pull-request, and API reads to `gh`, plus separately gated exact-head PR merge and development PR branch-update calls. GitHub CLI also supplies its supported browser, credential-store, or environment-token authentication. No IDE is required.
 
 Editor authentication is intentionally outside this boundary. The watcher does not inspect or extract VS Code or extension credentials, because they belong to another application's private integration and are not a safe or durable credential API.
 
@@ -106,7 +108,7 @@ The `GitHubClient` protocol keeps collection and policy independent from GitHub 
 
 ## Safety invariants
 
-- Within Watcher's GitHub adapter and executor, the sole mutation is an exact repository/PR/head-bound merge. A tool-capable supervisor is a separate access boundary: inherited, named restricted or full access does not establish isolation from ambient credentials, connectors or direct remote actions. The current adapter explicitly records that isolation as unestablished; prompts and a worktree do not supply it.
+- Watcher's GitHub mutation paths are the exact repository/PR/head-bound merge and the separately approved development PR branch update. Their distinct approval, freshness and recovery boundaries are described in the [execution contract](execution-contract.md). A tool-capable supervisor is a separate access boundary: inherited, named restricted or full access does not establish isolation from ambient credentials, connectors or direct remote actions. The current adapter explicitly records that isolation as unestablished; prompts and a worktree do not supply it.
 - Repository, PR number, base, head reference, and head SHA come from configuration and GitHub collection, never from a model.
 - `inspect` never invokes a model. `advise` and `plan` invoke one only when explicitly enabled in configuration.
 - Model output is advisory and is rebound through an opaque collector-issued candidate ID.

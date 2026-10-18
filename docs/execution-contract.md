@@ -1,6 +1,28 @@
 # Execution contract
 
-`dependabot-watcher execute` is the product's first and only mutating edge. It can merge one exact Dependabot pull request per invocation. It cannot close, comment, approve, label, rebase an open PR branch, create a remediation PR, deploy, promote a branch, or execute unattended. An explicitly configured `rebase` method means GitHub rebase-merge, not a separate PR-branch rebase operation.
+`dependabot-watcher execute` can merge one exact Dependabot pull request per invocation. This contract describes that merge surface. It cannot close, comment, approve, label, rebase an open PR branch, create a remediation PR, deploy, promote a branch, or execute unattended. An explicitly configured `rebase` method means GitHub rebase-merge, not a separate PR-branch rebase operation. The development review window also offers a [separately approved PR branch update](#separate-pr-branch-update); it is not merge approval.
+
+## CLI approval sequence
+
+First configure the explicit merge method and required checks through the [execution setup procedure](setup.md#approval-gated-execution-setup). Save a machine-readable plan in a user-private location, then run a read-only preflight for one displayed step ID:
+
+```bash
+(umask 077 && dependabot-watcher plan \
+  --repo OWNER/REPOSITORY \
+  --format json > watcher-plan.json)
+dependabot-watcher execute --plan-file watcher-plan.json --step-id STEP_ID
+```
+
+The selected repository plan and target step must be complete; unrelated repositories may remain partial but cannot be executed from that evidence. The plan contains private repository evidence: do not publish it, and remove it when no longer needed. An eligible preflight prints the exact action and its approval confirmation token. After the operator explicitly authorizes that current action, supply the matching token:
+
+```bash
+dependabot-watcher execute \
+  --plan-file watcher-plan.json \
+  --step-id STEP_ID \
+  --approval-token APPROVAL_TOKEN
+```
+
+Use the same configuration and state selectors throughout. Possession of the token is not independent authorization; the layers and freshness checks below still apply.
 
 ## Authority layers
 
@@ -43,3 +65,11 @@ After failure, re-run inspection before considering another action. A leftover l
 There is no automatic mode in this contract. The approval-gated path must first complete an explicitly authorized real action and recovery/idempotency exercise. Only then may a later design pass define and dogfood a narrowly bounded low-risk automatic class. Enabling the current execution capability does not reserve or imply that future authority.
 
 Any later automatic class must distinguish update magnitude, grouping, ecosystem support, repository validation, and downstream risk explicitly rather than admitting major, grouped, or otherwise ambiguous updates merely because their changed paths and current checks look clean.
+
+## Separate PR branch update
+
+The development [review window](review-window.md) can separately request GitHub to merge the current target branch into a same-repository Dependabot PR branch before further validation. This uses GitHub's update-branch endpoint with the expected PR head SHA; it neither merges the PR into its target nor rebases it or updates a developer checkout.
+
+Preparation requires an explicitly mutation-enabled approval profile and an eligible current selection, captures the exact PR head and target branch revision, and saves a short-lived review. Confirmation is single-use and rechecks the selection, configuration and live branch binding before the request. The saved intent precedes the remote write. An uncertain outcome requires observation/recovery rather than automatic replay. The changed PR revision needs fresh evidence and validation; branch-update approval grants no subsequent merge authority.
+
+GitHub pins the expected PR head but may include newer target commits while processing; Watcher observes the target tip before the request and cannot atomically pin it. Validate the resulting PR revision before considering a merge.
