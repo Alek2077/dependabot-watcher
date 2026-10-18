@@ -18,7 +18,7 @@ We recommend an agent that can investigate and test updates—your own or Watche
 
 We are working toward [complete agent-led maintenance](#direction-complete-agent-led-maintenance): investigate, validate, handle approved changes, update selected working copies and report the results. That full loop is not finished yet.
 
-**Validation status (2026-10-18):** Hosted CI is temporarily suspended after GitHub refused to start jobs because of an account-level authorization restriction. The latest full local Python 3.14 regression passed **1,821 tests with two skips**, with additional local type, packaging and Windows checks. Hosted CI has not verified the current revision. See the [dated validation evidence and limitations](docs/validation.md#local-alpha-delivery-and-hosted-ci-restriction--2026-10-18).
+**Validation status (2026-10-18):** Hosted CI is temporarily suspended. The latest full local Python 3.14 regression passed **1,821 tests with two skips**, with additional local type, packaging and Windows checks. Hosted CI has not verified the current revision. See the [dated validation evidence and limitations](docs/validation.md#local-alpha-delivery-and-hosted-ci-restriction--2026-10-18).
 
 ## Install and set up
 
