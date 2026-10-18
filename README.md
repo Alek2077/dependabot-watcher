@@ -6,6 +6,26 @@ Dependabot Watcher helps you keep track of dependency updates across your reposi
 
 Use it with your existing AI agent, or try Watcher's development supervisor to investigate updates and run checks in the background. **Merges require your approval for the specific PR.** Watcher checks it again before merging. It does not currently merge unattended or complete every maintenance task automatically.
 
+## Requirements and current scope
+
+For the current built-in background supervisor, you need:
+
+- Windows x64 + WSL2
+- Python 3.11–3.14
+- `uv` or `pipx`
+- GitHub CLI, authenticated
+- Codex CLI, authenticated in WSL
+- Watcher's Python backend + matching Windows companion
+
+**The Windows companion is required today, even with its window hidden. Making it optional is [planned](docs/roadmap.md#current-acceptance-priority-approval-first-background-maintenance).**
+
+Scope and alternatives:
+
+- **Current background-supervisor path:** Windows with WSL2, Codex CLI installed and authenticated in WSL, the Python backend and the matching Windows x64 companion. The companion is required for this path even when its window stays hidden; a component-free supervisor is not currently supported.
+- **CLI foundation:** stable Python 3.11–3.14, `uv` (recommended) or `pipx`, and authenticated GitHub CLI with access to each target repository and its Dependabot alerts. Basic inspection/planning can run without AI or the Windows companion.
+- **AI support:** Watcher's built-in supervisor and bounded-advice adapter currently use Codex CLI. Your existing agent can also operate Watcher's CLI; see the [agent support matrix](docs/agent-support-matrix.md) for verified and unverified integrations.
+- **Platform limits:** the review window is Windows-only. Native Windows CLI and scheduler checks have separate evidence and remaining gates; native Linux/macOS scheduling and broader platform acceptance remain experimental or pending. See [platform status](#platform-status). The ZIP includes the companion's runtime libraries; it does not install Python, GitHub CLI, Codex CLI or WSL.
+
 ## Choose how to use Watcher
 
 | Your goal | Path |
@@ -260,7 +280,7 @@ Development source supports [separately approved clean fast-forward checkout upd
 
 ## Development
 
-### Development supervisor and optional Windows review
+### Development supervisor and Windows review
 
 See the [review-window guide](docs/review-window.md) for the two tabs, refresh controls, conversations and separate approval steps.
 
