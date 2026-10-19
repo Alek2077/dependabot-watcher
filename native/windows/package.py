@@ -11,6 +11,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
@@ -142,7 +144,10 @@ def dependency_notices(assets_file: Path, package_cache: Path | None = None) -> 
 
 
 def package_component(published: Path, assets: Path, output: Path, version: str,
-                      commit: str, *, preview: bool, package_cache: Path | None = None) -> dict[str, object]:
+                      commit: str, *, preview: bool, package_cache: Path | None = None,
+                      archive_format: str = "7z", seven_zip: str | None = None) -> dict[str, object]:
+    if archive_format not in {"7z", "zip"}:
+        raise ValueError("Archive format must be 7z or zip.")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:(?:a|b|rc)[1-9][0-9]*)?(?:[-+][A-Za-z0-9.-]+)?", version):
         raise ValueError("Use an explicit package version.")
     if not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", commit):
@@ -171,41 +176,75 @@ def package_component(published: Path, assets: Path, output: Path, version: str,
     result: dict[str, object] = {"status": "preview" if preview else "packaged", "version": version,
         "source_commit": commit, "platform": "windows-x64", "runtime_files": len(files),
         "uncompressed_runtime_bytes": sum(path.stat().st_size for path in files),
-        "license_files": len(notices), "signing": "unsigned", "published": False}
+        "license_files": len(notices), "archive_format": archive_format, "signing": "unsigned", "published": False}
     if preview:
         return result
+    compressor = shutil.which(seven_zip) if seven_zip else shutil.which("7zz") or shutil.which("7z")
+    if compressor is not None:
+        compressor = str(Path(compressor).absolute())
+    if archive_format == "7z" and not compressor:
+        raise ValueError("7-Zip is required to package a 7z archive; use --seven-zip PATH or --archive-format zip.")
     output.mkdir(parents=True, exist_ok=True)
-    name = f"dependabot-watcher-review-{version}-windows-x64.zip"
+    name = f"dependabot-watcher-review-{version}-windows-x64.{archive_format}"
     destination = output / name
     if destination.exists():
         raise ValueError("Refusing to replace an existing package.")
-    # Stream into one temporary ZIP, never duplicate the self-contained runtime.
+    # Snapshot once, preserving mutation checks; only the verified archive is published.
     with tempfile.TemporaryDirectory(prefix=".watcher-package-", dir=output) as temporary:
+        staging = Path(temporary) / "payload"
+        staging.mkdir()
         candidate = Path(temporary) / name
         records: list[dict[str, object]] = []
-        with zipfile.ZipFile(candidate, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-            for path in files:
-                real_path(path)
-                before = path.stat()
-                relative = path.relative_to(published).as_posix()
-                digest = hashlib.sha256()
-                with path.open("rb") as source, archive.open(relative, "w", force_zip64=True) as target:
-                    while chunk := source.read(1024**2):
-                        digest.update(chunk)
-                        target.write(chunk)
-                after = path.stat()
-                if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-                    raise ValueError("Published files changed during packaging.")
-                records.append({"path": relative, "bytes": before.st_size, "sha256": digest.hexdigest()})
-            for relative, content in additions.items():
-                archive.writestr(relative, content)
-                records.append({"path": relative, "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()})
-            archive.writestr("component-manifest.json", json.dumps({**result, "files": records}, indent=2) + "\n")
-        with zipfile.ZipFile(candidate) as archive:
-            if archive.testzip() is not None:
-                raise ValueError("Package integrity verification failed.")
-        # Same-filesystem exclusive link publishes a complete ZIP atomically,
-        # without replacing another package or leaving a partial destination.
+        for path in files:
+            real_path(path)
+            before = path.stat()
+            relative = path.relative_to(published).as_posix()
+            target = staging / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256()
+            with path.open("rb") as source, target.open("xb") as sink:
+                while chunk := source.read(1024**2):
+                    digest.update(chunk)
+                    sink.write(chunk)
+            after = path.stat()
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise ValueError("Published files changed during packaging.")
+            records.append({"path": relative, "bytes": before.st_size, "sha256": digest.hexdigest()})
+        for relative, content in additions.items():
+            target = staging / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            records.append({"path": relative, "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()})
+        (staging / "component-manifest.json").write_text(json.dumps({**result, "files": records}, indent=2) + "\n", encoding="utf-8")
+        if archive_format == "zip":
+            with zipfile.ZipFile(candidate, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+                for path in sorted(staging.rglob("*")):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(staging).as_posix())
+            with zipfile.ZipFile(candidate) as archive:
+                if archive.testzip() is not None:
+                    raise ValueError("Package integrity verification failed.")
+        else:
+            assert compressor is not None
+            def run_7z(arguments: list[str], cwd: Path) -> None:
+                try:
+                    subprocess.run([compressor, *arguments], cwd=cwd, check=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=1800)
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                    raise ValueError("7-Zip packaging or verification failed; no package was published.") from error
+            run_7z(["a", "-t7z", "-mx=7", "-md=32m", "-mmt=2", "-ms=on", str(candidate), "."], staging)
+            run_7z(["t", str(candidate)], staging)
+            extracted = Path(temporary) / "verified"
+            extracted.mkdir()
+            run_7z(["x", "-y", f"-o{extracted}", str(candidate)], staging)
+            expected = {path.relative_to(staging).as_posix(): path for path in staging.rglob("*") if path.is_file()}
+            actual = {path.relative_to(extracted).as_posix(): path for path in extracted.rglob("*") if path.is_file()}
+            if expected.keys() != actual.keys() or any(
+                hashlib.sha256(path.read_bytes()).digest() != hashlib.sha256(actual[name].read_bytes()).digest()
+                for name, path in expected.items()
+            ):
+                raise ValueError("Extracted package differs from its input; no package was published.")
+        # Same-filesystem exclusive link publishes only a complete verified archive.
         os.link(candidate, destination)
     with destination.open("rb") as archive_file:
         archive_hash = hashlib.file_digest(archive_file, "sha256").hexdigest()
@@ -222,11 +261,14 @@ def main() -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--package-cache", type=Path, help="Resolved NuGet cache, when packaging a Windows build from WSL.")
+    parser.add_argument("--archive-format", choices=("7z", "zip"), default="7z")
+    parser.add_argument("--seven-zip", help="7-Zip executable for 7z packaging (otherwise discover 7zz or 7z on PATH).")
     parser.add_argument("--preview", action="store_true")
     args = parser.parse_args()
     try:
         result = package_component(args.published_directory, args.assets_file, args.output_directory,
-                                   args.version, args.source_commit, preview=args.preview, package_cache=args.package_cache)
+                                   args.version, args.source_commit, preview=args.preview, package_cache=args.package_cache,
+                                   archive_format=args.archive_format, seven_zip=args.seven_zip)
     except (ValueError, OSError, KeyError, TypeError, ET.ParseError, zipfile.BadZipFile) as error:
         parser.exit(2, f"Component packaging failed: {error}\n")
     print(json.dumps(result, indent=2))
