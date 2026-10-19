@@ -223,6 +223,7 @@ def _probe_state(python: str, config_path: Path, state: Path) -> dict[str, str |
             "from dependabot_watcher.supervisor_permissions import SupervisorPermissions; "
             "from dependabot_watcher.execution import validate_audit_history; "
             "from dependabot_watcher.scheduled_triggers import _load as load_trigger,_policy as trigger_policy; "
+            "from dependabot_watcher.scheduled_triggers import load_trigger_history; "
             "from dependabot_watcher.supervision import SupervisorJobs; "
             "from dependabot_watcher.review_actions import _load_reviews; "
             "from dependabot_watcher.local_sync import _journal; "
@@ -234,8 +235,8 @@ def _probe_state(python: str, config_path: Path, state: Path) -> dict[str, str |
             "_load_reviews(p,datetime.now(timezone.utc)); _journal(p,read_only=True); _load(p); "
             "[supervision_status(q,{'schema_version':1,'request_id':'read_update_status','operation':'supervisor_status',"
             "'repository':r.name}) for r in c.repositories]; "
-            "[load_trigger(q,f.stem) for f in (p/'scheduled-supervisor').glob('*.json') "
-            "if load_private_json(p,f.relative_to(p))['configuration_digest']==trigger_policy(q)]"
+            "[(load_trigger(q,f.stem) if load_trigger_history(p,f.stem)['configuration_digest']==trigger_policy(q) "
+            "else load_trigger_history(p,f.stem)) for f in (p/'scheduled-supervisor').glob('*.json')]"
         )
         _command([python, "-I", "-c", code, str(config_path), str(copy)], timeout=45)
     if before != _state_snapshot(state):
@@ -312,7 +313,8 @@ def _require_idle(state: Path) -> None:
     if os.path.lexists(state / jobs_path):
         journal = load_private_json(state, jobs_path, maximum_bytes=10_000_000, read_only=True)
         jobs = journal.get("jobs")
-        if not isinstance(jobs, dict) or any(not isinstance(job, dict) or job.get("status") == "running" for job in jobs.values()):
+        if not isinstance(jobs, dict) or any(not isinstance(job, dict) or job.get("status") not in (
+                "prepared", "completed", "superseded", "failed", "interrupted") for job in jobs.values()):
             raise UpdateError("An investigation is recorded as running or its status is unavailable. Check saved agent status/recovery; let active work finish before updating. No investigation was stopped.")
     for name, field, pending in (
             ("review-actions.json", "reviews", {"executing", "recovery_required"}),
@@ -322,10 +324,21 @@ def _require_idle(state: Path) -> None:
             records = load_private_json(state, Path(name), maximum_bytes=10_000_000, read_only=True).get(field)
             if not isinstance(records, dict) or any(not isinstance(item, dict) or item.get("status") in pending for item in records.values()):
                 raise UpdateError("A saved repository action needs recovery before replacement. Resolve its exact outcome; no action was replayed or stopped.")
+    from .scheduled_triggers import load_trigger_history
+    from .review_queue import ReviewQueueError
     for path in (state / "scheduled-supervisor").glob("*.json"):
-        receipt = load_private_json(state, path.relative_to(state), maximum_bytes=65_536, read_only=True)
-        slots = receipt.get("slots")
-        if not isinstance(slots, list) or any(not isinstance(item, dict) or item.get("phase") in {"started", "recovery_required"} for item in slots):
+        try:
+            receipt = load_trigger_history(state, path.stem)
+        except (ReviewQueueError, RuntimeStateError) as exc:
+            raise UpdateError("Scheduled investigation history is malformed; preserve it for recovery before updating.") from exc
+        slots = receipt["slots"]
+        # A failed scheduled launch consumes its slot permanently. Its
+        # recovery_required receipt is retained history, not an active lease
+        # or authority to replay. Actual inference is guarded by the job
+        # journal and per-repository launch locks acquired by _complete.
+        # started still means the launcher never recorded a terminal outcome.
+        if not isinstance(slots, list) or any(not isinstance(item, dict) or item.get("phase") not in (
+                "reserved", "finished", "recovery_required") for item in slots):
             raise UpdateError("A scheduled investigation has an unresolved launch receipt; recover it before updating.")
     from .execution import _read_audit_events
     latest = {event["action_id"]: event for event in _read_audit_events(state)}

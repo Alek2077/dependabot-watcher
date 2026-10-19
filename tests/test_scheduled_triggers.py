@@ -15,7 +15,7 @@ from dependabot_watcher.github import GitHubClient
 from dependabot_watcher.review_bridge import exchange
 from dependabot_watcher.review_queue import ReviewConfigurationChanged, ReviewQueue, ReviewQueueError, supervisor_context_digest
 from dependabot_watcher.runtime_state import load_private_json, save_private_json
-from dependabot_watcher.scheduled_triggers import claim_trigger, consume_slot, finish_slot
+from dependabot_watcher.scheduled_triggers import claim_trigger, consume_slot, finish_slot, load_trigger_history
 from dependabot_watcher.supervisor_bridge import launch_exchange
 from test_review_queue import decision, file_bound_queue, persist_plan
 from test_scheduled_supervisor import REPOSITORY, RUN_ID, complete, save_attempt, scheduled_queue
@@ -149,6 +149,21 @@ def test_failure_never_restores_launch_slot(scheduled_queue: tuple[ReviewQueue, 
     assert receipt(queue)["slots"][0]["phase"] == "recovery_required"
     with pytest.raises(ReviewQueueError, match="already consumed"):
         consume_slot(queue, RUN_ID, REPOSITORY, digest)
+
+
+def test_historical_reader_does_not_rebind_old_policy_or_replay_budget(scheduled_queue: tuple[ReviewQueue, Path]) -> None:
+    queue, _ = scheduled_queue
+    consume_slot(queue, RUN_ID, REPOSITORY, selected(queue))
+    finish_slot(queue, RUN_ID, REPOSITORY)
+    value = receipt(queue)
+    value["configuration_digest"] = "f" * 64
+    path = Path("scheduled-supervisor") / f"{RUN_ID}.json"
+    save_private_json(queue.directory, path, value)
+    before = (queue.directory / path).read_bytes()
+    assert load_trigger_history(queue.directory, RUN_ID) == value
+    with pytest.raises(ReviewQueueError, match="different configuration"):
+        claim_trigger(queue, RUN_ID)
+    assert (queue.directory / path).read_bytes() == before
 
 
 def test_selection_race_does_not_reserve_old_context(

@@ -4,6 +4,18 @@ This document records reproducible product-level validation without exposing pri
 
 For instructions, use the [validation workflow](validation-workflow.md); for delivery and continuing user installations, use [development, release and dogfooding](development-and-release.md). The dated entries below are historical evidence, not a runbook or a claim that every earlier limitation remains current. Add significant acceptance summaries rather than routine command logs; this record does not need to be read end-to-end for each change.
 
+## Scheduled launch history and update admission — 2026-10-19
+
+An ongoing-use update exposed a false blocker: retained failed scheduled-launch receipts prevented replacement even though no investigation was running. The update stopped during preparation, before closing the window, pausing the task or replacing either component. The correction treats valid consumed failure receipts as retained history while preserving refusal for active launch leases, running or unverifiable jobs, unfinished `started` slots and uncertain repository actions. Receipt history is not deleted, rewritten or made launchable again.
+
+A separate read-only historical receipt reader validates structure and digests even when the configuration has changed. Current launch operations additionally require the exact current policy, workload and repository scope. Malformed historical receipts still block replacement. The setup instructions explicitly select the existing supported Python interpreter for the temporary updater runner.
+
+The focused updater/scheduling suites passed 132 tests, targeted type checks reported zero diagnostics, and the full local Python 3.14.7 regression passed 1,840 tests with two skips. A stale documentation assertion found by the full run was corrected to check the README's concise approval boundary and the unchanged detailed execution contract. The final wheel was installed into a fresh isolated environment; installed CLI help, idle admission and candidate readers passed against a private-permission copy of the actual saved history. The released updater reproduced the original refusal on that copy. All 410 existing copied-state file hashes remained unchanged, including 67 retained-state entries checked by the candidate reader.
+
+Independent native and two external code reviewers rechecked the correction without remaining medium/high findings. Their source review was checked against the runtime evidence above; it is not a substitute for a completed user update.
+
+These checks do not establish a completed update of the continuing installation or a new live Windows/WSL investigation. A stranded `started` launch remains a conservative blocker; supported observation/finalization recovery for that separate case remains open. Hosted CI is temporarily suspended.
+
 ## Public alpha release — 2026-10-18
 
 [Version 0.4.0a1](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a1) was published as an experimental GitHub prerelease at source commit `211a73903c4bb8a3bfff51e98795546cc108c342`. The release contains a Python wheel, source distribution, self-contained Windows x64 companion ZIP and a checksum file covering all three packages. It is not published on PyPI. The owner explicitly approved a locally built release as an exception to the normal hosted CI and hosted release-rehearsal requirement; those hosted checks remain incomplete. Hosted CI is temporarily suspended.

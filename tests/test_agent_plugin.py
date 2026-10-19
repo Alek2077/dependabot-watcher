@@ -120,8 +120,13 @@ def test_agent_skill_metadata_is_discoverable_and_invokable() -> None:
     assert "no policy-authorized unattended execution mode" in operator_guide
 
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-    assert "possession of it is not independent authorization" in readme
-    assert "explicitly authorizes that exact current action" in readme
+    assert "operator approval of the exact PR/base/head/method" in readme
+    assert "not secrets, independent credentials or proof of human approval" in readme
+    execution_contract = (
+        REPOSITORY_ROOT / "docs" / "execution-contract.md"
+    ).read_text(encoding="utf-8")
+    assert "Possession of the token is not independent authorization" in execution_contract
+    assert "operator explicitly authorizes that current action" in execution_contract
 
 
 def test_agent_plugin_does_not_add_an_execution_surface() -> None:
