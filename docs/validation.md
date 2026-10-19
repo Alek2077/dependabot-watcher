@@ -4,6 +4,16 @@ This document records reproducible product-level validation without exposing pri
 
 For instructions, use the [validation workflow](validation-workflow.md); for delivery and continuing user installations, use [development, release and dogfooding](development-and-release.md). The dated entries below are historical evidence, not a runbook or a claim that every earlier limitation remains current. Add significant acceptance summaries rather than routine command logs; this record does not need to be read end-to-end for each change.
 
+## 7z packaging and alpha candidate — 2026-10-19
+
+The `0.4.0a2` candidate combines the update-admission correction below with lossless 7z Windows packaging. The full local Python 3.14.7 regression passed 1,846 tests with two skips; 42 focused release/package tests, targeted type checks and release-workflow lint passed. ZIP remains an explicit packaging alternative, and published `0.4.0a1` assets are unchanged.
+
+The revised packager was exercised against a previously built full native payload. Its 86.8 MB archive retained all runtime files, notices and the integrity manifest. Archive testing, a separate extraction and a complete filename/content comparison passed before exclusive publication to the local output directory. Windows Explorer's extraction backend independently extracted all 825 files; all 824 manifest file hashes matched. Tests also reject corrupted, missing or additional extracted files without publishing an archive and cover compressor paths relative to the caller and output paths containing spaces.
+
+An independent code review found a relative compressor-path defect, which was fixed and rechecked without remaining medium/high findings. External review coverage was incomplete: one review timed out and the correction check from another was stopped. A claim that the compression level could not automatically select BCJ was rejected using the produced archive's actual method and the compression tool's manual.
+
+These checks establish local packaging and extraction behavior, not hosted release execution, public acquisition of a new version or an update of the continuing installation. Hosted CI is temporarily suspended. Windows archives remain unsigned.
+
 ## Scheduled launch history and update admission — 2026-10-19
 
 An ongoing-use update exposed a false blocker: retained failed scheduled-launch receipts prevented replacement even though no investigation was running. The update stopped during preparation, before closing the window, pausing the task or replacing either component. The correction treats valid consumed failure receipts as retained history while preserving refusal for active launch leases, running or unverifiable jobs, unfinished `started` slots and uncertain repository actions. Receipt history is not deleted, rewritten or made launchable again.

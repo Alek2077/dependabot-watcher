@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import zipfile
 from pathlib import Path
 
@@ -48,14 +49,14 @@ def test_preview_creates_nothing(packager, inputs):
 @pytest.mark.parametrize("version", ["0.4.0a1", "0.4.0b2", "0.4.0rc1"])
 def test_release_prerelease_version_packages_matching_manifest(packager, inputs, version):
     published, assets, output = inputs
-    result = packager.package_component(published, assets, output, version, "a" * 40, preview=False)
+    result = packager.package_component(published, assets, output, version, "a" * 40, preview=False, archive_format="zip")
     with zipfile.ZipFile(result["archive"]) as archive:
         assert json.loads(archive.read("component-manifest.json"))["version"] == version
 
 
 def test_package_contains_runtime_manifest_and_notices_but_no_symbols(packager, inputs):
     published, assets, output = inputs
-    result = packager.package_component(published, assets, output, "0.3.0", "a" * 40, preview=False)
+    result = packager.package_component(published, assets, output, "0.3.0", "a" * 40, preview=False, archive_format="zip")
     with zipfile.ZipFile(result["archive"]) as archive:
         manifest = json.loads(archive.read("component-manifest.json"))
         assert manifest["source_commit"] == "a" * 40 and manifest["signing"] == "unsigned"
@@ -64,7 +65,7 @@ def test_package_contains_runtime_manifest_and_notices_but_no_symbols(packager, 
         assert not any(name.endswith(".pdb") for name in archive.namelist())
         assert len(manifest["files"]) == len(archive.namelist()) - 1
     with pytest.raises(ValueError, match="replace"):
-        packager.package_component(published, assets, output, "0.3.0", "a" * 40, preview=False)
+        packager.package_component(published, assets, output, "0.3.0", "a" * 40, preview=False, archive_format="zip")
 
 
 @pytest.mark.parametrize("name", ["events.1.jsonl", "profile.toml", ".env", "secrets/key.json", "state/private.json"])
@@ -136,3 +137,88 @@ def test_oversized_assets_refused_before_parse(packager, inputs):
         file.truncate(8 * 1024**2 + 1)
     with pytest.raises(ValueError, match="bound"):
         packager.package_component(published, assets, output, "0.3.0", "a" * 40, preview=True)
+
+
+def test_7z_round_trip_preserves_manifest_and_every_file(packager, inputs, tmp_path):
+    import hashlib
+    import shutil
+    import subprocess
+
+    compressor = shutil.which("7zz") or shutil.which("7z")
+    if compressor is None:
+        pytest.skip("7-Zip is required for the real archive round trip")
+    published, assets, output = inputs
+    output = output / "directory with spaces"
+    result = packager.package_component(published, assets, output, "0.4.0a2", "a" * 40, preview=False)
+    assert str(result["archive"]).endswith(".7z")
+    extracted = tmp_path / "extracted"
+    subprocess.run([compressor, "x", "-y", f"-o{extracted}", str(result["archive"])], check=True, capture_output=True)
+    manifest = json.loads((extracted / "component-manifest.json").read_text())
+    assert manifest["archive_format"] == "7z"
+    assert manifest["source_commit"] == "a" * 40
+    assert {p.relative_to(extracted).as_posix() for p in extracted.rglob("*") if p.is_file()} == {
+        "component-manifest.json", *(record["path"] for record in manifest["files"])}
+    for record in manifest["files"]:
+        data = (extracted / record["path"]).read_bytes()
+        assert len(data) == record["bytes"]
+        assert hashlib.sha256(data).hexdigest() == record["sha256"]
+    assert not (extracted / "WatcherNativeProof.pdb").exists()
+    assert (published / "WatcherNativeProof.pdb").exists()
+    with pytest.raises(ValueError, match="replace"):
+        packager.package_component(published, assets, output, "0.4.0a2", "a" * 40, preview=False)
+
+
+def test_7z_failure_leaves_no_published_package(packager, inputs, monkeypatch):
+    import subprocess
+
+    published, assets, output = inputs
+    def fail(*args, **kwargs):
+        raise subprocess.CalledProcessError(2, "7z")
+    monkeypatch.setattr(packager.subprocess, "run", fail)
+    with pytest.raises(ValueError, match="no package was published"):
+        packager.package_component(published, assets, output, "0.4.0a2", "a" * 40,
+                                   preview=False, seven_zip=sys.executable)
+    assert list(output.iterdir()) == []
+
+
+@pytest.mark.parametrize("corruption", ["content", "missing", "extra"])
+def test_7z_extraction_mismatch_cannot_publish(packager, inputs, monkeypatch, corruption):
+    import shutil
+
+    compressor = shutil.which("7zz") or shutil.which("7z")
+    if compressor is None:
+        pytest.skip("7-Zip is required for the real archive round trip")
+    published, assets, output = inputs
+    original_run = packager.subprocess.run
+    def corrupt_extraction(arguments, **kwargs):
+        result = original_run(arguments, **kwargs)
+        if arguments[1] == "x":
+            directory = Path(next(arg[2:] for arg in arguments if arg.startswith("-o")))
+            if corruption == "extra":
+                (directory / "extra.dll").write_bytes(b"unexpected")
+            elif corruption == "missing":
+                (directory / "WatcherNativeProof.exe").unlink()
+            else:
+                (directory / "WatcherNativeProof.exe").write_bytes(b"changed")
+        return result
+    monkeypatch.setattr(packager.subprocess, "run", corrupt_extraction)
+    with pytest.raises(ValueError, match="differs from its input"):
+        packager.package_component(published, assets, output, "0.4.0a2", "a" * 40, preview=False)
+    assert list(output.iterdir()) == []
+
+
+def test_relative_compressor_path_is_resolved_before_staging(packager, inputs, tmp_path, monkeypatch):
+    import os
+    import shutil
+
+    compressor = shutil.which("7zz") or shutil.which("7z")
+    if compressor is None or os.name == "nt":
+        pytest.skip("POSIX 7-Zip tool alias test")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "7z").symlink_to(compressor)
+    monkeypatch.chdir(tmp_path)
+    published, assets, output = inputs
+    result = packager.package_component(published, assets, output, "0.4.0a2", "a" * 40,
+                                       preview=False, seven_zip="./tools/7z")
+    assert Path(result["archive"]).is_file()
