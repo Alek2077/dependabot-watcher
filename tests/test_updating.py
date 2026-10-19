@@ -11,6 +11,7 @@ import pytest
 
 from dependabot_watcher import cli, execution, scheduling, update_coordination, updating
 from dependabot_watcher.execution import ExecutionError
+from dependabot_watcher.review_queue import supervisor_context_digest
 from dependabot_watcher.schedulers.common import ScheduleError
 from dependabot_watcher.runtime_state import load_private_json, run_lock, save_private_json
 from dependabot_watcher.update_coordination import UpdateError, task_definition_identity
@@ -427,12 +428,103 @@ def test_uncertain_repository_action_refuses_update_without_replaying_it(install
     assert events == [] and (state / journal).read_bytes() == before
 
 
+def _saved_trigger(state, *, phase="recovery_required"):
+    run_id = "run_" + "a" * 20
+    selected = {"repository": "example-org/example-app", "context_digest": "a" * 64}
+    selection = {"schema_version": 1, "mode": "scheduled_supervisor_plan", "run_id": run_id,
+                 "status": "ready", "max_jobs_per_run": 1, "repositories": [selected], "skipped": [],
+                 "capabilities": {"model_calls": False, "github_mutations": False}}
+    path = Path("scheduled-supervisor") / f"{run_id}.json"
+    value = {"schema_version": 1, "run_id": run_id, "configuration_digest": "d" * 64,
+             "selection": selection, "selection_digest": supervisor_context_digest(selection),
+             "slots": [{**selected, "phase": phase, "job_id": None}]}
+    save_private_json(state, path, value)
+    return path
+
+
 def test_unresolved_scheduled_slot_blocks_replacement(installation):
     config, state, root, record, schedule, events = installation
-    save_private_json(state, Path("scheduled-supervisor/run_fixture.json"), {"slots": [{"phase": "started"}]})
+    _saved_trigger(state, phase="started")
     with pytest.raises(UpdateError, match="stopped before installation"):
         updating._complete(config, state, root, record, schedule, "/fixture/uv")
     assert events == []
+
+
+@pytest.mark.parametrize("job_status", [None, "failed", "interrupted", "completed", "superseded"])
+def test_consumed_failed_schedule_history_does_not_block_update_or_change_receipts(installation, job_status):
+    config, state, root, record, schedule, events = installation
+    # No exact job/digest match is required: launch can fail before job creation,
+    # and fresh collection can change context before a job is prepared.
+    path = _saved_trigger(state)
+    if job_status is not None:
+        save_private_json(state, Path("supervisor-jobs.json"), {"jobs": {
+            "job_" + "b" * 32: {"status": job_status, "context_digest": "c" * 64}}})
+    record["state_snapshot"] = updating._state_snapshot(state)
+    before = (state / path).read_bytes()
+    result = updating._complete(config, state, root, record, schedule, "/fixture/uv")
+    assert result["status"] == "updated"
+    assert (state / path).read_bytes() == before
+    assert events[0:2] == [("schedule", False), ("close", 123)]
+    assert events[-2] == ("schedule", True)
+
+
+@pytest.mark.parametrize("status", ["running", None, "unknown", {}, []])
+def test_failed_schedule_receipt_does_not_hide_active_or_unknown_job(installation, status):
+    config, state, root, record, schedule, events = installation
+    _saved_trigger(state)
+    save_private_json(state, Path("supervisor-jobs.json"), {"jobs": {"fixture": {"status": status}}})
+    record["state_snapshot"] = updating._state_snapshot(state)
+    with pytest.raises(UpdateError, match="stopped before installation"):
+        updating._complete(config, state, root, record, schedule, "/fixture/uv")
+    assert events == []
+
+
+@pytest.mark.parametrize("phase", ["started", None, "unknown", {}, []])
+def test_malformed_or_incomplete_schedule_slot_still_blocks_update(installation, phase):
+    config, state, root, record, schedule, events = installation
+    _saved_trigger(state, phase=phase)
+    record["state_snapshot"] = updating._state_snapshot(state)
+    with pytest.raises(UpdateError, match="stopped before installation"):
+        updating._complete(config, state, root, record, schedule, "/fixture/uv")
+    assert events == []
+
+
+def test_failed_schedule_receipt_does_not_bypass_active_launch_lease(installation):
+    config, state, root, record, schedule, events = installation
+    _saved_trigger(state)
+    record["state_snapshot"] = updating._state_snapshot(state)
+    key = hashlib.sha256(b"example-org/example-app").hexdigest()
+    with run_lock(state / "supervisor-launches" / key):
+        with pytest.raises(UpdateError, match="launcher, collection or notification is active"):
+            updating._complete(config, state, root, record, schedule, "/fixture/uv")
+    assert events == []
+
+
+def test_candidate_reader_rejects_malformed_old_configuration_trigger(tmp_path):
+    config = tmp_path / "profile.toml"
+    config.write_text('schema_version = 1\n[[repositories]]\nname = "example-org/example-app"\n')
+    state = tmp_path / "state"
+    path = Path("scheduled-supervisor/run_" + "a" * 20 + ".json")
+    save_private_json(state, path, {"configuration_digest": "d" * 64,
+                                  "slots": [{"phase": "recovery_required"}]})
+    before = (state / path).read_bytes()
+    with pytest.raises(UpdateError, match="command did not succeed"):
+        updating._probe_state(sys.executable, config, state)
+    with pytest.raises(UpdateError, match="history is malformed"):
+        updating._require_idle(state)
+    assert (state / path).read_bytes() == before
+
+
+def test_candidate_reader_retains_valid_old_configuration_trigger(tmp_path):
+    config = tmp_path / "profile.toml"
+    config.write_text('schema_version = 1\n[[repositories]]\nname = "example-org/example-app"\n')
+    state = tmp_path / "state"
+    path = _saved_trigger(state)
+    before = (state / path).read_bytes()
+    updating._require_idle(state)
+    snapshot = updating._probe_state(sys.executable, config, state)
+    assert snapshot[path.as_posix()] == updating._hash(state / path)
+    assert (state / path).read_bytes() == before
 
 
 def test_interrupted_execution_audit_refuses_replacement(installation, monkeypatch):

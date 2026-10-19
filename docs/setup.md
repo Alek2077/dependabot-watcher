@@ -29,16 +29,18 @@ After selection, reopen the queue with `dependabot-watcher review --config PROFI
 
 For an existing uv-owned WSL installation with a selected Windows component, the development `update` command coordinates replacement. Acquire a clean checkout of the exact reviewed GitHub commit and a matching supplied Windows package first; verify package provenance/checksums and extract it into a distinct stable directory. Do not use the active development checkout or overwrite the selected component. Other installers/platforms retain their separate update procedures; this command does not migrate them silently.
 
-Run the new updater from that acquired source, so an older installed CLI need not already contain it. `uv run --no-project --with SOURCE` selects a temporary runner without replacing the installed tool. Replace all placeholders with the actual discovered installation/profile paths:
+Run the new updater from that acquired source, so an older installed CLI need not already contain it. Select the existing installation's supported stable Python interpreter explicitly; otherwise `uv run` may pick an incompatible system Python. `uv run --no-project --with SOURCE` selects a temporary runner without replacing the installed tool. Replace all placeholders with the actual discovered interpreter, installation and profile paths:
 
 ```bash
-uv run --no-project --with SOURCE dependabot-watcher update \
+uv run --python EXISTING_STABLE_PYTHON --no-project --with SOURCE dependabot-watcher update \
   --config PROFILE --state-dir STATE \
   --source SOURCE --source-commit FULL_COMMIT \
   --native-component NEW_COMPONENT_EXE --installed-command INSTALLED_COMMAND
 ```
 
 This previews effects without applying them. After installation approval, repeat with `--apply`. The updater stages and probes the backend before interruption, verifies the exact installed tool and matching component, invokes Exit on matching Watcher owners, and waits for graceful shutdown. A hidden queue may briefly reopen through its existing private activation profile so its own Exit control is available; this can bring it forward. Agents should use this supported coordination rather than asking the user to close the window or writing process-kill scripts. Active investigations or unverified owners block replacement; no process is force-killed.
+
+Failed scheduled-launch receipts remain in history and never become launchable again. Their `recovery_required` marker alone does not mean an investigation is running. The updater still refuses a held launch lease, a running or unverifiable job, a scheduled slot left `started`, or an uncertain repository action. Do not delete receipts or mark them successful to allow an update.
 
 The existing task is temporarily paused by its enabled bit only, then restored with the same definition, triggers and previous enabled/disabled state. No task is removed or recreated, and absence of a task does not create one. Settings and history are retained. Readback verifies restoration; it is not proof of a newly fired scheduled run and does not require the user to watch for another notification.
 

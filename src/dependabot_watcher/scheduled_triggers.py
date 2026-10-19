@@ -40,11 +40,13 @@ def _policy(queue: ReviewQueue) -> str:
     return supervisor_context_digest({"path": str(queue.config_path), "configuration": configuration})
 
 
-def _load(queue: ReviewQueue, run_id: str) -> dict[str, Any]:
-    value = load_private_json(queue.directory, _path(run_id), maximum_bytes=_MAX_BYTES)
+def load_trigger_history(directory: Path, run_id: str) -> dict[str, Any]:
+    """Validate retained receipt structure without granting current launch authority."""
+    value = load_private_json(directory, _path(run_id), maximum_bytes=_MAX_BYTES, read_only=True)
     if (set(value) != {"schema_version", "run_id", "configuration_digest", "selection", "selection_digest", "slots"}
             or type(value["schema_version"]) is not int or value["schema_version"] != 1
-            or value["run_id"] != run_id or value["configuration_digest"] != _policy(queue)
+            or value["run_id"] != run_id or not isinstance(value["configuration_digest"], str)
+            or re.fullmatch(r"[a-f0-9]{64}", value["configuration_digest"]) is None
             or not isinstance(value["selection"], dict)
             or value["selection_digest"] != supervisor_context_digest(value["selection"])
             or not isinstance(value["slots"], list)):
@@ -57,17 +59,17 @@ def _load(queue: ReviewQueue, run_id: str) -> dict[str, Any]:
             or selection["capabilities"] != {"model_calls": False, "github_mutations": False}
             or not isinstance(selection["skipped"], list)
             or selection.get("run_id") != run_id or type(selection.get("max_jobs_per_run")) is not int
-            or selection["max_jobs_per_run"] != queue.config.supervisor.max_jobs_per_run
+            or not 1 <= selection["max_jobs_per_run"] <= 20
             or not isinstance(selection.get("repositories"), list)
             or not value["slots"] or len(value["slots"]) != len(selection["repositories"])
-            or len(value["slots"]) > queue.config.supervisor.max_jobs_per_run):
+            or len(value["slots"]) > selection["max_jobs_per_run"]):
         raise ReviewQueueError("Scheduled trigger has an invalid reserved workload.")
     seen: set[str] = set()
     for slot, selected in zip(value["slots"], selection["repositories"]):
         if (not isinstance(slot, dict) or set(slot) != {"repository", "context_digest", "phase", "job_id"}
                 or not isinstance(selected, dict) or set(selected) != {"repository", "context_digest"}
                 or not isinstance(slot["repository"], str)
-                or not any(repo.name.casefold() == slot["repository"].casefold() for repo in queue.config.repositories)
+                or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", slot["repository"]) is None
                 or slot["repository"].casefold() in seen
                 or not isinstance(slot["context_digest"], str) or re.fullmatch(r"[a-f0-9]{64}", slot["context_digest"]) is None
                 or {key: slot[key] for key in selected} != selected
@@ -80,16 +82,26 @@ def _load(queue: ReviewQueue, run_id: str) -> dict[str, Any]:
     reasons = {"configuration_blocked", "evidence_unavailable", "already_running", "completion_unverified",
                "unanswered_feedback", "completed_current", "recovery_required", "no_work", "budget_deferred",
                "evidence_incomplete"}
-    configured = {repo.name.casefold() for repo in queue.config.repositories}
     for skipped in selection["skipped"]:
         if (not isinstance(skipped, dict) or set(skipped) != {"repository", "reason"}
                 or not isinstance(skipped["repository"], str)
-                or skipped["repository"].casefold() not in configured
+                or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", skipped["repository"]) is None
                 or skipped["repository"].casefold() in seen
                 or not isinstance(skipped["reason"], str) or skipped["reason"] not in reasons):
             raise ReviewQueueError("Scheduled trigger has an invalid skipped repository partition.")
         seen.add(skipped["repository"].casefold())
-    if seen != configured:
+    return value
+
+
+def _load(queue: ReviewQueue, run_id: str) -> dict[str, Any]:
+    value = load_trigger_history(queue.directory, run_id)
+    if value["configuration_digest"] != _policy(queue):
+        raise ReviewQueueError("Scheduled trigger belongs to a different configuration.")
+    selection = value["selection"]
+    if selection["max_jobs_per_run"] != queue.config.supervisor.max_jobs_per_run:
+        raise ReviewQueueError("Scheduled trigger has an invalid reserved workload.")
+    repositories = {item["repository"].casefold() for item in selection["repositories"] + selection["skipped"]}
+    if repositories != {repo.name.casefold() for repo in queue.config.repositories}:
         raise ReviewQueueError("Scheduled trigger omits configured repository scope.")
     return value
 
