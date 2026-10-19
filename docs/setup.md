@@ -21,6 +21,8 @@ dependabot-watcher review --config PROFILE --state-dir STATE --native-component 
 dependabot-watcher doctor --config PROFILE --state-dir STATE
 ```
 
+The current Windows companion is unsigned; Windows may show an **Unknown Publisher** or **Open File — Security Warning** prompt. **Run opens the already extracted Windows app; it does not install or update it.** For manual installation, the user reviews and handles that confirmation. During an authorized installation or update, an assisting agent with permitted desktop interaction should verify the selected package and exact executable, then handle the ordinary **Run** confirmation. Ask the user for help only if that interaction is unavailable or a different decision requires their approval. Before requesting a manual click, explain the current installation status and that the confirmation opens the app. Do not disable Windows protections or silently remove origin markers. Verify that the expected window actually opens afterward.
+
 Selection can open the saved review queue but starts no model call. `doctor` checks the selected launcher/assembly fingerprints without starting the component; it does not prove runtime instruction loading, model completion or every packaged dependency. An updated component must be extracted separately and deliberately reselected, not overwritten in place. A development build found on a maintainer's machine is pre-existing test infrastructure, not evidence that fresh-user package acquisition works.
 
 After selection, reopen the queue with `dependabot-watcher review --config PROFILE --state-dir STATE`, using the same profile and state selectors. For the default profile and state, use `dependabot-watcher review`.

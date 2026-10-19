@@ -232,7 +232,8 @@ internal sealed partial class BackendQueueWindow : Window
     internal BackendQueueWindow(BackendClient client)
     {
         _client = client;
-        Title = "Dependabot Watcher — review queue (development integration)";
+        var componentVersion = NativeComponentVersion.Read();
+        Title = $"Dependabot Watcher {componentVersion} — review queue (development integration)";
         Width = 1080; Height = 840; MinWidth = 850; MinHeight = 560;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         var root = new DockPanel { Margin = new Thickness(22) };
@@ -283,6 +284,12 @@ internal sealed partial class BackendQueueWindow : Window
         var historyScroll = new ScrollViewer { Content = historyContent, MaxHeight = 200, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         _history.Content = historyScroll;
         bottom.Children.Add(_history);
+        bottom.Children.Add(new TextBlock {
+            Text = componentVersion == "development build" ? componentVersion : $"v{componentVersion}",
+            FontSize = 12, Foreground = SystemColors.GrayTextBrush,
+            HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 6, 0, 0),
+            ToolTip = "Windows companion version"
+        });
         DockPanel.SetDock(bottom, Dock.Bottom); root.Children.Add(bottom);
         var split = new Grid();
         split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.7, GridUnitType.Star), MinWidth = 360 });
