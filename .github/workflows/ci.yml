@@ -109,12 +109,16 @@ jobs:
               runtime_state.ensure_private_directory(Path(directory) / 'state')
       - name: Test native Windows installed contracts
         if: runner.os == 'Windows'
-        run: >-
-          pytest -v -ra --maxfail=1
-          tests/test_runtime_state.py::test_native_windows_private_json_round_trip_and_atomic_replace
-          tests/test_runtime_state.py::test_native_windows_run_lock_rejects_a_second_process
-          tests/test_git_environment.py
-          tests/test_policy.py
+        shell: python
+        run: |
+          import subprocess
+          import sys
+          subprocess.check_call([
+              sys.executable, '-m', 'pytest', '-v', '-ra', '--maxfail=1',
+              'tests/test_runtime_state.py::test_native_windows_private_json_round_trip_and_atomic_replace',
+              'tests/test_runtime_state.py::test_native_windows_run_lock_rejects_a_second_process',
+              'tests/test_git_environment.py', 'tests/test_policy.py',
+          ])
       - name: Run deterministic tests against installed macOS artifact
         if: runner.os == 'macOS'
         run: pytest -v -ra --maxfail=5
