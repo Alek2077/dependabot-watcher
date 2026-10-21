@@ -42,7 +42,9 @@ The Windows interface is a separate component. Start with the [user acquisition 
 
 ### Packaged releases
 
-The [0.4.0a1 experimental alpha](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a1) provides a Python wheel, source archive, matching Windows companion and checksums on GitHub Releases. Use the README's exact release-asset URL for installation; this alpha is not on PyPI. Only use package-name/version commands after that version is actually published to the selected package index. A prerelease is not a stable release and still needs a documented acquisition and update path. An unreleased source version string is not proof that a package exists.
+The [0.4.0a2 experimental alpha](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a2) provides a Python wheel, source archive, matching Windows companion and checksums on GitHub Releases. Use the README's exact release-asset URL for installation; this alpha is not on PyPI. Only use package-name/version commands after that version is actually published to the selected package index. A prerelease is not a stable release and still needs a documented acquisition and update path. An unreleased source version string is not proof that a package exists.
+
+Use GitHub Actions to build, validate, attest and upload artifacts for normal releases. Local package builds remain appropriate for development and isolated validation; manually supplying release artifacts requires an explicitly approved exception with revision-bound validation evidence. The early locally built alpha releases remain historical exceptions, not the default delivery path. A successful rehearsal creates workflow artifacts, not a published release, and must not replace existing release assets.
 
 ### Versions and release notes
 

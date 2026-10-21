@@ -6,7 +6,7 @@ Dependabot Watcher helps you keep track of dependency updates across your reposi
 
 Use it with your existing AI agent, or try Watcher's development supervisor to investigate updates and run checks in the background. **Merges require your approval for the specific PR.** Watcher checks it again before merging. It does not currently merge unattended or complete every maintenance task automatically.
 
-**[Download 0.4.0a1 — experimental alpha](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a1):** Python CLI, matching Windows companion, checksums and release notes. See [installation](#install-and-set-up) below.
+**[Download 0.4.0a2 — experimental alpha](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a2):** Python CLI, matching Windows companion, checksums and release notes. See [installation](#install-and-set-up) below.
 
 ## Requirements and current scope
 
@@ -26,7 +26,7 @@ Scope and alternatives:
 - **Current background-supervisor path:** Windows with WSL2, Codex CLI installed and authenticated in WSL, the Python backend and the matching Windows x64 companion. The companion is required for this path even when its window stays hidden; a component-free supervisor is not currently supported.
 - **CLI foundation:** stable Python 3.11–3.14, `uv` (recommended) or `pipx`, and authenticated GitHub CLI with access to each target repository and its Dependabot alerts. Basic inspection/planning can run without AI or the Windows companion.
 - **AI support:** Watcher's built-in supervisor and bounded-advice adapter currently use Codex CLI. Your existing agent can also operate Watcher's CLI; see the [agent support matrix](docs/agent-support-matrix.md) for verified and unverified integrations.
-- **Platform limits:** the review window is Windows-only. Native Windows CLI and scheduler checks have separate evidence and remaining gates; native Linux/macOS scheduling and broader platform acceptance remain experimental or pending. See [platform status](#platform-status). The ZIP includes the companion's runtime libraries; it does not install Python, GitHub CLI, Codex CLI or WSL.
+- **Platform limits:** the review window is Windows-only. Native Windows CLI and scheduler checks have separate evidence and remaining gates; native Linux/macOS scheduling and broader platform acceptance remain experimental or pending. See [platform status](#platform-status). The archive includes the companion's runtime libraries; it does not install Python, GitHub CLI, Codex CLI or WSL.
 
 ## Windows review window
 
@@ -54,38 +54,46 @@ We recommend an agent that can investigate and test updates—your own or Watche
 
 We are working toward [complete agent-led maintenance](#direction-complete-agent-led-maintenance): investigate, validate, handle approved changes, update selected working copies and report the results. That full loop is not finished yet.
 
-**Validation status (2026-10-18):** Hosted CI is temporarily suspended. The full local Python 3.14 regression for the `0.4.0a1` source candidate passed **1,821 tests with two skips**, with additional local type, packaging and Windows checks. Hosted CI has not verified the current revision. See the [dated validation evidence and limitations](docs/validation.md#local-alpha-delivery-and-hosted-ci-restriction--2026-10-18).
+**Validation:** [Hosted CI](https://github.com/Alek2077/dependabot-watcher/actions/workflows/ci.yml) checks Python 3.11–3.14, types, distributions and installed platform contracts. A [successful release rehearsal](https://github.com/Alek2077/dependabot-watcher/actions/runs/39643180987) built both Python and Windows packages on GitHub. See the [dated evidence and coverage limits](docs/validation.md#hosted-ci-and-release-build-verification--2026-10-21).
 
 ## Install and set up
 
-Install the [0.4.0a1 experimental alpha](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a1) with `uv` (recommended) or `pipx`. This release is distributed through GitHub Releases, not PyPI. Homebrew and standalone installers remain later distribution options. For an existing installation, follow the [update procedure](#update-reset-uninstall-or-roll-back) before replacing either component.
+Install the [0.4.0a2 experimental alpha](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a2) with `uv` (recommended) or `pipx`. This release is distributed through GitHub Releases, not PyPI. Homebrew and standalone installers remain later distribution options. For an existing installation, follow the [update procedure](#update-reset-uninstall-or-roll-back) before replacing either component.
 
-For a new CLI installation with `uv`:
+For a new CLI installation, download the wheel and [SHA256SUMS](https://github.com/Alek2077/dependabot-watcher/releases/download/v0.4.0a2/SHA256SUMS), then verify the wheel before installing it:
 
 ```bash
-uv tool install --python 3.14 'https://github.com/Alek2077/dependabot-watcher/releases/download/v0.4.0a1/dependabot_watcher-0.4.0a1-py3-none-any.whl'
+curl -fLO 'https://github.com/Alek2077/dependabot-watcher/releases/download/v0.4.0a2/dependabot_watcher-0.4.0a2-py3-none-any.whl'
+curl -fLO 'https://github.com/Alek2077/dependabot-watcher/releases/download/v0.4.0a2/SHA256SUMS'
+sha256sum --ignore-missing --check SHA256SUMS
+```
+
+Continue only if verification reports the wheel as `OK`. Install that verified local file with `uv`:
+
+```bash
+uv tool install --python 3.14 ./dependabot_watcher-0.4.0a2-py3-none-any.whl
 ```
 
 Alternatively, use `pipx` with an installed stable interpreter:
 
 ```bash
-pipx install --python /path/to/stable/python 'https://github.com/Alek2077/dependabot-watcher/releases/download/v0.4.0a1/dependabot_watcher-0.4.0a1-py3-none-any.whl'
+pipx install --python /path/to/stable/python ./dependabot_watcher-0.4.0a2-py3-none-any.whl
 ```
 
-Download [SHA256SUMS](https://github.com/Alek2077/dependabot-watcher/releases/download/v0.4.0a1/SHA256SUMS) and verify the selected assets before use. The wheel installs the Python CLI. For the current WSL background supervisor, also download the matching [Windows x64 companion ZIP](https://github.com/Alek2077/dependabot-watcher/releases/download/v0.4.0a1/dependabot-watcher-review-0.4.0a1-windows-x64.zip), verify its checksum and extract the entire archive into a stable user-owned Windows directory. Keep its runtime files together and follow the [component selection instructions](docs/setup.md#windows-component-for-wsl-supervision). Do not overwrite a running component.
+Download [SHA256SUMS](https://github.com/Alek2077/dependabot-watcher/releases/download/v0.4.0a2/SHA256SUMS) and verify the selected assets before use. The wheel installs the Python CLI. For the current WSL background supervisor, also download the matching [Windows x64 companion 7z archive](https://github.com/Alek2077/dependabot-watcher/releases/download/v0.4.0a2/dependabot-watcher-review-0.4.0a2-windows-x64.7z), verify its checksum and extract the entire archive into a stable user-owned Windows directory using a compatible extractor; see the [component acquisition and selection instructions](docs/setup.md#windows-component-for-wsl-supervision). Keep its runtime files together. Do not overwrite a running component.
 
 For a source installation of this release:
 
 ```bash
 gh repo clone Alek2077/dependabot-watcher
 cd dependabot-watcher
-git checkout v0.4.0a1
+git checkout v0.4.0a2
 uv tool install --python 3.14 .
 ```
 
 For source installation with `pipx`, use `pipx install --python /path/to/stable/python .`. The moving `main` branch is development source, not a reproducible release target. Public downloads and source need no private repository membership; collecting Dependabot evidence requires the GitHub authentication described below.
 
-Use the documentation for your installed version: the [release notes](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a1) link to the tagged guides. For a source install, use the files in the same checkout. Web links containing `blob/main` show the latest development documentation and may differ from your installed revision.
+Use the documentation for your installed version: the [release notes](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a2) link to the tagged guides. For a source install, use the files in the same checkout. Web links containing `blob/main` show the latest development documentation and may differ from your installed revision.
 
 The `uv` example selects stable Python 3.14; stable Python 3.11–3.14 satisfies this release's runtime requirement.
 
@@ -304,7 +312,7 @@ See the [review-window guide](docs/review-window.md) for the two tabs, refresh c
 
 Development source adds a tool-capable Codex supervisor and one aggregate Windows review window. Python owns saved context, messages, attempts, permissions and exact-action recovery; the window is an interaction channel, not a browser page or a second policy engine. Existing-agent CLI operation and bounded metadata advice remain available.
 
-The basic CLI works without the Windows component. The current WSL scheduled AI supervisor requires it installed, although the window can stay hidden. Use the matching Windows ZIP from the [alpha release](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a1) and follow the [component selection instructions](docs/setup.md#windows-component-for-wsl-supervision); end-user setup does not require an SDK build. Component-free AI operation is future work; optional window visibility does not mean the current component is optional for that route.
+The basic CLI works without the Windows component. The current WSL scheduled AI supervisor requires it installed, although the window can stay hidden. Use the matching Windows archive from the [alpha release](https://github.com/Alek2077/dependabot-watcher/releases/tag/v0.4.0a2) and follow the [component selection instructions](docs/setup.md#windows-component-for-wsl-supervision); end-user setup does not require an SDK build. Component-free AI operation is future work; optional window visibility does not mean the current component is optional for that route.
 
 Use the [supervisor setup guide](docs/setup.md#tool-capable-supervisor-setup-development) to configure investigation and select the component. Opening the review queue makes no model call or GitHub change; process submission is not proof of visible UI. Supervised merge readiness requires current verified affirmative reasoning, separate exact approval and fresh GitHub checks. Broad agent access does not imply isolation from ambient credentials or direct remote operations.
 
