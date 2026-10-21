@@ -67,6 +67,7 @@ jobs:
     name: Installed artifact (${{ matrix.os }})
     needs: package
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -88,5 +89,32 @@ jobs:
         run: |
           dependabot-watcher --version
           dependabot-watcher --help
-      - name: Run deterministic tests against installed artifact
-        run: pytest
+      - name: Check native Windows private-state prerequisites
+        if: runner.os == 'Windows'
+        shell: python
+        run: |
+          import subprocess
+          import tempfile
+          from pathlib import Path
+          from dependabot_watcher import runtime_state
+          real_run = subprocess.run
+          def observed_run(*args, **kwargs):
+              result = real_run(*args, **kwargs)
+              print(f"Native ACL helper exit: {result.returncode}", flush=True)
+              if result.returncode:
+                  print(result.stderr, flush=True)
+              return result
+          runtime_state.subprocess.run = observed_run
+          with tempfile.TemporaryDirectory(prefix='watcher-native-ci-') as directory:
+              runtime_state.ensure_private_directory(Path(directory) / 'state')
+      - name: Test native Windows installed contracts
+        if: runner.os == 'Windows'
+        run: >-
+          pytest -v -ra --maxfail=1
+          tests/test_runtime_state.py::test_native_windows_private_json_round_trip_and_atomic_replace
+          tests/test_runtime_state.py::test_native_windows_run_lock_rejects_a_second_process
+          tests/test_git_environment.py
+          tests/test_policy.py
+      - name: Run deterministic tests against installed macOS artifact
+        if: runner.os == 'macOS'
+        run: pytest -v -ra --maxfail=5

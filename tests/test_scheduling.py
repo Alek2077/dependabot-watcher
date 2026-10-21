@@ -1600,6 +1600,7 @@ def test_schedule_cleanup_does_not_require_resolving_current_executable(
             return {"status": "missing"}
 
     monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    monkeypatch.setattr("dependabot_watcher.scheduling.detect_schedule_platform", lambda requested: "systemd")
     monkeypatch.setattr("dependabot_watcher.schedulers.common.shutil.which", lambda command: None)
     monkeypatch.setattr(
         "dependabot_watcher.scheduling.scheduler_adapter",
@@ -1631,6 +1632,7 @@ def test_schedule_install_requires_a_manual_verification_run(
             return {"status": "active", "next": None}
 
     monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    monkeypatch.setattr("dependabot_watcher.scheduling.detect_schedule_platform", lambda requested: "systemd")
     monkeypatch.setattr(
         "dependabot_watcher.scheduling.scheduler_adapter",
         lambda platform, runner=None: _Adapter(),
@@ -1663,6 +1665,7 @@ def test_schedule_inventory_requires_no_profile_or_executable(
             return {"action": "inventory", "status": "complete"}
 
     monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    monkeypatch.setattr("dependabot_watcher.scheduling.detect_schedule_platform", lambda requested: "systemd")
     monkeypatch.setattr(
         "dependabot_watcher.scheduling.scheduler_adapter",
         lambda platform, runner=None: _Adapter(),
