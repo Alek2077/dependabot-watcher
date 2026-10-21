@@ -172,8 +172,12 @@ time.sleep(30)
     # A killed orphan can remain briefly as an init-owned zombie; it is no
     # longer executing and cannot hold the transport open.
     state = Path(f"/proc/{identifier}/stat")
-    if state.exists():
-        assert state.read_text().split()[2] == "Z"
+    try:
+        observed_state = state.read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        pass  # The process can be reaped between locating and reading /proc.
+    else:
+        assert observed_state.split()[2] == "Z"
 
 
 def test_input_limits_unknown_request_and_finite_poll_are_explicit(tmp_path: Path,

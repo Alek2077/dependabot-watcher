@@ -113,13 +113,20 @@ def test_notice_identity_and_graph_must_match(packager, inputs):
         packager.package_component(published, assets, output, "0.3.0", "a" * 40, preview=True)
 
 
-def test_traversal_and_case_collisions_refused(packager, inputs):
+def test_traversal_and_case_collisions_refused(packager, inputs, monkeypatch):
     with pytest.raises(ValueError, match="safe"):
         packager.archive_key("licenses/../../license.txt")
     with pytest.raises(ValueError, match="safe"):
         packager.archive_key("licenses/con.txt")
     published, assets, output = inputs
-    (published / "watchernativeproof.DLL").write_text("alias")
+    alias = published / "watchernativeproof.DLL"
+    members = list(published.rglob("*"))
+    alias.write_text("alias")
+    # Model a case-sensitive publish tree even on a case-insensitive host,
+    # where writing the alias replaces the existing file rather than adding one.
+    original_rglob = Path.rglob
+    monkeypatch.setattr(Path, "rglob", lambda path, pattern: iter([*members, alias])
+        if path == published else original_rglob(path, pattern))
     with pytest.raises(ValueError, match="collide"):
         packager.package_component(published, assets, output, "0.3.0", "a" * 40, preview=True)
 
